@@ -18,13 +18,20 @@ const state = {
   charts: {},
 };
 
-const esc = (s) =>
-  String(s ?? '')
+const esc = (s) => {
+  const raw = s && typeof s === 'object' ? (s.name ?? s.label ?? s.title ?? '') : s;
+  return String(raw ?? '')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+};
+
+const getLeagueName = (div, meta = {}) =>
+  meta?.[div]?.name ||
+  (typeof meta?.[div] === 'string' ? meta[div] : '') ||
+  ({ E0: 'Premier League', E1: 'Championship', E2: 'League One', E3: 'League Two' }[div] || div);
 
 const fmtPct = (v) => `${Number(v || 0).toFixed(1)}%`;
 const fmtGbp = (v) => `£${Number(v || 0).toFixed(2)}`;
@@ -2802,7 +2809,7 @@ async function renderSettingsTab() {
         (div) => `
           <label class="flex items-center gap-2 px-3 py-2 rounded-xl bg-card border border-slate-800 cursor-pointer">
             <input type="checkbox" class="set-league-cb accent-emerald-500" value="${div}" ${state.preferredLeagues.includes(div) ? 'checked' : ''} />
-            <span class="text-slate-200 font-medium">${esc(leagueMeta[div] || div)}</span>
+            <span class="text-slate-200 font-medium">${esc(getLeagueName(div, leagueMeta))}</span>
           </label>`
       )
       .join('')}
@@ -2900,7 +2907,7 @@ async function renderSettingsTab() {
           if (!teams.length) return '';
           return `
             <div>
-              <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">${esc(leagueMeta[div] || div)}</div>
+              <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">${esc(getLeagueName(div, leagueMeta))}</div>
               <div class="flex flex-wrap gap-1.5">
                 ${teams
               .map((t) => {
@@ -3237,7 +3244,7 @@ function renderAuthModalBody(mode = 'login') {
           ${['E0', 'E1', 'E2', 'E3'].map((div) => `
             <label class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface border border-slate-700 text-xs text-slate-200 cursor-pointer">
               <input type="checkbox" class="reg-league-cb accent-emerald-500" value="${div}" checked />
-              <span>${esc(leagueMeta[div] || div)}</span>
+              <span>${esc(getLeagueName(div, leagueMeta))}</span>
             </label>
           `).join('')}
         </div>
@@ -3263,7 +3270,7 @@ function renderAuthModalBody(mode = 'login') {
       if (!teams.length) return '';
       return `
         <div>
-          <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">${esc(leagueMeta[div] || div)}</div>
+          <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">${esc(getLeagueName(div, leagueMeta))}</div>
           <div class="flex flex-wrap gap-1">
             ${teams.map((t) => {
         const on = selectedTeams.has(t);
