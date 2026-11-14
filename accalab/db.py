@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Iterator
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterator
 
 from werkzeug.security import generate_password_hash
 
@@ -382,10 +382,74 @@ def init_db() -> None:
                     )
 
 
-def get_api_football_calls_today(conn: sqlite3.Connection) -> int:
+def is_within_cache_window(last_iso: str | None, minutes: int) -> bool:
+    """Return True when a UTC ISO timestamp is strictly newer than `minutes` ago."""
+    if not last_iso or minutes <= 0:
+        return False
+    try:
+        dt = datetime.strptime(last_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - dt) < timedelta(minutes=minutes)
+
+
+def get_provider_calls_today(conn: sqlite3.Connection, provider: str) -> int:
+    """Count API usage log entries recorded today (UTC) for `provider`."""
     today_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     row = conn.execute(
-        "SELECT COUNT(*) AS cnt FROM api_usage_log WHERE provider = 'api_football' AND called_at LIKE ?",
-        (f"{today_prefix}%",),
+        "SELECT COUNT(*) AS cnt FROM api_usage_log WHERE provider = ? AND called_at LIKE ?",
+        (provider, f"{today_prefix}%"),
     ).fetchone()
     return int(row["cnt"]) if row else 0
+
+
+def get_last_provider_call_iso(
+    conn: sqlite3.Connection,
+    provider: str,
+    endpoint_prefix: str = "",
+    status_code: int | None = None,
+) -> str | None:
+    """Return the latest UTC ISO timestamp for a provider call matching optional filters."""
+    sql = "SELECT called_at FROM api_usage_log WHERE provider = ?"
+    params: list[Any] = [provider]
+    if endpoint_prefix:
+        sql += " AND endpoint LIKE ?"
+        params.append(f"{endpoint_prefix}%")
+    if status_code is not None:
+        sql += " AND status_code = ?"
+        params.append(status_code)
+    sql += " ORDER BY called_at DESC, id DESC LIMIT 1"
+    row = conn.execute(sql, params).fetchone()
+    return str(row["called_at"]) if row and row["called_at"] else None
+
+
+def get_api_football_calls_today(conn: sqlite3.Connection) -> int:
+    return get_provider_calls_today(conn, "api_football")
+
+
+def get_api_quota_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return live usage counters, remaining daily budgets, and cache TTL status."""
+    af_used = get_provider_calls_today(conn, "api_football")
+    gem_used = get_provider_calls_today(conn, "gemini_flash")
+    last_sync_at = get_last_provider_call_iso(conn, "core_sync", status_code=200)
+    return {
+        "core_feeds": {
+            "status": "unlimited",
+            "label": "Unlimited Free Feeds (Football-Data + FixtureDownload + RSS)",
+        },
+        "last_sync_at": last_sync_at,
+        "cache_ttl_minutes": 30,
+        "cache_active": is_within_cache_window(last_sync_at, 30),
+        "api_football": {
+            "used_today": af_used,
+            "daily_limit": 100,
+            "remaining": max(0, 100 - af_used),
+            "cache_window_hours": 6,
+        },
+        "gemini_ai": {
+            "used_today": gem_used,
+            "daily_limit": 60,
+            "remaining": max(0, 60 - gem_used),
+            "fallback": "Built-in Analyst Engine (Unlimited)",
+        },
+    }

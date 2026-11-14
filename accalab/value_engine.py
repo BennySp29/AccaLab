@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import urllib.parse
 from typing import Any
 
 import httpx
@@ -545,3 +546,396 @@ def generate_value_alerts(conn: sqlite3.Connection) -> int:
         )
         created += 1
     return created
+
+
+_BET365_MARKET_NAMES: dict[str, str] = {
+    "1X2_H": "Full Time Result",
+    "1X2_D": "Full Time Result",
+    "1X2_A": "Full Time Result",
+    "OU_O25": "Goals Over/Under",
+    "OU_U25": "Goals Over/Under",
+    "BTTS_Y": "Both Teams to Score",
+    "BTTS_N": "Both Teams to Score",
+}
+
+
+def _bet365_selection_name(leg: dict[str, Any]) -> str:
+    mkt = str(leg.get("market") or "")
+    if mkt == "1X2_H":
+        return str(leg.get("home_team") or leg.get("selection_label") or "Home")
+    if mkt == "1X2_D":
+        return "Draw"
+    if mkt == "1X2_A":
+        return str(leg.get("away_team") or leg.get("selection_label") or "Away")
+    if mkt == "OU_O25":
+        return "Over 2.5"
+    if mkt == "OU_U25":
+        return "Under 2.5"
+    if mkt == "BTTS_Y":
+        return "Yes"
+    if mkt == "BTTS_N":
+        return "No"
+    return str(leg.get("selection_label") or mkt)
+
+
+def build_bet365_export(
+    legs: list[dict[str, Any]],
+    stake: float = 10.0,
+    title: str = "AccaLab Suggested Bet",
+    options_override: str = "",
+) -> dict[str, Any]:
+    """Generate Bet365 handoff payload, search/deep-link URLs, and copyable slip text."""
+    try:
+        clean_stake = max(1.0, float(stake or 10.0))
+    except (TypeError, ValueError):
+        clean_stake = 10.0
+
+    eval_summary = evaluate_acca(legs, stake=clean_stake)
+    exported_legs: list[dict[str, Any]] = []
+    leg_option_tokens: list[str] = []
+
+    for leg in legs:
+        div = str(leg.get("div") or "")
+        league_name = LEAGUES.get(div, {}).get("name", div or "English Football")
+        home = str(leg.get("home_team") or "").strip()
+        away = str(leg.get("away_team") or "").strip()
+        mkt = str(leg.get("market") or "1X2_H")
+        b365_market = _BET365_MARKET_NAMES.get(mkt, "Full Time Result")
+        b365_selection = _bet365_selection_name(leg)
+        odds_val = round(float(leg.get("odds") or 1.0), 2)
+        search_term = home or away or "Football"
+        search_url = f"https://www.bet365.com/#/AX/K^{urllib.parse.quote(search_term)}"
+
+        opt_tok = str(leg.get("b365_options_id") or "").strip()
+        if opt_tok:
+            leg_option_tokens.append(opt_tok)
+
+        exported_legs.append(
+            {
+                "fixture_id": leg.get("fixture_id"),
+                "div": div,
+                "league_name": league_name,
+                "match_date": leg.get("match_date", ""),
+                "home_team": home,
+                "away_team": away,
+                "market": mkt,
+                "selection_label": leg.get("selection_label") or b365_selection,
+                "odds": odds_val,
+                "b365_market_name": b365_market,
+                "b365_selection_name": b365_selection,
+                "b365_path": f"Soccer → United Kingdom → {league_name} → {home} v {away} → {b365_market}",
+                "b365_search_url": search_url,
+            }
+        )
+
+    bet_type = "combo" if len(legs) > 1 else "single"
+    override_clean = (options_override or "").strip()
+    resolved_options = override_clean or (
+        ",".join(leg_option_tokens) if len(leg_option_tokens) == len(legs) and leg_option_tokens else ""
+    )
+
+    prefill_template_url = (
+        f"https://www.bet365.com/en/sports?options={{eventId}}-{{marketId}}-{{selectionId}}"
+        f"&type={bet_type}&stake={clean_stake:.2f}&currency=GBP"
+    )
+    if resolved_options:
+        deep_link_url = (
+            f"https://www.bet365.com/en/sports?options={urllib.parse.quote(resolved_options, safe='-,~')}"
+            f"&type={bet_type}&stake={clean_stake:.2f}&currency=GBP"
+        )
+        launch_url = deep_link_url
+        mode = "direct_prefill"
+    else:
+        deep_link_url = None
+        launch_url = exported_legs[0]["b365_search_url"] if exported_legs else "https://www.bet365.com/#/HO/"
+        mode = "express_handoff"
+
+    lines = [
+        f"{title} ({'Acca ' + str(len(legs)) + '-Fold' if len(legs) > 1 else 'Single'})",
+        f"Stake: £{clean_stake:.2f} | Combined Odds: {eval_summary['combined_odds']:.2f} | Potential Return: £{eval_summary['potential_return']:.2f}",
+        f"Model Hit Prob: {eval_summary['combined_model_prob_pct']}% | Expected Value: {eval_summary['expected_value_pct']:+.1f}%",
+        "",
+    ]
+    for idx, item in enumerate(exported_legs, start=1):
+        lines.append(
+            f"{idx}. {item['home_team']} v {item['away_team']} ({item['league_name']}) — {item['b365_market_name']}: {item['selection_label']} @ {item['odds']:.2f}"
+        )
+
+    return {
+        "title": title,
+        "mode": mode,
+        "bet_type": bet_type,
+        "stake": round(clean_stake, 2),
+        "launch_url": launch_url,
+        "deep_link_url": deep_link_url,
+        "prefill_template_url": prefill_template_url,
+        "clipboard_text": "\n".join(lines),
+        "eval": eval_summary,
+        "legs": exported_legs,
+    }
+
+
+def _pick_distinct_fixtures(items: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
+    picked: list[dict[str, Any]] = []
+    seen_fids: set[int] = set()
+    for it in items:
+        fid = int(it["fixture_id"])
+        if fid in seen_fids:
+            continue
+        seen_fids.add(fid)
+        picked.append(it)
+        if len(picked) == count:
+            break
+    return picked
+
+
+def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dict[str, Any]:
+    """Synthesize stats, Dixon-Coles/Elo, backtest ROI, Bet365 prices & news into 4 ready-to-bet suggestions."""
+    bankroll = float(user.get("bankroll") or 250.0)
+    kelly_frac = float(user.get("kelly_fraction") or 0.25)
+    default_stake = float(user.get("default_stake") or 10.0)
+    fav_teams = set(user.get("favourite_teams") or [])
+    pref_leagues = set(user.get("preferred_leagues") or LEAGUES.keys())
+
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT f.*, p.prob_home, p.prob_draw, p.prob_away,
+                   p.prob_over25, p.prob_under25, p.prob_btts_yes, p.prob_btts_no,
+                   p.lambda_home, p.mu_away,
+                   hr.elo AS home_elo, hr.form_last6 AS home_form,
+                   hr.sot_for_pg AS h_sot_for, hr.sot_against_pg AS h_sot_ag,
+                   ar.elo AS away_elo, ar.form_last6 AS away_form,
+                   ar.sot_for_pg AS a_sot_for, ar.sot_against_pg AS a_sot_ag
+            FROM upcoming_fixtures f
+            JOIN predictions p ON p.fixture_id = f.id
+            LEFT JOIN team_ratings hr ON hr.team_name = f.home_team
+            LEFT JOIN team_ratings ar ON ar.team_name = f.away_team
+            WHERE f.status = 'scheduled'
+            ORDER BY f.match_date ASC, f.kickoff_time ASC
+            """
+        ).fetchall()
+    ]
+
+    if not rows:
+        return {"suggestions": [], "by_id": {}, "top_single": None}
+
+    bt_map: dict[tuple[str, str], dict[str, Any]] = {
+        (b["div"], b["market"]): dict(b)
+        for b in conn.execute("SELECT * FROM backtest_results").fetchall()
+    }
+    news_by_team: dict[str, list[dict[str, Any]]] = {}
+    for nr in conn.execute("SELECT title, source, url, matched_teams_json FROM news_items ORDER BY published_at DESC LIMIT 80").fetchall():
+        nd = dict(nr)
+        for team in json.loads(nd.get("matched_teams_json") or "[]"):
+            news_by_team.setdefault(team, []).append(nd)
+
+    candidates: list[dict[str, Any]] = []
+    for r in rows:
+        h_elo = float(r.get("home_elo") or 1500.0)
+        a_elo = float(r.get("away_elo") or 1500.0)
+        h_sot_for = float(r.get("h_sot_for") or 0.0)
+        h_sot_ag = float(r.get("h_sot_ag") or 0.0)
+        a_sot_for = float(r.get("a_sot_for") or 0.0)
+        a_sot_ag = float(r.get("a_sot_ag") or 0.0)
+        h_form = r.get("home_form") or "N/A"
+        a_form = r.get("away_form") or "N/A"
+        is_official = r["odds_source"] in ("bet365_official", "api_football_b365", "user_manual")
+        matched_news = (news_by_team.get(r["home_team"], []) + news_by_team.get(r["away_team"], []))[:1]
+
+        for m_code, sel_label, m_prob, odds, _ in _market_tuples_for_fixture(r):
+            if not odds or odds < 1.25 or odds > 5.50:
+                continue
+            if r["odds_source"] == "bet365_official" and m_code.startswith("BTTS"):
+                continue
+
+            edge_pct = (m_prob * odds - 1.0) * 100.0
+            bt_key = (r["div"], "1X2" if m_code.startswith("1X2") else ("BTTS" if m_code.startswith("BTTS") else "O/U 2.5"))
+            bt = bt_map.get(bt_key)
+            trust_badge = (
+                "Backtest Proven"
+                if (bt and bt["flat_roi_pct"] > 0 and bt["value_bets_count"] >= 10)
+                else ("Positive CLV" if (bt and bt["avg_clv_pct"] > 0) else "Model Edge")
+            )
+
+            h_sot_diff = h_sot_for - h_sot_ag
+            a_sot_diff = a_sot_for - a_sot_ag
+            elo_gap = h_elo - a_elo
+            aligned = (
+                (m_code == "1X2_H" and elo_gap >= 30 and h_sot_diff >= a_sot_diff)
+                or (m_code == "1X2_A" and elo_gap <= -30 and a_sot_diff >= h_sot_diff)
+                or (m_code in ("OU_O25", "BTTS_Y") and (r["lambda_home"] + r["mu_away"]) >= 2.75)
+                or (m_code == "OU_U25" and (r["lambda_home"] + r["mu_away"]) <= 2.35)
+                or (m_code == "1X2_D" and abs(elo_gap) <= 35)
+            )
+            bt_bonus = 6.0 if (bt and bt["flat_roi_pct"] > 0 and bt["value_bets_count"] >= 10) else (3.0 if (bt and bt["avg_clv_pct"] > 0) else 0.0)
+            off_bonus = 5.0 if is_official else 0.0
+            align_bonus = 5.0 if aligned else 0.0
+            raw_conf = 35.0 + edge_pct * 2.2 + m_prob * 45.0 + bt_bonus + off_bonus + align_bonus
+            conf_score = int(max(45, min(98, round(raw_conf))))
+            _, k_stake = kelly_stake_amount(m_prob, odds, bankroll, kelly_frac)
+
+            reasons = [
+                f"Model rates {sel_label} at {m_prob*100:.1f}% (fair {(1.0/max(m_prob,0.01)):.2f}) vs {odds:.2f} odds ({edge_pct:+.1f}% edge), with xG {r['lambda_home']:.2f}–{r['mu_away']:.2f}.",
+                f"Elo & SoT: {r['home_team']} {h_elo:.0f} ({h_sot_for:.1f} SoT/g) vs {r['away_team']} {a_elo:.0f} ({a_sot_for:.1f} SoT/g).",
+                f"Form (Last 6): {h_form} vs {a_form} • {trust_badge}"
+                + (f" ({bt['flat_roi_pct']:+.1f}% backtest ROI)" if bt else ""),
+                (
+                    f"Latest team news: [{matched_news[0]['source']}] {matched_news[0]['title']}"
+                    if matched_news
+                    else "News check: No disruptive late club headlines in BBC/Sky/Guardian feeds."
+                ),
+            ]
+
+            candidates.append(
+                {
+                    "fixture_id": r["id"],
+                    "div": r["div"],
+                    "league_name": LEAGUES[r["div"]]["name"],
+                    "match_date": r["match_date"],
+                    "kickoff_time": r.get("kickoff_time") or "",
+                    "home_team": r["home_team"],
+                    "away_team": r["away_team"],
+                    "market": m_code,
+                    "selection_label": sel_label,
+                    "odds": round(odds, 2),
+                    "model_prob": round(m_prob, 5),
+                    "model_prob_pct": round(m_prob * 100.0, 1),
+                    "edge_pct": round(edge_pct, 2),
+                    "confidence_score": conf_score,
+                    "kelly_stake": k_stake,
+                    "odds_source": r["odds_source"],
+                    "is_official": is_official,
+                    "trust_badge": trust_badge,
+                    "reasons": reasons,
+                }
+            )
+
+    if not candidates:
+        return {"suggestions": [], "by_id": {}, "top_single": None}
+
+    def _build_pkg(
+        pkg_id: str,
+        title: str,
+        badge: str,
+        subtitle: str,
+        legs: list[dict[str, Any]],
+        stake: float,
+    ) -> dict[str, Any]:
+        avg_conf = int(round(sum(l["confidence_score"] for l in legs) / max(1, len(legs))))
+        merged_reasons: list[str] = []
+        seen_r: set[str] = set()
+        for l in legs:
+            for rsn in l["reasons"][: (4 if len(legs) == 1 else 2)]:
+                if rsn not in seen_r:
+                    seen_r.add(rsn)
+                    merged_reasons.append(rsn)
+        clean_legs = [
+            {
+                "fixture_id": l["fixture_id"],
+                "div": l["div"],
+                "league_name": l["league_name"],
+                "match_date": l["match_date"],
+                "home_team": l["home_team"],
+                "away_team": l["away_team"],
+                "market": l["market"],
+                "selection_label": l["selection_label"],
+                "odds": l["odds"],
+                "model_prob": l["model_prob"],
+                "edge_pct": l["edge_pct"],
+                "odds_source": l["odds_source"],
+            }
+            for l in legs
+        ]
+        ev = evaluate_acca(clean_legs, stake=stake)
+        b365 = build_bet365_export(clean_legs, stake=stake, title=title)
+        return {
+            "id": pkg_id,
+            "title": title,
+            "badge": badge,
+            "subtitle": subtitle,
+            "confidence_score": avg_conf,
+            "stake": round(stake, 2),
+            "legs": clean_legs,
+            "eval": ev,
+            "reasons": merged_reasons[:4],
+            "bet365_export": b365,
+        }
+
+    # 1. Top Single (strongest official or composite signal)
+    single_pool = sorted(
+        candidates,
+        key=lambda c: (1 if c["is_official"] else 0, c["confidence_score"], c["edge_pct"]),
+        reverse=True,
+    )
+    best_single = single_pool[0]
+    single_stake = max(5.0, best_single["kelly_stake"] or default_stake)
+    pkg_single = _build_pkg(
+        "top_single",
+        "AI Best Bet Single",
+        "Top Confidence",
+        f"Highest-conviction pick from Dixon-Coles, Elo, shots & Bet365 value",
+        [best_single],
+        single_stake,
+    )
+
+    # 2. Banker Double (2 high-probability uncorrelated legs)
+    banker_pool = [c for c in candidates if c["model_prob"] >= 0.55 and c["edge_pct"] >= -1.5]
+    if len({c["fixture_id"] for c in banker_pool}) < 2:
+        banker_pool = candidates
+    banker_sorted = sorted(
+        banker_pool,
+        key=lambda c: (1 if c["is_official"] else 0, c["model_prob"] * 100.0 + c["edge_pct"], c["confidence_score"]),
+        reverse=True,
+    )
+    double_legs = _pick_distinct_fixtures(banker_sorted, 2)
+    pkg_double = _build_pkg(
+        "banker_double",
+        "Banker Double",
+        "High Hit-Rate",
+        "2 uncorrelated strong-probability legs selected to minimize bookmaker drag",
+        double_legs,
+        default_stake,
+    )
+
+    # 3. Value Treble (3 positive-edge uncorrelated legs)
+    val_pool = [c for c in candidates if c["edge_pct"] >= 2.0]
+    if len({c["fixture_id"] for c in val_pool}) < 3:
+        val_pool = candidates
+    val_sorted = sorted(
+        val_pool,
+        key=lambda c: (c["edge_pct"], c["confidence_score"]),
+        reverse=True,
+    )
+    treble_legs = _pick_distinct_fixtures(val_sorted, 3)
+    pkg_treble = _build_pkg(
+        "value_treble",
+        "Smart Value Treble",
+        "Max EV Edge",
+        "3 highest positive-EV selections across distinct fixtures",
+        treble_legs,
+        max(5.0, round(default_stake * 0.75, 2)),
+    )
+
+    # 4. My Clubs / Preferred Leagues Special
+    fav_pool = [c for c in candidates if c["home_team"] in fav_teams or c["away_team"] in fav_teams]
+    if not fav_pool:
+        fav_pool = [c for c in candidates if c["div"] in pref_leagues] or candidates
+    fav_sorted = sorted(fav_pool, key=lambda c: (c["confidence_score"], c["edge_pct"]), reverse=True)
+    my_legs = _pick_distinct_fixtures(fav_sorted, 2 if len({c["fixture_id"] for c in fav_sorted}) >= 2 else 1)
+    pkg_my = _build_pkg(
+        "my_clubs",
+        "My Clubs Special",
+        "Personalised",
+        "Tailored to your followed clubs and preferred English leagues",
+        my_legs,
+        default_stake,
+    )
+
+    suggestions = [pkg_single, pkg_double, pkg_treble, pkg_my]
+    return {
+        "suggestions": suggestions,
+        "by_id": {s["id"]: s for s in suggestions},
+        "top_single": pkg_single,
+    }

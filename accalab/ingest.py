@@ -23,7 +23,12 @@ from accalab.config import (
     TEAM_ALIASES,
     normalize_team_name,
 )
-from accalab.db import get_api_football_calls_today, utc_now_iso
+from accalab.db import (
+    get_api_football_calls_today,
+    get_last_provider_call_iso,
+    is_within_cache_window,
+    utc_now_iso,
+)
 
 HEADERS = {"User-Agent": "AccaLab/0.1 (Personal Football Analytics App)"}
 
@@ -209,6 +214,8 @@ def _enrich_from_api_football(conn: sqlite3.Connection, client: httpx.Client) ->
 
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     updated = 0
+    cached_divisions = 0
+    calls_made = 0
     now = utc_now_iso()
 
     # Collect upcoming dates across our fixtures
@@ -216,14 +223,19 @@ def _enrich_from_api_football(conn: sqlite3.Connection, client: httpx.Client) ->
         "SELECT id, div, match_date, home_team, away_team FROM upcoming_fixtures WHERE status = 'scheduled'"
     ).fetchall()
     if not upcoming_rows:
-        return {"used": False, "updated": 0, "reason": "No scheduled fixtures"}
+        return {"used": False, "updated": 0, "cached_divisions": 0, "reason": "No scheduled fixtures"}
 
     lookup: dict[tuple[str, str, str], int] = {
         (r["div"], r["home_team"], r["away_team"]): r["id"] for r in upcoming_rows
     }
 
     for div, meta in LEAGUES.items():
-        if get_api_football_calls_today(conn) >= 92:
+        ep_prefix = f"/odds?league={meta['api_football_id']}"
+        last_call = get_last_provider_call_iso(conn, "api_football", endpoint_prefix=ep_prefix, status_code=200)
+        if is_within_cache_window(last_call, minutes=360):
+            cached_divisions += 1
+            continue
+        if get_api_football_calls_today(conn) >= 90:
             break
         try:
             resp = client.get(
@@ -231,6 +243,7 @@ def _enrich_from_api_football(conn: sqlite3.Connection, client: httpx.Client) ->
                 params={"league": meta["api_football_id"], "season": 2026, "bookmaker": 8},
                 headers=headers,
             )
+            calls_made += 1
             conn.execute(
                 "INSERT INTO api_usage_log (provider, endpoint, status_code, called_at) VALUES (?, ?, ?, ?)",
                 ("api_football", f"/odds?league={meta['api_football_id']}&bookmaker=8", resp.status_code, now),
@@ -304,7 +317,7 @@ def _enrich_from_api_football(conn: sqlite3.Connection, client: httpx.Client) ->
         except Exception:
             continue
 
-    return {"used": True, "updated": updated}
+    return {"used": calls_made > 0 or updated > 0, "updated": updated, "cached_divisions": cached_divisions}
 
 
 def ingest_upcoming_fixtures(conn: sqlite3.Connection, client: httpx.Client | None = None) -> dict[str, Any]:

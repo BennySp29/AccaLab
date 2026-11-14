@@ -20,7 +20,15 @@ from accalab.config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_DEFAULT_CHAT_ID,
 )
-from accalab.db import db_session, get_api_football_calls_today, init_db, utc_now_iso
+from accalab.db import (
+    db_session,
+    get_api_football_calls_today,
+    get_api_quota_summary,
+    get_provider_calls_today,
+    init_db,
+    is_within_cache_window,
+    utc_now_iso,
+)
 from accalab.modeling import (
     generate_grounded_summary,
     score_matrix,
@@ -28,6 +36,8 @@ from accalab.modeling import (
 from accalab.pipeline import run_full_sync
 from accalab.value_engine import (
     build_acca_presets,
+    build_bet365_export,
+    build_bet_suggestions,
     devig_three_way,
     devig_two_way,
     evaluate_acca,
@@ -283,6 +293,8 @@ def create_app() -> Flask:
                 "gemini_configured": bool(GEMINI_API_KEY),
                 "telegram_configured": bool(TELEGRAM_BOT_TOKEN and (user.get("telegram_chat_id") or TELEGRAM_DEFAULT_CHAT_ID)),
             }
+            quota = get_api_quota_summary(conn)
+            featured_suggestion = build_bet_suggestions(conn, user).get("top_single")
             return jsonify(
                 {
                     "authenticated": bool(session.get("user_id")),
@@ -296,6 +308,8 @@ def create_app() -> Flask:
                     "leagues_counts": leagues_counts,
                     "user_summary": user_summary,
                     "top_value_bets": opps[:6],
+                    "featured_suggestion": featured_suggestion,
+                    "quota": quota,
                     "integrations": integrations,
                     "leagues": LEAGUES,
                 }
@@ -588,14 +602,35 @@ def create_app() -> Flask:
                 n for n in news_all
                 if fix["home_team"] in json.loads(n["matched_teams_json"]) or fix["away_team"] in json.loads(n["matched_teams_json"])
             ]
+            if (
+                fix.get("ai_summary")
+                and fix.get("ai_summary_source") == "gemini_flash"
+                and is_within_cache_window(fix.get("updated_at"), minutes=15)
+            ):
+                return jsonify({"ai_summary": fix["ai_summary"], "ai_summary_source": "gemini_flash", "cached": True})
+
+            can_call_gemini = bool(GEMINI_API_KEY) and get_provider_calls_today(conn, "gemini_flash") < 60
             text, src = generate_grounded_summary(
-                fix, h_row, a_row, probs, fix["lambda_home"], fix["mu_away"], h2h, matched_news, use_gemini=True
+                fix,
+                h_row,
+                a_row,
+                probs,
+                fix["lambda_home"],
+                fix["mu_away"],
+                h2h,
+                matched_news,
+                use_gemini=can_call_gemini,
             )
+            if src == "gemini_flash":
+                conn.execute(
+                    "INSERT INTO api_usage_log (provider, endpoint, status_code, called_at) VALUES (?, ?, ?, ?)",
+                    ("gemini_flash", f"/fixture/{fixture_id}/ai-summary", 200, now),
+                )
             conn.execute(
                 "UPDATE predictions SET ai_summary = ?, ai_summary_source = ?, updated_at = ? WHERE fixture_id = ?",
                 (text, src, now, fixture_id),
             )
-        return jsonify({"ai_summary": text, "ai_summary_source": src})
+        return jsonify({"ai_summary": text, "ai_summary_source": src, "cached": False})
 
     @app.route("/api/value-bets")
     def api_value_bets() -> Response:
@@ -636,6 +671,24 @@ def create_app() -> Flask:
         except (TypeError, ValueError):
             stake = 10.0
         return jsonify(evaluate_acca(legs, stake=stake))
+
+    @app.route("/api/suggest-bet")
+    def api_suggest_bet() -> Response:
+        with db_session() as conn:
+            user = _get_active_user(conn)
+            return jsonify(build_bet_suggestions(conn, user))
+
+    @app.route("/api/bet365/export", methods=["POST"])
+    def api_bet365_export() -> Response:
+        payload = request.get_json(silent=True) or {}
+        legs = payload.get("legs") or []
+        try:
+            stake = float(payload.get("stake", 10.0))
+        except (TypeError, ValueError):
+            stake = 10.0
+        title = (payload.get("title") or "AccaLab Suggested Bet").strip()
+        options_override = (payload.get("options_override") or "").strip()
+        return jsonify(build_bet365_export(legs, stake=stake, title=title, options_override=options_override))
 
     @app.route("/api/bets", methods=["GET", "POST"])
     def api_bets() -> tuple[Response, int] | Response:
@@ -1256,7 +1309,10 @@ def create_app() -> Flask:
     def api_sync() -> Response:
         data = request.get_json(silent=True) or {}
         run_bt = bool(data.get("run_backtest", False))
-        summary = run_full_sync(run_backtest=run_bt)
-        return jsonify({"ok": True, "summary": summary})
+        force = bool(data.get("force", False))
+        summary = run_full_sync(run_backtest=run_bt, force=force)
+        with db_session() as conn:
+            quota = get_api_quota_summary(conn)
+        return jsonify({"ok": True, "summary": summary, "quota": quota})
 
     return app
