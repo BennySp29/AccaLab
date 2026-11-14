@@ -404,6 +404,150 @@ async function loadStaticSnapshot(forceReload = false) {
   return _staticSnapshot;
 }
 
+const SUPABASE_URL = 'https://xnvwpwygwhfgvcadlnaf.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_mWiD-10wVSFNVhK1tqODKQ_eR_3I1EF';
+let _sbClient = null;
+
+function getSupabaseClient() {
+  if (_sbClient) return _sbClient;
+  if (typeof window !== 'undefined' && window.supabase && typeof window.supabase.createClient === 'function') {
+    const url = state.dashboard?.integrations?.supabase_url || SUPABASE_URL;
+    const key = state.dashboard?.integrations?.supabase_anon_key || SUPABASE_ANON_KEY;
+    if (url && key) {
+      _sbClient = window.supabase.createClient(url, key, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          storageKey: 'accalab_supabase_auth',
+        },
+      });
+    }
+  }
+  return _sbClient;
+}
+
+function mapCloudProfile(p) {
+  if (!p) return null;
+  return sanitizeStaticUser({
+    id: Number(p.id),
+    auth_user_id: p.auth_user_id,
+    username: p.username,
+    display_name: p.display_name,
+    email: p.email || '',
+    avatar_color: p.avatar_color || '#10b981',
+    bankroll: Number(p.bankroll ?? 250),
+    kelly_fraction: Number(p.kelly_fraction ?? 0.25),
+    min_edge_pct: Number(p.min_edge_pct ?? 4.0),
+    telegram_chat_id: p.telegram_chat_id || '',
+    monthly_stake_limit: Number(p.monthly_stake_limit ?? 200),
+    show_on_leaderboard: Number(p.show_on_leaderboard ?? 1),
+    favourite_teams: Array.isArray(p.favourite_teams) ? p.favourite_teams : [],
+    preferred_leagues:
+      Array.isArray(p.preferred_leagues) && p.preferred_leagues.length
+        ? p.preferred_leagues
+        : ['E0', 'E1', 'E2', 'E3'],
+    default_stake: Number(p.default_stake ?? 10),
+    active_slip: Array.isArray(p.active_slip) ? p.active_slip : [],
+    is_guest: false,
+  });
+}
+
+async function syncCloudUserToGhState(sb, gh) {
+  if (!sb) return null;
+  const [{ data: sessData }, { data: lbData }] = await Promise.all([
+    sb.auth.getSession(),
+    sb.rpc('get_leaderboard'),
+  ]);
+  gh.cloudLeaderboard = Array.isArray(lbData) ? lbData : [];
+
+  const session = sessData?.session;
+  if (!session?.user) {
+    gh.authenticatedUserId = null;
+    gh.authenticatedAuthUuid = null;
+    gh.users = [];
+    saveGhState(gh);
+    return null;
+  }
+
+  const uid = session.user.id;
+  let { data: prof } = await sb
+    .from('profiles')
+    .select('*')
+    .eq('auth_user_id', uid)
+    .maybeSingle();
+
+  if (!prof) {
+    const meta = session.user.user_metadata || {};
+    const fallbackName = String(meta.display_name || meta.username || session.user.email?.split('@')[0] || 'Member');
+    const fallbackUname =
+      String(meta.username || fallbackName)
+        .toLowerCase()
+        .replaceAll(/[^a-z0-9_-]/g, '') || `user_${uid.slice(0, 8)}`;
+    const { data: createdProf } = await sb
+      .from('profiles')
+      .upsert(
+        {
+          auth_user_id: uid,
+          username: fallbackUname,
+          display_name: fallbackName,
+          email: meta.contact_email || '',
+          avatar_color: meta.avatar_color || '#10b981',
+          bankroll: Number(meta.bankroll || 250),
+          kelly_fraction: Number(meta.kelly_fraction || 0.25),
+          min_edge_pct: Number(meta.min_edge_pct || 4.0),
+          telegram_chat_id: meta.telegram_chat_id || '',
+          monthly_stake_limit: Number(meta.monthly_stake_limit || 200),
+          favourite_teams: Array.isArray(meta.favourite_teams) ? meta.favourite_teams : [],
+          preferred_leagues:
+            Array.isArray(meta.preferred_leagues) && meta.preferred_leagues.length
+              ? meta.preferred_leagues
+              : ['E0', 'E1', 'E2', 'E3'],
+          default_stake: Number(meta.default_stake || 10),
+        },
+        { onConflict: 'auth_user_id' }
+      )
+      .select('*')
+      .maybeSingle();
+    prof = createdProf;
+  }
+
+  if (!prof) return null;
+
+  const [watchRes, accaRes, betsRes] = await Promise.all([
+    sb.from('saved_fixtures').select('fixture_id').eq('auth_user_id', uid),
+    sb.from('saved_accas').select('*').eq('auth_user_id', uid).order('created_at', { ascending: false }),
+    sb.from('bets').select('*').eq('auth_user_id', uid).order('placed_at', { ascending: false }),
+  ]);
+
+  const user = mapCloudProfile(prof);
+  gh.users = [user];
+  gh.authenticatedUserId = user.id;
+  gh.authenticatedAuthUuid = uid;
+  gh.watchedByUser[user.id] = (watchRes.data || []).map((r) => Number(r.fixture_id));
+  gh.savedAccasByUser[user.id] = (accaRes.data || []).map((r) => ({
+    ...r,
+    id: Number(r.id),
+    stake: Number(r.stake),
+    combined_odds: Number(r.combined_odds),
+    combined_prob: Number(r.combined_prob),
+    ev_pct: Number(r.ev_pct),
+    legs: Array.isArray(r.legs) ? r.legs : [],
+  }));
+  gh.betsByUser[user.id] = (betsRes.data || []).map((b) => ({
+    ...b,
+    id: Number(b.id),
+    stake: Number(b.stake),
+    combined_odds: Number(b.combined_odds),
+    combined_model_prob: Number(b.combined_model_prob),
+    expected_value_pct: Number(b.expected_value_pct),
+    pnl: Number(b.pnl || 0),
+    legs: Array.isArray(b.legs) ? b.legs : [],
+  }));
+  state.activeUserId = user.id;
+  saveGhState(gh);
+  return user;
+}
+
 function createGuestUser() {
   return {
     id: 0,
@@ -723,6 +867,18 @@ async function staticApi(path, opts = {}) {
   const isSyncRefresh = pathname === '/api/sync';
   const snap = await loadStaticSnapshot(isSyncRefresh);
   const gh = getGhState(snap);
+  const sb = getSupabaseClient();
+  const cloudSyncPaths = new Set([
+    '/api/dashboard',
+    '/api/auth/me',
+    '/api/bets',
+    '/api/leaderboard',
+    '/api/user/watchlist',
+    '/api/user/saved-accas',
+  ]);
+  if (sb && method === 'GET' && cloudSyncPaths.has(pathname)) {
+    await syncCloudUserToGhState(sb, gh).catch(() => null);
+  }
   const activeUser = resolveStaticUser(gh, query);
   const leaguesMeta = snap.dashboard?.leagues || {};
 
@@ -778,7 +934,12 @@ async function staticApi(path, opts = {}) {
       featured_suggestion: sugg.top_single || snap.dashboard?.featured_suggestion || null,
       featured_by_risk: sugg.by_risk || snap.dashboard?.featured_by_risk || {},
       quota: snap.dashboard?.quota || {},
-      integrations: snap.dashboard?.integrations || {},
+      integrations: {
+        ...(snap.dashboard?.integrations || {}),
+        supabase_configured: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY),
+        supabase_url: SUPABASE_URL,
+        supabase_anon_key: SUPABASE_ANON_KEY,
+      },
       leagues: leaguesMeta,
     };
   }
@@ -945,12 +1106,66 @@ async function staticApi(path, opts = {}) {
       const stake = Number(bodyData.stake ?? 10.0);
       if (!Number.isFinite(stake) || stake <= 0) throw new Error('Stake must be positive');
       const targetUser = gh.users.find((u) => Number(u.id) === Number(bodyData.user_id)) || activeUser;
-      if (!targetUser || Number(targetUser.id) === 0) {
+      if (!targetUser || Number(targetUser.id) === 0 || (sb && !gh.authenticatedAuthUuid)) {
         throw new Error('Please create your account or sign in first.');
       }
       const ev = evaluateAccaClient(legs, stake);
-      const betId = gh.nextIds.bet++;
       const now = new Date().toISOString();
+      const fixById = new Map((snap.fixtures || []).map((f) => [Number(f.id), f]));
+      const betLegs = legs.map((l) => {
+        const fx = fixById.get(Number(l.fixture_id));
+        return {
+          fixture_id: l.fixture_id,
+          div: l.div || fx?.div || 'E0',
+          match_date: l.match_date || fx?.match_date || now.slice(0, 10),
+          home_team: l.home_team || fx?.home_team || '',
+          away_team: l.away_team || fx?.away_team || '',
+          market: l.market || '1X2_H',
+          selection_label: l.selection_label || l.market,
+          odds_taken: Number(l.odds || 2.0),
+          model_prob: Number(l.model_prob || 0.5),
+          closing_odds: null,
+          leg_status: 'pending',
+        };
+      });
+
+      if (sb) {
+        const { data: betRow, error: betErr } = await sb
+          .from('bets')
+          .insert({
+            auth_user_id: gh.authenticatedAuthUuid,
+            user_id: targetUser.id,
+            bet_type: legs.length > 1 ? 'acca' : 'single',
+            stake: roundNum(stake, 2),
+            combined_odds: ev.combined_odds,
+            combined_model_prob: ev.combined_model_prob,
+            expected_value_pct: ev.expected_value_pct,
+            status: 'pending',
+            pnl: 0.0,
+            clv_pct: null,
+            notes: (bodyData.notes || '').trim(),
+            placed_at: now,
+            legs: betLegs,
+          })
+          .select('*')
+          .single();
+        if (betErr) throw new Error(betErr.message);
+        if (!gh.betsByUser[targetUser.id]) gh.betsByUser[targetUser.id] = [];
+        gh.betsByUser[targetUser.id].unshift({
+          ...betRow,
+          id: Number(betRow.id),
+          stake: Number(betRow.stake),
+          combined_odds: Number(betRow.combined_odds),
+          combined_model_prob: Number(betRow.combined_model_prob),
+          expected_value_pct: Number(betRow.expected_value_pct),
+          pnl: Number(betRow.pnl || 0),
+          legs: Array.isArray(betRow.legs) ? betRow.legs : betLegs,
+        });
+        saveGhState(gh);
+        return { ok: true, bet_id: Number(betRow.id), auto_settled: 0 };
+      }
+
+      const betId = gh.nextIds.bet++;
       if (!gh.betsByUser[targetUser.id]) {
         gh.betsByUser[targetUser.id] = cloneJson(snap.bets_by_user?.[targetUser.id]?.bets || []);
       }
@@ -968,20 +1183,7 @@ async function staticApi(path, opts = {}) {
         notes: (bodyData.notes || '').trim(),
         placed_at: now,
         settled_at: null,
-        legs: legs.map((l) => ({
-          bet_id: betId,
-          fixture_id: l.fixture_id,
-          div: l.div || 'E0',
-          match_date: l.match_date || now.slice(0, 10),
-          home_team: l.home_team || '',
-          away_team: l.away_team || '',
-          market: l.market || '1X2_H',
-          selection_label: l.selection_label || l.market,
-          odds_taken: Number(l.odds || 2.0),
-          model_prob: Number(l.model_prob || 0.5),
-          closing_odds: null,
-          leg_status: 'pending',
-        })),
+        legs: betLegs.map((l) => ({ ...l, bet_id: betId })),
       });
       saveGhState(gh);
       return { ok: true, bet_id: betId, auto_settled: 0 };
@@ -993,6 +1195,9 @@ async function staticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/leaderboard') {
+    if (sb) {
+      return { leaderboard: gh.cloudLeaderboard || [], invite_code_hint: 'Ask admin for invite code' };
+    }
     const board = gh.users
       .filter((u) => Number(u.show_on_leaderboard ?? 1) === 1)
       .map((u) => {
@@ -1064,7 +1269,53 @@ async function staticApi(path, opts = {}) {
     const username = rawUname.replaceAll(/[^a-z0-9_-]/g, '');
     const password = String(bodyData.password || '');
     if (!displayName || !username) throw new Error('Display name and username are required');
-    if (password.length < 4) throw new Error('Password must be at least 4 characters');
+    if (password.length < 6) throw new Error('Password must be at least 6 characters');
+
+    const favTeams = Array.isArray(bodyData.favourite_teams) ? bodyData.favourite_teams : [];
+    const prefLeagues =
+      Array.isArray(bodyData.preferred_leagues) && bodyData.preferred_leagues.length
+        ? bodyData.preferred_leagues
+        : ['E0', 'E1', 'E2', 'E3'];
+
+    if (sb) {
+      const contactEmail = (bodyData.email || '').trim().toLowerCase();
+      const authEmail = contactEmail || `${username}@users.accalab.app`;
+      const { data: signUpData, error: signUpErr } = await sb.auth.signUp({
+        email: authEmail,
+        password,
+        options: {
+          data: {
+            username,
+            display_name: displayName,
+            contact_email: contactEmail,
+            avatar_color: bodyData.avatar_color || '#10b981',
+            bankroll: Number(bodyData.bankroll || 250),
+            kelly_fraction: Number(bodyData.kelly_fraction || 0.25),
+            min_edge_pct: Number(bodyData.min_edge_pct || 4.0),
+            telegram_chat_id: (bodyData.telegram_chat_id || '').trim(),
+            monthly_stake_limit: Number(bodyData.monthly_stake_limit || 200),
+            favourite_teams: favTeams,
+            preferred_leagues: prefLeagues,
+            default_stake: Number(bodyData.default_stake || 10.0),
+          },
+        },
+      });
+      if (signUpErr) {
+        const msg = String(signUpErr.message || '');
+        if (msg.toLowerCase().includes('already registered')) {
+          throw new Error(`Account for '${contactEmail || username}' is already registered — sign in instead.`);
+        }
+        throw new Error(msg);
+      }
+      if (!signUpData?.session) {
+        const { error: signInErr } = await sb.auth.signInWithPassword({ email: authEmail, password });
+        if (signInErr) throw new Error(signInErr.message);
+      }
+      const cloudUser = await syncCloudUserToGhState(sb, gh);
+      if (!cloudUser) throw new Error('Account created, please sign in to finish loading your cloud profile.');
+      return { ok: true, user: cloudUser };
+    }
+
     if (gh.users.some((u) => String(u.username).toLowerCase() === username)) {
       throw new Error(`Username '${username}' is already taken`);
     }
@@ -1074,18 +1325,15 @@ async function staticApi(path, opts = {}) {
       username,
       display_name: displayName,
       email: (bodyData.email || '').trim().toLowerCase(),
-      avatar_color: bodyData.avatar_color || '#8b5cf6',
-      bankroll: Number(bodyData.bankroll || 200),
+      avatar_color: bodyData.avatar_color || '#10b981',
+      bankroll: Number(bodyData.bankroll || 250),
       kelly_fraction: Number(bodyData.kelly_fraction || 0.25),
       min_edge_pct: Number(bodyData.min_edge_pct || 4.0),
       telegram_chat_id: (bodyData.telegram_chat_id || '').trim(),
-      monthly_stake_limit: Number(bodyData.monthly_stake_limit || 150),
+      monthly_stake_limit: Number(bodyData.monthly_stake_limit || 200),
       show_on_leaderboard: bodyData.show_on_leaderboard === false ? 0 : 1,
-      favourite_teams: Array.isArray(bodyData.favourite_teams) ? bodyData.favourite_teams : [],
-      preferred_leagues:
-        Array.isArray(bodyData.preferred_leagues) && bodyData.preferred_leagues.length
-          ? bodyData.preferred_leagues
-          : ['E0', 'E1', 'E2', 'E3'],
+      favourite_teams: favTeams,
+      preferred_leagues: prefLeagues,
       default_stake: Number(bodyData.default_stake || 10.0),
       active_slip: [],
     });
@@ -1099,6 +1347,25 @@ async function staticApi(path, opts = {}) {
   if (pathname === '/api/auth/login' && method === 'POST') {
     const ident = (bodyData.username || '').trim().toLowerCase();
     const password = String(bodyData.password || '');
+    if (!ident || !password) throw new Error('Username and password are required');
+
+    if (sb) {
+      let loginEmail = '';
+      const { data: resolvedEmail } = await sb.rpc('resolve_login_email', { p_identifier: ident });
+      if (typeof resolvedEmail === 'string' && resolvedEmail.includes('@')) {
+        loginEmail = resolvedEmail;
+      } else if (ident.includes('@')) {
+        loginEmail = ident;
+      } else {
+        loginEmail = `${ident.replaceAll(/[^a-z0-9_-]/g, '')}@users.accalab.app`;
+      }
+      const { error: loginErr } = await sb.auth.signInWithPassword({ email: loginEmail, password });
+      if (loginErr) throw new Error('Invalid username or password');
+      const cloudUser = await syncCloudUserToGhState(sb, gh);
+      if (!cloudUser) throw new Error('Unable to load cloud profile after sign in');
+      return { ok: true, user: cloudUser };
+    }
+
     const match = gh.users.find(
       (u) =>
         String(u.username || '').toLowerCase() === ident ||
@@ -1115,18 +1382,37 @@ async function staticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/auth/logout' && method === 'POST') {
+    if (sb) {
+      await sb.auth.signOut().catch(() => { });
+      gh.users = [];
+    }
     gh.authenticatedUserId = null;
+    gh.authenticatedAuthUuid = null;
+    state.activeUserId = 0;
+    state.authenticated = false;
+    localStorage.removeItem('accalab_user_id');
     saveGhState(gh);
     return { ok: true };
   }
 
   if (pathname === '/api/auth/password' && method === 'POST') {
-    if (!activeUser || Number(activeUser.id) === 0) {
+    if (!activeUser || Number(activeUser.id) === 0 || (sb && !gh.authenticatedAuthUuid)) {
       throw new Error('Please create your account or sign in first.');
     }
     const curr = String(bodyData.current_password || '');
     const newPw = String(bodyData.new_password || '');
-    if (newPw.length < 4) throw new Error('New password must be at least 4 characters');
+    if (newPw.length < 6) throw new Error('New password must be at least 6 characters');
+    if (sb) {
+      const { data: userData } = await sb.auth.getUser();
+      const emailForVerify = userData?.user?.email;
+      if (curr && emailForVerify) {
+        const { error: reauthErr } = await sb.auth.signInWithPassword({ email: emailForVerify, password: curr });
+        if (reauthErr) throw new Error('Current password is incorrect');
+      }
+      const { error: pwErr } = await sb.auth.updateUser({ password: newPw });
+      if (pwErr) throw new Error(pwErr.message);
+      return { ok: true };
+    }
     if (!gh.passwordsByUserId[activeUser.id] || curr !== gh.passwordsByUserId[activeUser.id]) {
       throw new Error('Current password is incorrect');
     }
@@ -1137,7 +1423,7 @@ async function staticApi(path, opts = {}) {
 
   if (pathname === '/api/user/preferences' && method === 'POST') {
     const target = gh.users.find((u) => Number(u.id) === Number(activeUser.id));
-    if (!target || Number(target.id) === 0) {
+    if (!target || Number(target.id) === 0 || (sb && !gh.authenticatedAuthUuid)) {
       throw new Error('Please create your account or sign in first.');
     }
     if (Array.isArray(bodyData.favourite_teams)) {
@@ -1160,6 +1446,32 @@ async function staticApi(path, opts = {}) {
     if (bodyData.monthly_stake_limit !== undefined) target.monthly_stake_limit = Number(bodyData.monthly_stake_limit);
     if (bodyData.telegram_chat_id !== undefined) target.telegram_chat_id = String(bodyData.telegram_chat_id || '').trim();
     if (bodyData.default_stake !== undefined) target.default_stake = Number(bodyData.default_stake);
+
+    if (sb) {
+      const { data: updatedProf, error: updErr } = await sb
+        .from('profiles')
+        .update({
+          display_name: target.display_name,
+          avatar_color: target.avatar_color,
+          bankroll: target.bankroll,
+          kelly_fraction: target.kelly_fraction,
+          min_edge_pct: target.min_edge_pct,
+          monthly_stake_limit: target.monthly_stake_limit,
+          telegram_chat_id: target.telegram_chat_id,
+          favourite_teams: target.favourite_teams,
+          preferred_leagues: target.preferred_leagues,
+          default_stake: target.default_stake,
+        })
+        .eq('auth_user_id', gh.authenticatedAuthUuid)
+        .select('*')
+        .single();
+      if (updErr) throw new Error(updErr.message);
+      const mapped = mapCloudProfile(updatedProf);
+      gh.users = [mapped];
+      saveGhState(gh);
+      return { ok: true, user: mapped };
+    }
+
     saveGhState(gh);
     return { ok: true, user: sanitizeStaticUser(target) };
   }
@@ -1186,13 +1498,37 @@ async function staticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/user/watchlist/toggle' && method === 'POST') {
-    if (!activeUser || Number(activeUser.id) === 0) {
+    if (!activeUser || Number(activeUser.id) === 0 || (sb && !gh.authenticatedAuthUuid)) {
       throw new Error('Please create your account or sign in first.');
     }
     const fid = Number(bodyData.fixture_id);
     if (!fid) throw new Error('Valid fixture_id is required');
     const cur = gh.watchedByUser[activeUser.id] || [];
     let watched = false;
+    if (sb) {
+      if (cur.includes(fid)) {
+        const { error } = await sb
+          .from('saved_fixtures')
+          .delete()
+          .eq('auth_user_id', gh.authenticatedAuthUuid)
+          .eq('fixture_id', fid);
+        if (error) throw new Error(error.message);
+        gh.watchedByUser[activeUser.id] = cur.filter((x) => x !== fid);
+      } else {
+        const { error } = await sb
+          .from('saved_fixtures')
+          .insert({
+            auth_user_id: gh.authenticatedAuthUuid,
+            fixture_id: fid,
+            note: (bodyData.note || '').trim(),
+          });
+        if (error) throw new Error(error.message);
+        gh.watchedByUser[activeUser.id] = [...cur, fid];
+        watched = true;
+      }
+      saveGhState(gh);
+      return { ok: true, watched, watched_fixture_ids: gh.watchedByUser[activeUser.id] };
+    }
     if (cur.includes(fid)) {
       gh.watchedByUser[activeUser.id] = cur.filter((x) => x !== fid);
     } else {
@@ -1205,10 +1541,17 @@ async function staticApi(path, opts = {}) {
 
   if (pathname === '/api/user/slip' && method === 'PUT') {
     const target = gh.users.find((u) => Number(u.id) === Number(activeUser.id));
+    if (!target || Number(target.id) === 0 || (sb && !gh.authenticatedAuthUuid)) {
+      throw new Error('Please create your account or sign in first.');
+    }
     const legs = Array.isArray(bodyData.legs) ? bodyData.legs : [];
     const stake = Math.max(1.0, Number(bodyData.stake || 10.0));
-    if (!target || Number(target.id) === 0) {
-      return { ok: true, leg_count: legs.length, default_stake: stake };
+    if (sb) {
+      const { error } = await sb
+        .from('profiles')
+        .update({ active_slip: legs, default_stake: stake })
+        .eq('auth_user_id', gh.authenticatedAuthUuid);
+      if (error) throw new Error(error.message);
     }
     target.active_slip = legs;
     target.default_stake = stake;
@@ -1222,17 +1565,50 @@ async function staticApi(path, opts = {}) {
       return { saved_accas: cloneJson(cur) };
     }
     if (method === 'POST') {
-      if (!activeUser || Number(activeUser.id) === 0) {
+      if (!activeUser || Number(activeUser.id) === 0 || (sb && !gh.authenticatedAuthUuid)) {
         throw new Error('Please create your account or sign in first.');
       }
       const legs = bodyData.legs || [];
       if (!legs.length) throw new Error('Cannot save an empty accumulator');
       const stake = Math.max(1.0, Number(bodyData.stake || 10.0));
       const ev = evaluateAccaClient(legs, stake);
+      const name = (bodyData.name || '').trim() || `Draft Acca (${legs.length} legs)`;
+
+      if (sb) {
+        const { data: row, error } = await sb
+          .from('saved_accas')
+          .insert({
+            auth_user_id: gh.authenticatedAuthUuid,
+            user_id: activeUser.id,
+            name,
+            stake,
+            legs: cloneJson(legs),
+            combined_odds: ev.combined_odds,
+            combined_prob: ev.combined_model_prob,
+            ev_pct: ev.expected_value_pct,
+          })
+          .select('*')
+          .single();
+        if (error) throw new Error(error.message);
+        const saved = {
+          ...row,
+          id: Number(row.id),
+          user_id: Number(row.user_id || activeUser.id),
+          stake: Number(row.stake),
+          combined_odds: Number(row.combined_odds),
+          combined_prob: Number(row.combined_prob),
+          ev_pct: Number(row.ev_pct),
+          legs: Array.isArray(row.legs) ? row.legs : cloneJson(legs),
+        };
+        gh.savedAccasByUser[activeUser.id] = [saved, ...cur];
+        saveGhState(gh);
+        return { ok: true, saved_acca: saved };
+      }
+
       const saved = {
         id: gh.nextIds.acca++,
         user_id: activeUser.id,
-        name: (bodyData.name || '').trim() || `Draft Acca (${legs.length} legs)`,
+        name,
         stake,
         legs: cloneJson(legs),
         combined_odds: ev.combined_odds,
@@ -1248,13 +1624,21 @@ async function staticApi(path, opts = {}) {
 
   const delAccaMatch = pathname.match(/^\/api\/user\/saved-accas\/(\d+)$/);
   if (delAccaMatch && method === 'DELETE') {
-    if (!activeUser || Number(activeUser.id) === 0) {
+    if (!activeUser || Number(activeUser.id) === 0 || (sb && !gh.authenticatedAuthUuid)) {
       throw new Error('Please create your account or sign in first.');
     }
     const accaId = Number(delAccaMatch[1]);
+    if (sb) {
+      const { error } = await sb
+        .from('saved_accas')
+        .delete()
+        .eq('id', accaId)
+        .eq('auth_user_id', gh.authenticatedAuthUuid);
+      if (error) throw new Error(error.message);
+    }
     const cur = gh.savedAccasByUser[activeUser.id] || [];
     const next = cur.filter((a) => Number(a.id) !== accaId);
-    if (next.length === cur.length) throw new Error('Saved acca not found');
+    if (!sb && next.length === cur.length) throw new Error('Saved acca not found');
     gh.savedAccasByUser[activeUser.id] = next;
     saveGhState(gh);
     return { ok: true };
@@ -1302,6 +1686,7 @@ async function staticApi(path, opts = {}) {
 }
 
 async function api(path, opts = {}) {
+  const [pathname] = path.split('?');
   const sep = path.includes('?') ? '&' : '?';
   const url = path.startsWith('/api/') ? `${path}${sep}user_id=${state.activeUserId}` : path;
   const forceStatic =
@@ -1309,8 +1694,21 @@ async function api(path, opts = {}) {
     (window.location.hostname.endsWith('github.io') ||
       window.location.protocol === 'file:' ||
       window.__ACCALAB_STATIC__ === true);
+  const cloudHandledPaths = new Set([
+    '/api/bets',
+    '/api/leaderboard',
+    '/api/dashboard',
+    '/api/fixtures',
+    '/api/value-bets',
+    '/api/suggest-bet',
+  ]);
+  const useCloudClient =
+    Boolean(getSupabaseClient()) &&
+    (pathname.startsWith('/api/auth/') ||
+      pathname.startsWith('/api/user/') ||
+      cloudHandledPaths.has(pathname));
 
-  if (forceStatic && path.startsWith('/api/')) {
+  if ((forceStatic || useCloudClient) && path.startsWith('/api/')) {
     return staticApi(url, opts);
   }
 
@@ -1608,7 +2006,7 @@ async function loadDashboard(syncSlipFromServer = true) {
       authStatusEl.textContent = 'No account yet • Click to set up';
       authStatusEl.className = 'text-[11px] truncate text-amber-300';
     } else if (state.authenticated) {
-      authStatusEl.textContent = 'Signed in • Saved to profile';
+      authStatusEl.textContent = 'Signed in • Cloud Synced ☁️';
       authStatusEl.className = 'text-[11px] truncate text-emerald-400';
     } else {
       authStatusEl.textContent = 'Member profile • Sign in';
@@ -2470,6 +2868,7 @@ async function renderAccaTab() {
         renderAccaTab();
       } catch (err) {
         showToast(err.message, true);
+        if (!state.authenticated) openAuthModal('register');
       }
     })
   );
@@ -2485,7 +2884,22 @@ async function renderTrackerTab() {
   const data = await api('/api/bets');
   const st = data.stats;
 
+  const protectedBannerHtml = !state.authenticated
+    ? `
+      <div class="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/40 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-bold text-amber-300">🔒 Protected Cloud Tracker</div>
+          <p class="text-xs text-slate-300 mt-0.5">Sign in or create your personal account to log bets and sync your P&amp;L across all devices.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="tracker-signin-btn" type="button" class="px-3 py-1.5 rounded-xl bg-surface border border-slate-700 hover:border-emerald-400 text-xs font-semibold text-white">Sign In</button>
+          <button id="tracker-signup-btn" type="button" class="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-slate-950">Create Account</button>
+        </div>
+      </div>`
+    : '';
+
   main.innerHTML = `
+    ${protectedBannerHtml}
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="text-xl font-bold text-white">📈 Bet Tracker &amp; Closing-Line Value (CLV)</h2>
@@ -2563,6 +2977,9 @@ async function renderTrackerTab() {
       </table>
     </div>
   `;
+
+  document.getElementById('tracker-signin-btn')?.addEventListener('click', () => openAuthModal('login'));
+  document.getElementById('tracker-signup-btn')?.addEventListener('click', () => openAuthModal('register'));
 
   document.getElementById('settle-bets-btn').addEventListener('click', async () => {
     const res = await api('/api/bets/settle', { method: 'POST', body: '{}' });
@@ -2735,6 +3152,17 @@ async function renderLeaderboardTab() {
   `;
 
   document.getElementById('create-friend-btn').addEventListener('click', async () => {
+    if (getSupabaseClient()) {
+      const fName = document.getElementById('new-friend-name').value.trim();
+      const fCode = document.getElementById('new-friend-code').value.trim();
+      const fBank = document.getElementById('new-friend-bankroll').value;
+      openAuthModal('register');
+      if (fName && document.getElementById('reg-display')) document.getElementById('reg-display').value = fName;
+      if (fCode && document.getElementById('reg-invite')) document.getElementById('reg-invite').value = fCode;
+      if (fBank && document.getElementById('reg-bankroll')) document.getElementById('reg-bankroll').value = fBank;
+      showToast('Enter a username & password to create their cloud account!');
+      return;
+    }
     try {
       const res = await api('/api/users', {
         method: 'POST',
@@ -2942,6 +3370,7 @@ async function renderSettingsTab() {
         showToast('Preferred leagues saved');
       } catch (err) {
         showToast(err.message, true);
+        if (!state.authenticated) openAuthModal('register');
       }
     })
   );
@@ -2977,6 +3406,7 @@ async function renderSettingsTab() {
       showToast('Settings saved!');
     } catch (err) {
       showToast(err.message, true);
+      if (!state.authenticated) openAuthModal('register');
     }
   });
 
@@ -3103,7 +3533,7 @@ function renderAuthModalBody(mode = 'login') {
           <div class="text-xs font-bold text-slate-200">Change Password</div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <input id="pw-current" type="password" required placeholder="Current password" class="px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
-            <input id="pw-new" type="password" required minlength="4" placeholder="New password (min 4)" class="px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
+            <input id="pw-new" type="password" required minlength="6" placeholder="New password (min 6)" class="px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
           </div>
           <button type="submit" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white">Update Password</button>
         </form>
@@ -3204,7 +3634,7 @@ function renderAuthModalBody(mode = 'login') {
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">Password *</label>
-          <input id="reg-password" type="password" required minlength="4" placeholder="Min 4 chars" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
+          <input id="reg-password" type="password" required minlength="6" placeholder="Min 6 chars" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">Starting Bankroll (£)</label>

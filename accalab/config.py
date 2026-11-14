@@ -20,6 +20,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_DEFAULT_CHAT_ID = os.getenv("TELEGRAM_DEFAULT_CHAT_ID", "").strip()
 ACCALAB_INVITE_CODE = os.getenv("ACCALAB_INVITE_CODE", "ACCALAB2026").strip()
 SECRET_KEY = os.getenv("SECRET_KEY", "accalab-local-dev-key").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://xnvwpwygwhfgvcadlnaf.supabase.co").strip()
+SUPABASE_ANON_KEY = os.getenv(
+    "SUPABASE_ANON_KEY", "sb_publishable_mWiD-10wVSFNVhK1tqODKQ_eR_3I1EF"
+).strip()
 
 SEASONS = ("2425", "2526", "2627")
 CURRENT_SEASON = "2627"

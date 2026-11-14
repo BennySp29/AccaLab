@@ -17,6 +17,8 @@ from accalab.config import (
     LEAGUES,
     MARKET_LABELS,
     SECRET_KEY,
+    SUPABASE_ANON_KEY,
+    SUPABASE_URL,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_DEFAULT_CHAT_ID,
 )
@@ -309,6 +311,9 @@ def create_app() -> Flask:
                 "api_football_configured": bool(API_FOOTBALL_KEY),
                 "gemini_configured": bool(GEMINI_API_KEY),
                 "telegram_configured": bool(TELEGRAM_BOT_TOKEN and (user.get("telegram_chat_id") or TELEGRAM_DEFAULT_CHAT_ID)),
+                "supabase_configured": bool(SUPABASE_URL and SUPABASE_ANON_KEY),
+                "supabase_url": SUPABASE_URL,
+                "supabase_anon_key": SUPABASE_ANON_KEY,
             }
             quota = get_api_quota_summary(conn)
             suggestions_data = build_bet_suggestions(conn, user)
@@ -1141,7 +1146,7 @@ def create_app() -> Flask:
         with db_session() as conn:
             user = _get_active_user(conn)
             if int(user["id"]) == 0:
-                return jsonify({"ok": True, "leg_count": len(legs), "default_stake": stake})
+                return jsonify({"error": "Please create your account or sign in first."}), 401
             conn.execute(
                 "UPDATE users SET active_slip_json = ?, default_stake = ? WHERE id = ?",
                 (json.dumps(legs), stake, user["id"]),
