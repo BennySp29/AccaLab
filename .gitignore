@@ -1,0 +1,22 @@
+# Databases & local secrets
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+.env
+
+# Python / Node artifacts (keep Google Drive clean)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+node_modules/
+.next/
+dist/
+build/
+
+# OS / IDE metadata
+desktop.ini
+Thumbs.db
+.DS_Store

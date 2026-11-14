@@ -1,0 +1,391 @@
+"""SQLite database connection, schema initialization, and user seeding for AccaLab."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Iterator
+
+from werkzeug.security import generate_password_hash
+
+from accalab.config import DATA_DIR, DB_PATH
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def get_connection() -> sqlite3.Connection:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=15.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL;")
+    except sqlite3.OperationalError:
+        conn.execute("PRAGMA journal_mode = DELETE;")
+    conn.execute("PRAGMA busy_timeout = 10000;")
+    return conn
+
+
+@contextmanager
+def db_session() -> Iterator[sqlite3.Connection]:
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    avatar_color TEXT NOT NULL DEFAULT '#10b981',
+    bankroll REAL NOT NULL DEFAULT 250.0,
+    kelly_fraction REAL NOT NULL DEFAULT 0.25,
+    min_edge_pct REAL NOT NULL DEFAULT 4.0,
+    telegram_chat_id TEXT DEFAULT '',
+    monthly_stake_limit REAL NOT NULL DEFAULT 200.0,
+    show_on_leaderboard INTEGER NOT NULL DEFAULT 1,
+    favourite_teams_json TEXT NOT NULL DEFAULT '[]',
+    preferred_leagues_json TEXT NOT NULL DEFAULT '["E0","E1","E2","E3"]',
+    default_stake REAL NOT NULL DEFAULT 10.0,
+    active_slip_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS historical_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season TEXT NOT NULL,
+    div TEXT NOT NULL,
+    match_date TEXT NOT NULL,
+    kickoff_time TEXT DEFAULT '',
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    fthg INTEGER,
+    ftag INTEGER,
+    ftr TEXT,
+    hthg INTEGER,
+    htag INTEGER,
+    hs INTEGER,
+    as_shots INTEGER,
+    hst INTEGER,
+    ast INTEGER,
+    hc INTEGER,
+    ac INTEGER,
+    hy INTEGER,
+    ay INTEGER,
+    hr INTEGER,
+    ar INTEGER,
+    referee TEXT DEFAULT '',
+    b365h REAL,
+    b365d REAL,
+    b365a REAL,
+    b365_over25 REAL,
+    b365_under25 REAL,
+    b365ch REAL,
+    b365cd REAL,
+    b365ca REAL,
+    b365c_over25 REAL,
+    b365c_under25 REAL,
+    avg_h REAL,
+    avg_d REAL,
+    avg_a REAL,
+    UNIQUE(season, div, match_date, home_team, away_team)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hist_div_date ON historical_matches(div, match_date);
+CREATE INDEX IF NOT EXISTS idx_hist_teams ON historical_matches(home_team, away_team);
+
+CREATE TABLE IF NOT EXISTS upcoming_fixtures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    div TEXT NOT NULL,
+    round_number INTEGER,
+    match_date TEXT NOT NULL,
+    kickoff_time TEXT DEFAULT '',
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    venue TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    b365h REAL,
+    b365d REAL,
+    b365a REAL,
+    b365_over25 REAL,
+    b365_under25 REAL,
+    b365_btts_yes REAL,
+    b365_btts_no REAL,
+    b365_open_h REAL,
+    b365_open_d REAL,
+    b365_open_a REAL,
+    odds_source TEXT NOT NULL DEFAULT 'market_estimate',
+    updated_at TEXT NOT NULL,
+    UNIQUE(div, match_date, home_team, away_team)
+);
+
+CREATE INDEX IF NOT EXISTS idx_up_div_date ON upcoming_fixtures(div, match_date);
+
+CREATE TABLE IF NOT EXISTS team_ratings (
+    team_name TEXT PRIMARY KEY,
+    div TEXT NOT NULL,
+    elo REAL NOT NULL DEFAULT 1500.0,
+    elo_change_last5 REAL NOT NULL DEFAULT 0.0,
+    dc_attack REAL NOT NULL DEFAULT 0.0,
+    dc_defence REAL NOT NULL DEFAULT 0.0,
+    matches_played INTEGER NOT NULL DEFAULT 0,
+    points INTEGER NOT NULL DEFAULT 0,
+    gf INTEGER NOT NULL DEFAULT 0,
+    ga INTEGER NOT NULL DEFAULT 0,
+    shots_for_pg REAL NOT NULL DEFAULT 0.0,
+    shots_against_pg REAL NOT NULL DEFAULT 0.0,
+    sot_for_pg REAL NOT NULL DEFAULT 0.0,
+    sot_against_pg REAL NOT NULL DEFAULT 0.0,
+    form_last6 TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS predictions (
+    fixture_id INTEGER PRIMARY KEY REFERENCES upcoming_fixtures(id) ON DELETE CASCADE,
+    lambda_home REAL NOT NULL,
+    mu_away REAL NOT NULL,
+    rho REAL NOT NULL,
+    prob_home REAL NOT NULL,
+    prob_draw REAL NOT NULL,
+    prob_away REAL NOT NULL,
+    prob_over25 REAL NOT NULL,
+    prob_under25 REAL NOT NULL,
+    prob_btts_yes REAL NOT NULL,
+    prob_btts_no REAL NOT NULL,
+    top_scorelines_json TEXT NOT NULL,
+    tipster_consensus_json TEXT NOT NULL,
+    ai_summary TEXT NOT NULL DEFAULT '',
+    ai_summary_source TEXT NOT NULL DEFAULT 'analyst_engine',
+    model_version TEXT NOT NULL DEFAULT 'dc-elo-v1',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS news_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    matched_teams_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    bet_type TEXT NOT NULL DEFAULT 'single',
+    stake REAL NOT NULL,
+    combined_odds REAL NOT NULL,
+    combined_model_prob REAL NOT NULL,
+    expected_value_pct REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    pnl REAL NOT NULL DEFAULT 0.0,
+    clv_pct REAL,
+    notes TEXT NOT NULL DEFAULT '',
+    placed_at TEXT NOT NULL,
+    settled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bet_legs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bet_id INTEGER NOT NULL REFERENCES bets(id) ON DELETE CASCADE,
+    fixture_id INTEGER,
+    div TEXT NOT NULL,
+    match_date TEXT NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    market TEXT NOT NULL,
+    selection_label TEXT NOT NULL,
+    odds_taken REAL NOT NULL,
+    closing_odds REAL,
+    model_prob REAL NOT NULL,
+    leg_status TEXT NOT NULL DEFAULT 'pending'
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    alert_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    fixture_id INTEGER,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    sent_telegram INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS backtest_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    div TEXT NOT NULL,
+    market TEXT NOT NULL,
+    matches_tested INTEGER NOT NULL,
+    brier_score REAL NOT NULL,
+    log_loss REAL NOT NULL,
+    value_bets_count INTEGER NOT NULL,
+    win_rate_pct REAL NOT NULL,
+    flat_roi_pct REAL NOT NULL,
+    kelly_roi_pct REAL NOT NULL,
+    avg_clv_pct REAL NOT NULL,
+    calibration_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(div, market)
+);
+
+CREATE TABLE IF NOT EXISTS api_usage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    status_code INTEGER,
+    called_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS saved_fixtures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    fixture_id INTEGER NOT NULL REFERENCES upcoming_fixtures(id) ON DELETE CASCADE,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, fixture_id)
+);
+
+CREATE TABLE IF NOT EXISTS saved_accas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    stake REAL NOT NULL DEFAULT 10.0,
+    legs_json TEXT NOT NULL,
+    combined_odds REAL NOT NULL,
+    combined_prob REAL NOT NULL,
+    ev_pct REAL NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+
+def _migrate_users_table(conn: sqlite3.Connection) -> None:
+    """Safely add new account & personalisation columns to existing SQLite users table."""
+    existing_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+    migrations = [
+        ("email", "TEXT NOT NULL DEFAULT ''"),
+        ("password_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("favourite_teams_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("preferred_leagues_json", """TEXT NOT NULL DEFAULT '["E0","E1","E2","E3"]'"""),
+        ("default_stake", "REAL NOT NULL DEFAULT 10.0"),
+        ("active_slip_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ]
+    for col, col_def in migrations:
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def};")
+
+
+def init_db() -> None:
+    """Create tables, apply safe schema migrations, and seed default group members if empty."""
+    with db_session() as conn:
+        conn.executescript(SCHEMA_SQL)
+        _migrate_users_table(conn)
+        now = utc_now_iso()
+        default_pw = generate_password_hash("accalab")
+        existing = conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"]
+        if existing == 0:
+            users = [
+                (
+                    "admin",
+                    "You (Admin)",
+                    "",
+                    default_pw,
+                    "#10b981",
+                    250.0,
+                    0.25,
+                    4.0,
+                    "",
+                    200.0,
+                    1,
+                    json.dumps(["Arsenal", "Leeds", "Wrexham"]),
+                    json.dumps(["E0", "E1", "E2", "E3"]),
+                    10.0,
+                    "[]",
+                    now,
+                ),
+                (
+                    "dave",
+                    "Dave",
+                    "",
+                    default_pw,
+                    "#3b82f6",
+                    200.0,
+                    0.25,
+                    5.0,
+                    "",
+                    150.0,
+                    1,
+                    json.dumps(["Liverpool", "Bristol City"]),
+                    json.dumps(["E0", "E1"]),
+                    15.0,
+                    "[]",
+                    now,
+                ),
+                (
+                    "callum",
+                    "Callum",
+                    "",
+                    default_pw,
+                    "#f59e0b",
+                    300.0,
+                    0.20,
+                    3.5,
+                    "",
+                    250.0,
+                    1,
+                    json.dumps(["Man City", "Stockport"]),
+                    json.dumps(["E0", "E2", "E3"]),
+                    10.0,
+                    "[]",
+                    now,
+                ),
+            ]
+            conn.executemany(
+                """
+                INSERT INTO users (
+                    username, display_name, email, password_hash, avatar_color, bankroll, kelly_fraction,
+                    min_edge_pct, telegram_chat_id, monthly_stake_limit, show_on_leaderboard,
+                    favourite_teams_json, preferred_leagues_json, default_stake, active_slip_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                users,
+            )
+        else:
+            # Backfill password_hash and default favourites on pre-existing seeded accounts
+            for row in conn.execute("SELECT id, username, password_hash, favourite_teams_json FROM users").fetchall():
+                if not row["password_hash"]:
+                    favs = row["favourite_teams_json"]
+                    if row["username"] == "admin" and favs in ("", "[]", None):
+                        favs = json.dumps(["Arsenal", "Leeds", "Wrexham"])
+                    conn.execute(
+                        "UPDATE users SET password_hash = ?, favourite_teams_json = ? WHERE id = ?",
+                        (default_pw, favs or "[]", row["id"]),
+                    )
+
+
+def get_api_football_calls_today(conn: sqlite3.Connection) -> int:
+    today_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM api_usage_log WHERE provider = 'api_football' AND called_at LIKE ?",
+        (f"{today_prefix}%",),
+    ).fetchone()
+    return int(row["cnt"]) if row else 0
