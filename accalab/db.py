@@ -295,91 +295,10 @@ def _migrate_users_table(conn: sqlite3.Connection) -> None:
 
 
 def init_db() -> None:
-    """Create tables, apply safe schema migrations, and seed default group members if empty."""
+    """Create database tables and apply safe schema migrations."""
     with db_session() as conn:
         conn.executescript(SCHEMA_SQL)
         _migrate_users_table(conn)
-        now = utc_now_iso()
-        default_pw = generate_password_hash("accalab")
-        existing = conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"]
-        if existing == 0:
-            users = [
-                (
-                    "admin",
-                    "You (Admin)",
-                    "",
-                    default_pw,
-                    "#10b981",
-                    250.0,
-                    0.25,
-                    4.0,
-                    "",
-                    200.0,
-                    1,
-                    json.dumps(["Arsenal", "Leeds", "Wrexham"]),
-                    json.dumps(["E0", "E1", "E2", "E3"]),
-                    10.0,
-                    "[]",
-                    now,
-                ),
-                (
-                    "dave",
-                    "Dave",
-                    "",
-                    default_pw,
-                    "#3b82f6",
-                    200.0,
-                    0.25,
-                    5.0,
-                    "",
-                    150.0,
-                    1,
-                    json.dumps(["Liverpool", "Bristol City"]),
-                    json.dumps(["E0", "E1"]),
-                    15.0,
-                    "[]",
-                    now,
-                ),
-                (
-                    "callum",
-                    "Callum",
-                    "",
-                    default_pw,
-                    "#f59e0b",
-                    300.0,
-                    0.20,
-                    3.5,
-                    "",
-                    250.0,
-                    1,
-                    json.dumps(["Man City", "Stockport"]),
-                    json.dumps(["E0", "E2", "E3"]),
-                    10.0,
-                    "[]",
-                    now,
-                ),
-            ]
-            conn.executemany(
-                """
-                INSERT INTO users (
-                    username, display_name, email, password_hash, avatar_color, bankroll, kelly_fraction,
-                    min_edge_pct, telegram_chat_id, monthly_stake_limit, show_on_leaderboard,
-                    favourite_teams_json, preferred_leagues_json, default_stake, active_slip_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                users,
-            )
-        else:
-            # Backfill password_hash and default favourites on pre-existing seeded accounts
-            for row in conn.execute("SELECT id, username, password_hash, favourite_teams_json FROM users").fetchall():
-                if not row["password_hash"]:
-                    favs = row["favourite_teams_json"]
-                    if row["username"] == "admin" and favs in ("", "[]", None):
-                        favs = json.dumps(["Arsenal", "Leeds", "Wrexham"])
-                    conn.execute(
-                        "UPDATE users SET password_hash = ?, favourite_teams_json = ? WHERE id = ?",
-                        (default_pw, favs or "[]", row["id"]),
-                    )
 
 
 def is_within_cache_window(last_iso: str | None, minutes: int) -> bool:

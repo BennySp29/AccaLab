@@ -120,16 +120,16 @@
     <div class="p-4 border-t border-slate-800/80 space-y-3">
       <div class="flex items-center justify-between gap-2">
         <div class="flex items-center gap-2 min-w-0">
-          <span id="sidebar-avatar" class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-slate-950 bg-emerald-400 shrink-0">Y</span>
+          <span id="sidebar-avatar" class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-slate-950 bg-emerald-400 shrink-0">G</span>
           <div class="min-w-0">
-            <div id="sidebar-username" class="text-xs font-bold text-white truncate">You (Admin)</div>
-            <div id="sidebar-auth-status" class="text-[10px] text-slate-400">Session active</div>
+            <div id="sidebar-username" class="text-xs font-bold text-white truncate">Guest</div>
+            <div id="sidebar-auth-status" class="text-[10px] text-amber-300">No account yet • Click to set up</div>
           </div>
         </div>
-        <button id="open-auth-modal-btn" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-emerald-300 shrink-0">Account</button>
+        <button id="open-auth-modal-btn" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-emerald-300 shrink-0">Set Up Account</button>
       </div>
-      <div>
-        <label class="text-[11px] uppercase tracking-wider text-slate-400">Switch Demo / Friend</label>
+      <div id="user-switcher-wrap" class="hidden">
+        <label class="text-[11px] uppercase tracking-wider text-slate-400">Switch Account / Member</label>
         <select id="user-switcher" class="mt-1 w-full bg-surface border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white"></select>
       </div>
       <div class="text-xs text-slate-400 flex justify-between">
@@ -157,8 +157,8 @@
         <button id="open-suggest-btn" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-emerald-500/20 transition">
           <span>✨ Suggest Bet</span>
         </button>
-        <select id="user-switcher-mobile" class="lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
-        <button id="open-auth-modal-mobile-btn" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Account</button>
+        <select id="user-switcher-mobile" class="hidden lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
+        <button id="open-auth-modal-mobile-btn" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Set Up Account</button>
         <button id="open-slip-btn" class="relative px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
           <span>🧾 Bet Slip</span>
           <span id="slip-count-badge" class="bg-slate-950/80 text-emerald-300 px-1.5 py-0.5 rounded-full text-[11px] font-mono">0</span>

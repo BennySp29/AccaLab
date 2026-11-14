@@ -4,7 +4,7 @@ const state = {
   activeTab: 'fixtures',
   activeDiv: 'ALL',
   search: '',
-  activeUserId: Number(localStorage.getItem('accalab_user_id') || 1),
+  activeUserId: Number(localStorage.getItem('accalab_user_id') || 0),
   authenticated: false,
   dashboard: null,
   favouriteTeams: [],
@@ -76,14 +76,13 @@ function parseOddsInput(raw) {
 function showToast(msg, isError = false) {
   const el = document.getElementById('toast');
   el.textContent = msg;
-  el.className = `fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl text-white text-sm font-medium shadow-xl z-50 ${
-    isError ? 'bg-rose-600' : 'bg-emerald-600'
-  }`;
+  el.className = `fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl text-white text-sm font-medium shadow-xl z-50 ${isError ? 'bg-rose-600' : 'bg-emerald-600'
+    }`;
   el.classList.remove('hidden');
   setTimeout(() => el.classList.add('hidden'), 3400);
 }
 
-const GH_STATE_KEY = 'accalab_gh_state_v1';
+const GH_STATE_KEY = 'accalab_gh_state_v2';
 let _staticSnapshot = null;
 
 const cloneJson = (v) => JSON.parse(JSON.stringify(v));
@@ -234,12 +233,12 @@ function encodeSlipTokenClient(payload) {
       for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
       return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
-  } catch (_) {}
+  } catch (_) { }
   try {
     if (typeof btoa === 'function') {
       return btoa(unescape(encodeURIComponent(raw))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
-  } catch (_) {}
+  } catch (_) { }
   if (typeof Buffer !== 'undefined') {
     return Buffer.from(raw, 'utf8').toString('base64url');
   }
@@ -250,7 +249,7 @@ function openInBet365Tab(url) {
   const win = window.open(url, 'accalab_bet365_tab');
   try {
     if (win && win.focus) win.focus();
-  } catch (_) {}
+  } catch (_) { }
   return win;
 }
 
@@ -398,22 +397,45 @@ async function loadStaticSnapshot(forceReload = false) {
   return _staticSnapshot;
 }
 
+function createGuestUser() {
+  return {
+    id: 0,
+    username: 'guest',
+    display_name: 'Guest',
+    email: '',
+    avatar_color: '#10b981',
+    bankroll: 250,
+    kelly_fraction: 0.25,
+    min_edge_pct: 4.0,
+    telegram_chat_id: '',
+    monthly_stake_limit: 200,
+    show_on_leaderboard: 1,
+    favourite_teams: [],
+    preferred_leagues: ['E0', 'E1', 'E2', 'E3'],
+    default_stake: 10,
+    active_slip: [],
+    is_guest: true,
+  };
+}
+
 function getGhState(snap) {
+  try {
+    localStorage.removeItem('accalab_gh_state_v1');
+  } catch { }
   let raw = null;
   try {
     raw = JSON.parse(localStorage.getItem(GH_STATE_KEY) || 'null');
   } catch {
     raw = null;
   }
-  if (raw && Array.isArray(raw.users) && raw.users.length) {
+  if (raw && Array.isArray(raw.users)) {
     return raw;
   }
   const users = cloneJson(snap.dashboard?.users || []);
   const passwordsByUserId = {};
-  for (const u of users) passwordsByUserId[u.id] = 'accalab';
   const watchedByUser = {};
   const activeU = snap.dashboard?.active_user;
-  if (activeU) {
+  if (activeU && Number(activeU.id) > 0) {
     watchedByUser[activeU.id] = cloneJson(snap.dashboard?.watched_fixture_ids || []);
   }
   const betsByUser = {};
@@ -431,9 +453,9 @@ function getGhState(snap) {
     customOddsByFixture: {},
     alertsRead: false,
     nextIds: {
-      user: Math.max(10, ...users.map((u) => Number(u.id) || 0)) + 1,
-      bet: 1000,
-      acca: 1000,
+      user: Math.max(0, ...users.map((u) => Number(u.id) || 0)) + 1,
+      bet: 1,
+      acca: 1,
     },
   };
   localStorage.setItem(GH_STATE_KEY, JSON.stringify(init));
@@ -459,14 +481,17 @@ function sanitizeStaticUser(u) {
 function resolveStaticUser(gh, queryParams) {
   if (gh.authenticatedUserId) {
     const authed = gh.users.find((u) => Number(u.id) === Number(gh.authenticatedUserId));
-    if (authed) return authed;
+    if (authed) return { ...authed, is_guest: false };
   }
   const reqId = Number(queryParams.get('user_id') || state.activeUserId);
-  if (reqId) {
+  if (reqId > 0) {
     const picked = gh.users.find((u) => Number(u.id) === reqId);
-    if (picked) return picked;
+    if (picked) return { ...picked, is_guest: false };
   }
-  return gh.users[0];
+  if (gh.users.length) {
+    return { ...gh.users[0], is_guest: false };
+  }
+  return createGuestUser();
 }
 
 function computeStaticBestEdge(fix) {
@@ -725,7 +750,7 @@ async function staticApi(path, opts = {}) {
     const sugg = buildStaticSuggestBet(gh, snap, activeUser);
 
     return {
-      authenticated: Boolean(gh.authenticatedUserId && Number(gh.authenticatedUserId) === Number(activeUser.id)),
+      authenticated: Boolean(gh.authenticatedUserId && Number(gh.authenticatedUserId) === Number(activeUser.id) && Number(activeUser.id) > 0),
       active_user: sanitizeStaticUser(activeUser),
       users: gh.users.map(sanitizeStaticUser),
       watched_fixture_ids: watchedIds,
@@ -913,6 +938,9 @@ async function staticApi(path, opts = {}) {
       const stake = Number(bodyData.stake ?? 10.0);
       if (!Number.isFinite(stake) || stake <= 0) throw new Error('Stake must be positive');
       const targetUser = gh.users.find((u) => Number(u.id) === Number(bodyData.user_id)) || activeUser;
+      if (!targetUser || Number(targetUser.id) === 0) {
+        throw new Error('Please create your account or sign in first.');
+      }
       const ev = evaluateAccaClient(legs, stake);
       const betId = gh.nextIds.bet++;
       const now = new Date().toISOString();
@@ -980,7 +1008,8 @@ async function staticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/users' && method === 'POST') {
-    if ((bodyData.invite_code || '').trim() !== 'ACCALAB2026') {
+    const inv = (bodyData.invite_code || '').trim();
+    if (inv && inv !== 'ACCALAB2026') {
       throw new Error('Invalid group invite code');
     }
     const displayName = (bodyData.display_name || '').trim();
@@ -1012,14 +1041,15 @@ async function staticApi(path, opts = {}) {
 
   if (pathname === '/api/auth/me') {
     return {
-      authenticated: Boolean(gh.authenticatedUserId && Number(gh.authenticatedUserId) === Number(activeUser.id)),
+      authenticated: Boolean(gh.authenticatedUserId && Number(gh.authenticatedUserId) === Number(activeUser.id) && Number(activeUser.id) > 0),
       user: sanitizeStaticUser(activeUser),
       all_teams: snap.dashboard?.all_teams_by_league || {},
     };
   }
 
   if (pathname === '/api/auth/register' && method === 'POST') {
-    if ((bodyData.invite_code || '').trim() !== 'ACCALAB2026') {
+    const inv = (bodyData.invite_code || '').trim();
+    if (inv && inv !== 'ACCALAB2026') {
       throw new Error('Invalid group invite code');
     }
     const displayName = (bodyData.display_name || '').trim();
@@ -1068,8 +1098,8 @@ async function staticApi(path, opts = {}) {
         String(u.email || '').toLowerCase() === ident ||
         String(u.display_name || '').toLowerCase() === ident
     );
-    const expectedPw = match ? gh.passwordsByUserId[match.id] || 'accalab' : null;
-    if (!match || password !== expectedPw) {
+    const expectedPw = match ? gh.passwordsByUserId[match.id] : null;
+    if (!match || !expectedPw || password !== expectedPw) {
       throw new Error('Invalid username or password');
     }
     gh.authenticatedUserId = match.id;
@@ -1084,10 +1114,13 @@ async function staticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/auth/password' && method === 'POST') {
+    if (!activeUser || Number(activeUser.id) === 0) {
+      throw new Error('Please create your account or sign in first.');
+    }
     const curr = String(bodyData.current_password || '');
     const newPw = String(bodyData.new_password || '');
     if (newPw.length < 4) throw new Error('New password must be at least 4 characters');
-    if (curr !== (gh.passwordsByUserId[activeUser.id] || 'accalab')) {
+    if (!gh.passwordsByUserId[activeUser.id] || curr !== gh.passwordsByUserId[activeUser.id]) {
       throw new Error('Current password is incorrect');
     }
     gh.passwordsByUserId[activeUser.id] = newPw;
@@ -1097,6 +1130,9 @@ async function staticApi(path, opts = {}) {
 
   if (pathname === '/api/user/preferences' && method === 'POST') {
     const target = gh.users.find((u) => Number(u.id) === Number(activeUser.id));
+    if (!target || Number(target.id) === 0) {
+      throw new Error('Please create your account or sign in first.');
+    }
     if (Array.isArray(bodyData.favourite_teams)) {
       target.favourite_teams = bodyData.favourite_teams.filter((t) => String(t).trim());
     } else if (bodyData.toggle_team) {
@@ -1143,6 +1179,9 @@ async function staticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/user/watchlist/toggle' && method === 'POST') {
+    if (!activeUser || Number(activeUser.id) === 0) {
+      throw new Error('Please create your account or sign in first.');
+    }
     const fid = Number(bodyData.fixture_id);
     if (!fid) throw new Error('Valid fixture_id is required');
     const cur = gh.watchedByUser[activeUser.id] || [];
@@ -1159,8 +1198,13 @@ async function staticApi(path, opts = {}) {
 
   if (pathname === '/api/user/slip' && method === 'PUT') {
     const target = gh.users.find((u) => Number(u.id) === Number(activeUser.id));
-    target.active_slip = Array.isArray(bodyData.legs) ? bodyData.legs : [];
-    target.default_stake = Math.max(1.0, Number(bodyData.stake || 10.0));
+    const legs = Array.isArray(bodyData.legs) ? bodyData.legs : [];
+    const stake = Math.max(1.0, Number(bodyData.stake || 10.0));
+    if (!target || Number(target.id) === 0) {
+      return { ok: true, leg_count: legs.length, default_stake: stake };
+    }
+    target.active_slip = legs;
+    target.default_stake = stake;
     saveGhState(gh);
     return { ok: true, leg_count: target.active_slip.length, default_stake: target.default_stake };
   }
@@ -1171,6 +1215,9 @@ async function staticApi(path, opts = {}) {
       return { saved_accas: cloneJson(cur) };
     }
     if (method === 'POST') {
+      if (!activeUser || Number(activeUser.id) === 0) {
+        throw new Error('Please create your account or sign in first.');
+      }
       const legs = bodyData.legs || [];
       if (!legs.length) throw new Error('Cannot save an empty accumulator');
       const stake = Math.max(1.0, Number(bodyData.stake || 10.0));
@@ -1194,6 +1241,9 @@ async function staticApi(path, opts = {}) {
 
   const delAccaMatch = pathname.match(/^\/api\/user\/saved-accas\/(\d+)$/);
   if (delAccaMatch && method === 'DELETE') {
+    if (!activeUser || Number(activeUser.id) === 0) {
+      throw new Error('Please create your account or sign in first.');
+    }
     const accaId = Number(delAccaMatch[1]);
     const cur = gh.savedAccasByUser[activeUser.id] || [];
     const next = cur.filter((a) => Number(a.id) !== accaId);
@@ -1287,11 +1337,16 @@ function saveSlip(syncServer = true) {
     api('/api/user/slip', {
       method: 'PUT',
       body: JSON.stringify({ legs: state.slip, stake: state.slipStake }),
-    }).catch(() => {});
+    }).catch(() => { });
   }
 }
 
 async function toggleWatchFixture(fixtureId) {
+  if (!state.activeUserId || Number(state.activeUserId) === 0) {
+    showToast('Create your account first to save watchlist matches!');
+    openAuthModal('register');
+    return;
+  }
   try {
     const res = await api('/api/user/watchlist/toggle', {
       method: 'POST',
@@ -1303,10 +1358,16 @@ async function toggleWatchFixture(fixtureId) {
     renderActiveTab();
   } catch (err) {
     showToast(err.message, true);
+    if (Number(state.activeUserId) === 0) openAuthModal('register');
   }
 }
 
 async function toggleFavouriteTeam(teamName) {
+  if (!state.activeUserId || Number(state.activeUserId) === 0) {
+    showToast('Create your account first to save favourite clubs!');
+    openAuthModal('register');
+    return;
+  }
   try {
     const res = await api('/api/user/preferences', {
       method: 'POST',
@@ -1319,6 +1380,7 @@ async function toggleFavouriteTeam(teamName) {
     renderActiveTab();
   } catch (err) {
     showToast(err.message, true);
+    if (Number(state.activeUserId) === 0) openAuthModal('register');
   }
 }
 
@@ -1375,11 +1437,11 @@ async function renderSlip() {
     .join('') +
     (evalData.warnings?.length
       ? evalData.warnings
-          .map(
-            (w) =>
-              `<div class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs">⚠️ ${esc(w)}</div>`
-          )
-          .join('')
+        .map(
+          (w) =>
+            `<div class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs">⚠️ ${esc(w)}</div>`
+        )
+        .join('')
       : '');
 
   body.querySelectorAll('[data-rm-leg]').forEach((btn) =>
@@ -1426,31 +1488,49 @@ async function renderSlip() {
     exportToBet365(state.slip, state.slipStake, customName || 'AccaLab Custom Slip');
   });
   document.getElementById('slip-save-draft-btn').addEventListener('click', async () => {
-    const customName = document.getElementById('slip-notes-input').value.trim();
-    const res = await api('/api/user/saved-accas', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: customName || `Saved ${state.slip.length}-Fold (${fmtOdds(evalData.combined_odds)})`,
-        stake: state.slipStake,
-        legs: state.slip,
-      }),
-    });
-    showToast(`Saved draft "${res.saved_acca.name}" to your account!`);
-    if (state.activeTab === 'acca') renderAccaTab();
+    if (!state.activeUserId || Number(state.activeUserId) === 0) {
+      showToast('Create your account first to save accumulator drafts!');
+      openAuthModal('register');
+      return;
+    }
+    try {
+      const customName = document.getElementById('slip-notes-input').value.trim();
+      const res = await api('/api/user/saved-accas', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: customName || `Saved ${state.slip.length}-Fold (${fmtOdds(evalData.combined_odds)})`,
+          stake: state.slipStake,
+          legs: state.slip,
+        }),
+      });
+      showToast(`Saved draft "${res.saved_acca.name}" to your account!`);
+      if (state.activeTab === 'acca') renderAccaTab();
+    } catch (err) {
+      showToast(err.message, true);
+    }
   });
   document.getElementById('slip-place-btn').addEventListener('click', async () => {
-    const notes = document.getElementById('slip-notes-input').value;
-    await api('/api/bets', {
-      method: 'POST',
-      body: JSON.stringify({ user_id: state.activeUserId, stake: state.slipStake, legs: state.slip, notes }),
-    });
-    state.slip = [];
-    saveSlip();
-    renderSlip();
-    document.getElementById('slip-drawer').classList.add('hidden');
-    showToast('Bet logged to your tracker!');
-    loadDashboard(false);
-    if (state.activeTab === 'tracker') renderActiveTab();
+    if (!state.activeUserId || Number(state.activeUserId) === 0) {
+      showToast('Create your account first to log bets to your tracker!');
+      openAuthModal('register');
+      return;
+    }
+    try {
+      const notes = document.getElementById('slip-notes-input').value;
+      await api('/api/bets', {
+        method: 'POST',
+        body: JSON.stringify({ user_id: state.activeUserId, stake: state.slipStake, legs: state.slip, notes }),
+      });
+      state.slip = [];
+      saveSlip();
+      renderSlip();
+      document.getElementById('slip-drawer').classList.add('hidden');
+      showToast('Bet logged to your tracker!');
+      loadDashboard(false);
+      if (state.activeTab === 'tracker') renderActiveTab();
+    } catch (err) {
+      showToast(err.message, true);
+    }
   });
 }
 
@@ -1473,8 +1553,8 @@ function formBadges(formStr) {
         ch === 'W'
           ? 'bg-emerald-500/25 text-emerald-300 border-emerald-500/40'
           : ch === 'D'
-          ? 'bg-amber-500/25 text-amber-300 border-amber-500/40'
-          : 'bg-rose-500/25 text-rose-300 border-rose-500/40';
+            ? 'bg-amber-500/25 text-amber-300 border-amber-500/40'
+            : 'bg-rose-500/25 text-rose-300 border-rose-500/40';
       return `<span class="inline-block w-5 h-5 leading-5 text-center rounded text-[10px] font-bold border ${cls}">${esc(ch)}</span>`;
     })
     .join(' ');
@@ -1484,52 +1564,79 @@ async function loadDashboard(syncSlipFromServer = true) {
   const d = await api('/api/dashboard');
   state.dashboard = d;
   state.authenticated = Boolean(d.authenticated);
-  if (d.active_user) {
-    state.activeUserId = d.active_user.id;
+  const activeU = d.active_user || null;
+  const hasRealUser = Boolean(activeU && Number(activeU.id) > 0);
+  if (hasRealUser) {
+    state.activeUserId = Number(activeU.id);
     localStorage.setItem('accalab_user_id', String(state.activeUserId));
-    state.favouriteTeams = d.active_user.favourite_teams || [];
-    state.preferredLeagues = d.active_user.preferred_leagues || ['E0', 'E1', 'E2', 'E3'];
+    state.favouriteTeams = activeU.favourite_teams || [];
+    state.preferredLeagues = activeU.preferred_leagues || ['E0', 'E1', 'E2', 'E3'];
     if (syncSlipFromServer) {
-      state.slip = Array.isArray(d.active_user.active_slip) ? d.active_user.active_slip : [];
-      state.slipStake = Number(d.active_user.default_stake || 10);
+      state.slip = Array.isArray(activeU.active_slip) ? activeU.active_slip : [];
+      state.slipStake = Number(activeU.default_stake || 10);
     }
-  } else if (!d.users.find((u) => u.id === state.activeUserId) && d.users.length) {
-    state.activeUserId = d.users[0].id;
-    localStorage.setItem('accalab_user_id', String(state.activeUserId));
+  } else {
+    state.activeUserId = 0;
+    localStorage.removeItem('accalab_user_id');
+    state.favouriteTeams = [];
+    state.preferredLeagues = ['E0', 'E1', 'E2', 'E3'];
   }
   state.watchedIds = d.watched_fixture_ids || [];
 
   const avatarEl = document.getElementById('sidebar-avatar');
-  if (avatarEl && d.active_user) {
-    avatarEl.style.backgroundColor = d.active_user.avatar_color || '#10b981';
-    avatarEl.textContent = (d.active_user.display_name || d.active_user.username || '?')
+  if (avatarEl && activeU) {
+    avatarEl.style.backgroundColor = activeU.avatar_color || '#10b981';
+    avatarEl.textContent = (activeU.display_name || activeU.username || 'G')
       .trim()
       .slice(0, 2)
       .toUpperCase();
   }
   const usernameEl = document.getElementById('sidebar-username');
-  if (usernameEl && d.active_user) {
-    usernameEl.textContent = d.active_user.display_name || d.active_user.username;
+  if (usernameEl && activeU) {
+    usernameEl.textContent = activeU.display_name || activeU.username || 'Guest';
   }
   const authStatusEl = document.getElementById('sidebar-auth-status');
   if (authStatusEl) {
-    authStatusEl.textContent = d.authenticated
-      ? `Signed in • ${(d.favourite_teams || []).length} clubs`
-      : 'Demo mode • Sign in';
-    authStatusEl.className = `text-[11px] truncate ${
-      d.authenticated ? 'text-emerald-400' : 'text-amber-300'
-    }`;
+    if (!hasRealUser) {
+      authStatusEl.textContent = 'No account yet • Click to set up';
+      authStatusEl.className = 'text-[11px] truncate text-amber-300';
+    } else if (state.authenticated) {
+      authStatusEl.textContent = 'Signed in • Saved to profile';
+      authStatusEl.className = 'text-[11px] truncate text-emerald-400';
+    } else {
+      authStatusEl.textContent = 'Member profile • Sign in';
+      authStatusEl.className = 'text-[11px] truncate text-amber-300';
+    }
   }
 
-  const optionsHtml = d.users
+  const openAuthSidebarBtn = document.getElementById('open-auth-modal-btn');
+  if (openAuthSidebarBtn) {
+    openAuthSidebarBtn.textContent = hasRealUser ? 'Account' : 'Set Up Account';
+  }
+  const openAuthMobileBtn = document.getElementById('open-auth-modal-mobile-btn');
+  if (openAuthMobileBtn) {
+    openAuthMobileBtn.textContent = hasRealUser ? 'Account' : 'Set Up Account';
+  }
+
+  const members = d.users || [];
+  const optionsHtml = members
     .map(
       (u) =>
         `<option value="${u.id}" ${u.id === state.activeUserId ? 'selected' : ''}>${esc(u.display_name)} (${fmtGbp(u.bankroll)})</option>`
     )
     .join('');
-  document.getElementById('user-switcher').innerHTML = optionsHtml;
-  document.getElementById('user-switcher-mobile').innerHTML = optionsHtml;
-  document.getElementById('sidebar-bankroll').textContent = fmtGbp(d.active_user.bankroll);
+  const switcherWrap = document.getElementById('user-switcher-wrap');
+  if (switcherWrap) {
+    switcherWrap.classList.toggle('hidden', members.length <= 1);
+  }
+  const switcherEl = document.getElementById('user-switcher');
+  if (switcherEl) switcherEl.innerHTML = optionsHtml;
+  const mobileSwitcherEl = document.getElementById('user-switcher-mobile');
+  if (mobileSwitcherEl) {
+    mobileSwitcherEl.innerHTML = optionsHtml;
+    mobileSwitcherEl.classList.toggle('hidden', members.length <= 1);
+  }
+  document.getElementById('sidebar-bankroll').textContent = fmtGbp(activeU?.bankroll ?? 250);
 
   const badge = document.getElementById('sidebar-alert-badge');
   if (d.counts.unread_alerts > 0) {
@@ -1583,10 +1690,10 @@ async function renderFixturesTab() {
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
           ${forYou
-            .slice(0, 3)
-            .map((f) => {
-              const best = f.best_edge || {};
-              return `
+        .slice(0, 3)
+        .map((f) => {
+          const best = f.best_edge || {};
+          return `
             <div class="p-3 rounded-xl bg-surface/90 border border-slate-800 flex items-center justify-between gap-2">
               <div class="min-w-0">
                 <div class="text-[10px] text-emerald-400 font-semibold">${esc(f.league_name)} • ${esc(f.match_date)}</div>
@@ -1595,8 +1702,8 @@ async function renderFixturesTab() {
               </div>
               <button data-open-preview="${f.id}" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600 text-[11px] font-semibold text-white">Open</button>
             </div>`;
-            })
-            .join('')}
+        })
+        .join('')}
         </div>
       </div>`
       : '';
@@ -1622,38 +1729,34 @@ async function renderFixturesTab() {
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-slate-700 text-amber-300">${fs.eval?.expected_value_pct >= 0 ? '+' : ''}${fs.eval?.expected_value_pct ?? 0}% EV</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-cyan-500/40 text-cyan-300">${fs.legs.length} ${fs.legs.length === 1 ? 'Leg' : 'Legs'}</span>
           </div>
-          ${
-            Object.keys(riskMap).length
-              ? `<div class="flex flex-wrap gap-1.5">
+          ${Object.keys(riskMap).length
+        ? `<div class="flex flex-wrap gap-1.5">
                   ${riskPillSpecs
-                    .map(
-                      ([rid, rlabel]) => `
-                    <button type="button" data-spot-risk="${rid}" class="px-2.5 py-1 rounded-full text-[11px] font-bold border transition ${
-                        activeRisk === rid
-                          ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm shadow-emerald-500/30'
-                          : 'bg-surface/90 text-slate-300 border-slate-700 hover:border-slate-500'
-                      }">${rlabel}</button>`
-                    )
-                    .join('')}
+          .map(
+            ([rid, rlabel]) => `
+                    <button type="button" data-spot-risk="${rid}" class="px-2.5 py-1 rounded-full text-[11px] font-bold border transition ${activeRisk === rid
+                ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm shadow-emerald-500/30'
+                : 'bg-surface/90 text-slate-300 border-slate-700 hover:border-slate-500'
+              }">${rlabel}</button>`
+          )
+          .join('')}
                 </div>`
-              : ''
-          }
+        : ''
+      }
         </div>
         <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div class="space-y-1 min-w-0">
             <div class="text-base md:text-lg font-extrabold text-white truncate">
-              ${
-                fs.legs.length === 1
-                  ? `${esc(fs.legs[0].selection_label)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds || fs.legs[0].odds)}</span> <span class="text-xs font-medium text-slate-300 ml-1">(${esc(fs.legs[0].home_team)} vs ${esc(fs.legs[0].away_team)})</span>`
-                  : `${esc(fs.title)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds)}</span> <span class="text-xs font-semibold text-cyan-300 ml-1">• £${Number(fs.stake).toFixed(0)} → ${fmtGbp(fs.eval?.potential_return)}</span>`
-              }
+              ${fs.legs.length === 1
+        ? `${esc(fs.legs[0].selection_label)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds || fs.legs[0].odds)}</span> <span class="text-xs font-medium text-slate-300 ml-1">(${esc(fs.legs[0].home_team)} vs ${esc(fs.legs[0].away_team)})</span>`
+        : `${esc(fs.title)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds)}</span> <span class="text-xs font-semibold text-cyan-300 ml-1">• £${Number(fs.stake).toFixed(0)} → ${fmtGbp(fs.eval?.potential_return)}</span>`
+      }
             </div>
             <div class="text-xs text-slate-300 truncate">
-              ${
-                fs.legs.length === 1
-                  ? esc((fs.reasons && fs.reasons[0]) || fs.subtitle)
-                  : fs.legs.map((l) => `${l.selection_label} (${fmtOdds(l.odds)})`).join(' • ')
-              }
+              ${fs.legs.length === 1
+        ? esc((fs.reasons && fs.reasons[0]) || fs.subtitle)
+        : fs.legs.map((l) => `${l.selection_label} (${fmtOdds(l.odds)})`).join(' • ')
+      }
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-2 shrink-0">
@@ -1676,49 +1779,46 @@ async function renderFixturesTab() {
 
     <div class="flex flex-wrap gap-2">
       ${divTabs
-        .map(
-          ([code, label]) => `
-        <button data-div="${code}" class="div-pill px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
-          state.activeDiv === code
+      .map(
+        ([code, label]) => `
+        <button data-div="${code}" class="div-pill px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${state.activeDiv === code
             ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
             : 'bg-panel text-slate-300 border-slate-700/80 hover:bg-slate-800'
-        }">${label}</button>`
-        )
-        .join('')}
+          }">${label}</button>`
+      )
+      .join('')}
     </div>
 
     ${featuredHtml}
     ${forYouHtml}
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      ${
-        data.fixtures.length
-          ? data.fixtures
-              .map((f) => {
-                const best = f.best_edge || {};
-                const hasEdge = best.edge_pct >= 3.0;
-                const isWatched = Boolean(f.is_watched || state.watchedIds.includes(f.id));
-                const homeFav = state.favouriteTeams.includes(f.home_team);
-                const awayFav = state.favouriteTeams.includes(f.away_team);
-                const isFavMatch = Boolean(f.is_favourite_match || homeFav || awayFav);
-                const inH = isInSlip(f.id, '1X2_H');
-                const inD = isInSlip(f.id, '1X2_D');
-                const inA = isInSlip(f.id, '1X2_A');
-                const oddsBtnCls = (on) =>
-                  on
-                    ? 'quick-leg py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400 text-emerald-100 ring-1 ring-emerald-400/40 transition'
-                    : 'quick-leg py-1.5 rounded-xl bg-card hover:bg-surface border border-slate-700/80 transition';
-                return `
+      ${data.fixtures.length
+      ? data.fixtures
+        .map((f) => {
+          const best = f.best_edge || {};
+          const hasEdge = best.edge_pct >= 3.0;
+          const isWatched = Boolean(f.is_watched || state.watchedIds.includes(f.id));
+          const homeFav = state.favouriteTeams.includes(f.home_team);
+          const awayFav = state.favouriteTeams.includes(f.away_team);
+          const isFavMatch = Boolean(f.is_favourite_match || homeFav || awayFav);
+          const inH = isInSlip(f.id, '1X2_H');
+          const inD = isInSlip(f.id, '1X2_D');
+          const inA = isInSlip(f.id, '1X2_A');
+          const oddsBtnCls = (on) =>
+            on
+              ? 'quick-leg py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400 text-emerald-100 ring-1 ring-emerald-400/40 transition'
+              : 'quick-leg py-1.5 rounded-xl bg-card hover:bg-surface border border-slate-700/80 transition';
+          return `
           <div class="bg-panel card-hover border ${isFavMatch ? 'border-amber-500/45' : 'border-slate-800/90'} hover:border-emerald-500/40 rounded-2xl p-4 flex flex-col justify-between gap-3">
             <div>
               <div class="flex items-center justify-between gap-2 text-xs">
                 <span class="font-semibold text-emerald-400 truncate">${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')}</span>
                 <div class="flex items-center gap-1.5 shrink-0">
-                  <button data-watch-fid="${f.id}" title="Save to Watchlist" class="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition ${
-                    isWatched
-                      ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
-                      : 'bg-surface border-slate-700 text-slate-400 hover:text-white'
-                  }">${isWatched ? '🔖 Saved' : '☆ Watch'}</button>
+                  <button data-watch-fid="${f.id}" title="Save to Watchlist" class="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition ${isWatched
+              ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
+              : 'bg-surface border-slate-700 text-slate-400 hover:text-white'
+            }">${isWatched ? '🔖 Saved' : '☆ Watch'}</button>
                   ${oddsBadge(f.odds_source)}
                 </div>
               </div>
@@ -1780,10 +1880,10 @@ async function renderFixturesTab() {
               <button data-open-preview="${f.id}" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600 text-white font-medium transition">Preview →</button>
             </div>
           </div>`;
-              })
-              .join('')
-          : `<div class="col-span-2 text-center py-12 text-slate-400">No fixtures match your filter.</div>`
-      }
+        })
+        .join('')
+      : `<div class="col-span-2 text-center py-12 text-slate-400">No fixtures match your filter.</div>`
+    }
     </div>
   `;
 
@@ -1892,21 +1992,18 @@ async function openMatchPreview(fixtureId) {
   body.innerHTML = `
     <!-- Quick Personalisation Actions -->
     <div class="flex flex-wrap items-center gap-2 text-xs">
-      <button id="modal-watch-btn" type="button" class="px-3 py-1.5 rounded-lg border font-semibold transition ${
-        isWatched
-          ? 'bg-amber-500/20 border-amber-400 text-amber-200'
-          : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-      }">${isWatched ? '🔖 In Watchlist' : '☆ Watch Match'}</button>
-      <button type="button" data-modal-fav="${esc(f.home_team)}" class="px-3 py-1.5 rounded-lg border font-semibold transition ${
-        homeFav
-          ? 'bg-amber-500/20 border-amber-400 text-amber-200'
-          : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-      }">${homeFav ? '★ Following' : '☆ Follow'} ${esc(f.home_team)}</button>
-      <button type="button" data-modal-fav="${esc(f.away_team)}" class="px-3 py-1.5 rounded-lg border font-semibold transition ${
-        awayFav
-          ? 'bg-amber-500/20 border-amber-400 text-amber-200'
-          : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-      }">${awayFav ? '★ Following' : '☆ Follow'} ${esc(f.away_team)}</button>
+      <button id="modal-watch-btn" type="button" class="px-3 py-1.5 rounded-lg border font-semibold transition ${isWatched
+      ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+      : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
+    }">${isWatched ? '🔖 In Watchlist' : '☆ Watch Match'}</button>
+      <button type="button" data-modal-fav="${esc(f.home_team)}" class="px-3 py-1.5 rounded-lg border font-semibold transition ${homeFav
+      ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+      : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
+    }">${homeFav ? '★ Following' : '☆ Follow'} ${esc(f.home_team)}</button>
+      <button type="button" data-modal-fav="${esc(f.away_team)}" class="px-3 py-1.5 rounded-lg border font-semibold transition ${awayFav
+      ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+      : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
+    }">${awayFav ? '★ Following' : '☆ Follow'} ${esc(f.away_team)}</button>
     </div>
 
     <!-- AI & Analyst Summary -->
@@ -1918,11 +2015,11 @@ async function openMatchPreview(fixtureId) {
       <p id="ai-summary-text" class="text-sm text-slate-200 leading-relaxed">${esc(f.ai_summary)}</p>
       <div class="flex flex-wrap gap-2 pt-1">
         ${(f.tipster_consensus?.signals || [])
-          .map(
-            (s) =>
-              `<span class="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-[11px]"><b class="text-slate-300">${esc(s.name)}:</b> <span class="text-emerald-300">${esc(s.pick)}</span> <span class="text-slate-400">(${esc(s.detail)})</span></span>`
-          )
-          .join('')}
+      .map(
+        (s) =>
+          `<span class="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-[11px]"><b class="text-slate-300">${esc(s.name)}:</b> <span class="text-emerald-300">${esc(s.pick)}</span> <span class="text-slate-400">(${esc(s.detail)})</span></span>`
+      )
+      .join('')}
       </div>
     </div>
 
@@ -1947,9 +2044,9 @@ async function openMatchPreview(fixtureId) {
           </thead>
           <tbody>
             ${d.markets
-              .map((m) => {
-                const edgeCls = m.edge_pct >= 3 ? 'text-emerald-400 font-bold' : m.edge_pct >= 0 ? 'text-amber-300' : 'text-slate-400';
-                return `
+      .map((m) => {
+        const edgeCls = m.edge_pct >= 3 ? 'text-emerald-400 font-bold' : m.edge_pct >= 0 ? 'text-amber-300' : 'text-slate-400';
+        return `
               <tr class="border-b border-slate-800/60">
                 <td class="py-2 pr-2 font-medium text-white">${esc(m.label)}</td>
                 <td class="py-2 px-2 text-right">${m.model_prob_pct}%</td>
@@ -1958,15 +2055,14 @@ async function openMatchPreview(fixtureId) {
                 <td class="py-2 px-2 text-right ${edgeCls}">${m.edge_pct >= 0 ? '+' : ''}${m.edge_pct}%</td>
                 <td class="py-2 px-2 text-right text-slate-300">${m.suggested_stake > 0 ? fmtGbp(m.suggested_stake) : '—'}</td>
                 <td class="py-2 pl-2 text-right">
-                  ${
-                    m.b365_odds
-                      ? `<button data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: m.market, selection_label: m.label, odds: m.b365_odds, model_prob: m.model_prob_pct / 100 }))}' class="modal-add-leg px-2.5 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white">+ Slip</button>`
-                      : ''
-                  }
+                  ${m.b365_odds
+            ? `<button data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: m.market, selection_label: m.label, odds: m.b365_odds, model_prob: m.model_prob_pct / 100 }))}' class="modal-add-leg px-2.5 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white">+ Slip</button>`
+            : ''
+          }
                 </td>
               </tr>`;
-              })
-              .join('')}
+      })
+      .join('')}
           </tbody>
         </table>
       </div>
@@ -1992,16 +2088,15 @@ async function openMatchPreview(fixtureId) {
         </div>
         <div class="pt-2 border-t border-slate-800">
           <div class="font-semibold text-slate-300 mb-1">Recent Head-to-Head</div>
-          ${
-            d.h2h.length
-              ? d.h2h
-                  .map(
-                    (h) =>
-                      `<div class="text-slate-400 flex justify-between"><span>${esc(h.match_date)}</span><span class="text-slate-200">${esc(h.home_team)} ${h.fthg}–${h.ftag} ${esc(h.away_team)}</span></div>`
-                  )
-                  .join('')
-              : '<div class="text-slate-500">No league H2H in 24/25–26/27 dataset.</div>'
-          }
+          ${d.h2h.length
+      ? d.h2h
+        .map(
+          (h) =>
+            `<div class="text-slate-400 flex justify-between"><span>${esc(h.match_date)}</span><span class="text-slate-200">${esc(h.home_team)} ${h.fthg}–${h.ftag} ${esc(h.away_team)}</span></div>`
+        )
+        .join('')
+      : '<div class="text-slate-500">No league H2H in 24/25–26/27 dataset.</div>'
+    }
         </div>
       </div>
 
@@ -2032,16 +2127,15 @@ async function openMatchPreview(fixtureId) {
 
         <div class="pt-2 border-t border-slate-800 space-y-1.5">
           <h5 class="font-semibold text-white text-xs">Club News (BBC / Sky / Guardian RSS)</h5>
-          ${
-            d.matched_news.length
-              ? d.matched_news
-                  .map(
-                    (n) =>
-                      `<a href="${esc(n.url)}" target="_blank" rel="noopener" class="block text-xs text-emerald-300 hover:underline">[${esc(n.source)}] ${esc(n.title)}</a>`
-                  )
-                  .join('')
-              : '<div class="text-xs text-slate-500">No club headlines matched in latest RSS window.</div>'
-          }
+          ${d.matched_news.length
+      ? d.matched_news
+        .map(
+          (n) =>
+            `<a href="${esc(n.url)}" target="_blank" rel="noopener" class="block text-xs text-emerald-300 hover:underline">[${esc(n.source)}] ${esc(n.title)}</a>`
+        )
+        .join('')
+      : '<div class="text-xs text-slate-500">No club headlines matched in latest RSS window.</div>'
+    }
         </div>
       </div>
 
@@ -2109,11 +2203,11 @@ async function renderValueTab() {
 
   const opps = state.valMyPrefsOnly
     ? (data.opportunities || []).filter(
-        (o) =>
-          state.preferredLeagues.includes(o.div) ||
-          state.favouriteTeams.includes(o.home_team) ||
-          state.favouriteTeams.includes(o.away_team)
-      )
+      (o) =>
+        state.preferredLeagues.includes(o.div) ||
+        state.favouriteTeams.includes(o.home_team) ||
+        state.favouriteTeams.includes(o.away_team)
+    )
     : data.opportunities || [];
 
   main.innerHTML = `
@@ -2162,14 +2256,13 @@ async function renderValueTab() {
           </tr>
         </thead>
         <tbody>
-          ${
-            opps.length
-              ? opps
-                  .map((o) => {
-                    const isFav =
-                      state.favouriteTeams.includes(o.home_team) ||
-                      state.favouriteTeams.includes(o.away_team);
-                    return `
+          ${opps.length
+      ? opps
+        .map((o) => {
+          const isFav =
+            state.favouriteTeams.includes(o.home_team) ||
+            state.favouriteTeams.includes(o.away_team);
+          return `
               <tr class="border-b border-slate-800/70 hover:bg-slate-800/30 ${isFav ? 'bg-amber-500/5' : ''}">
                 <td class="p-3">
                   <div class="font-semibold text-white flex items-center gap-1.5">
@@ -2191,10 +2284,10 @@ async function renderValueTab() {
                   <button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, match_date: o.match_date, home_team: o.home_team, away_team: o.away_team, market: o.market, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold">+ Slip</button>
                 </td>
               </tr>`;
-                  })
-                  .join('')
-              : `<tr><td colspan="8" class="p-8 text-center text-slate-400">No selections exceed +${minEdge}% edge under the current filter.</td></tr>`
-          }
+        })
+        .join('')
+      : `<tr><td colspan="8" class="p-8 text-center text-slate-400">No selections exceed +${minEdge}% edge under the current filter.</td></tr>`
+    }
         </tbody>
       </table>
     </div>
@@ -2229,8 +2322,8 @@ async function renderAccaTab() {
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
       ${data.presets
-        .map(
-          (p) => `
+      .map(
+        (p) => `
         <div class="bg-panel card-hover border border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-3">
           <div>
             <div class="flex justify-between items-start gap-2">
@@ -2240,8 +2333,8 @@ async function renderAccaTab() {
             <p class="text-xs text-slate-400 mt-1">${esc(p.subtitle)}</p>
             <div class="mt-3 space-y-2">
               ${p.legs
-                .map(
-                  (l) => `
+            .map(
+              (l) => `
                 <div class="p-2 rounded-lg bg-card border border-slate-700/70 text-xs flex justify-between gap-2">
                   <div>
                     <div class="text-slate-400">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
@@ -2252,8 +2345,8 @@ async function renderAccaTab() {
                     <div class="text-[10px] text-slate-400">${(l.model_prob * 100).toFixed(0)}%</div>
                   </div>
                 </div>`
-                )
-                .join('')}
+            )
+            .join('')}
             </div>
           </div>
           <div class="pt-3 border-t border-slate-800 space-y-2 text-xs">
@@ -2267,8 +2360,8 @@ async function renderAccaTab() {
             </div>
           </div>
         </div>`
-        )
-        .join('')}
+      )
+      .join('')}
     </div>
 
     <!-- Saved Draft Accas -->
@@ -2277,12 +2370,11 @@ async function renderAccaTab() {
         <h3 class="font-bold text-white text-base">💾 Saved Draft Accas (${savedAccas.length})</h3>
         <span class="text-xs text-slate-400">Saved to your account across devices</span>
       </div>
-      ${
-        savedAccas.length
-          ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      ${savedAccas.length
+      ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
               ${savedAccas
-                .map(
-                  (a) => `
+        .map(
+          (a) => `
                 <div class="p-3.5 rounded-xl bg-card card-hover border border-slate-800 flex flex-col justify-between gap-2.5 text-xs">
                   <div>
                     <div class="flex items-center justify-between gap-2">
@@ -2292,10 +2384,10 @@ async function renderAccaTab() {
                     <div class="text-[11px] text-slate-400 mt-1">${(a.legs || []).length} legs • Combined <b class="text-emerald-400 font-mono">${fmtOdds(a.combined_odds)}</b> • Stake ${fmtGbp(a.stake)} • Saved ${esc((a.created_at || '').slice(0, 10))}</div>
                     <div class="mt-2 space-y-1">
                       ${(a.legs || [])
-                        .map(
-                          (l) => `<div class="text-[11px] text-slate-300 flex justify-between gap-2"><span class="truncate">${esc(l.selection_label)} (${esc(l.home_team)} vs ${esc(l.away_team)})</span><span class="font-mono text-slate-400">@ ${fmtOdds(l.odds)}</span></div>`
-                        )
-                        .join('')}
+              .map(
+                (l) => `<div class="text-[11px] text-slate-300 flex justify-between gap-2"><span class="truncate">${esc(l.selection_label)} (${esc(l.home_team)} vs ${esc(l.away_team)})</span><span class="font-mono text-slate-400">@ ${fmtOdds(l.odds)}</span></div>`
+              )
+              .join('')}
                     </div>
                   </div>
                   <div class="flex gap-2 pt-2 border-t border-slate-800">
@@ -2304,18 +2396,17 @@ async function renderAccaTab() {
                     <button type="button" data-del-saved="${a.id}" class="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 font-semibold">Delete</button>
                   </div>
                 </div>`
-                )
-                .join('')}
+        )
+        .join('')}
             </div>`
-          : '<p class="text-xs text-slate-400">No saved drafts yet. Add legs to your Bet Slip drawer and click <b>Save Draft</b>.</p>'
-      }
+      : '<p class="text-xs text-slate-400">No saved drafts yet. Add legs to your Bet Slip drawer and click <b>Save Draft</b>.</p>'
+    }
     </div>
 
     <div class="bg-panel border border-slate-800 rounded-2xl p-5">
       <h3 class="font-bold text-white text-base mb-2">Current Custom Slip Diagnostics</h3>
-      ${
-        slipEval
-          ? `
+      ${slipEval
+      ? `
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs mb-3">
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Legs</div><div class="text-lg font-bold text-white">${slipEval.leg_count}</div></div>
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-lg font-bold font-mono text-emerald-400">${fmtOdds(slipEval.combined_odds)}</div></div>
@@ -2324,8 +2415,8 @@ async function renderAccaTab() {
         </div>
         <button id="open-slip-inline" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Open Slip to Place Bet</button>
       `
-          : '<p class="text-xs text-slate-400">Load any preset above or add legs from Match Previews / Value Finder.</p>'
-      }
+      : '<p class="text-xs text-slate-400">Load any preset above or add legs from Match Previews / Value Finder.</p>'
+    }
     </div>
   `;
 
@@ -2412,19 +2503,18 @@ async function renderTrackerTab() {
       <div class="bg-panel border border-slate-800 rounded-2xl p-4">
         <h3 class="text-sm font-bold text-white mb-2">P&amp;L by League</h3>
         <div class="space-y-2 text-xs">
-          ${
-            data.by_league.length
-              ? data.by_league
-                  .map(
-                    (l) => `
+          ${data.by_league.length
+      ? data.by_league
+        .map(
+          (l) => `
               <div class="p-2.5 rounded-xl bg-card border border-slate-800 flex justify-between">
                 <div><div class="font-semibold text-white">${esc(l.league_name)}</div><div class="text-slate-400">${l.bets} legs • ${fmtGbp(l.staked)} staked</div></div>
                 <div class="text-right font-bold ${l.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${l.pnl >= 0 ? '+' : ''}${fmtGbp(l.pnl)}<div class="text-[10px]">${l.roi_pct}% ROI</div></div>
               </div>`
-                  )
-                  .join('')
-              : '<div class="text-slate-500">No settled bets yet.</div>'
-          }
+        )
+        .join('')
+      : '<div class="text-slate-500">No settled bets yet.</div>'
+    }
         </div>
       </div>
     </div>
@@ -2437,17 +2527,16 @@ async function renderTrackerTab() {
           </tr>
         </thead>
         <tbody>
-          ${
-            data.bets.length
-              ? data.bets
-                  .map((b) => {
-                    const stCls =
-                      b.status === 'won'
-                        ? 'text-emerald-400'
-                        : b.status === 'lost'
-                        ? 'text-rose-400'
-                        : 'text-amber-300';
-                    return `
+          ${data.bets.length
+      ? data.bets
+        .map((b) => {
+          const stCls =
+            b.status === 'won'
+              ? 'text-emerald-400'
+              : b.status === 'lost'
+                ? 'text-rose-400'
+                : 'text-amber-300';
+          return `
               <tr class="border-b border-slate-800/70">
                 <td class="p-3 text-slate-400">${esc(b.placed_at.slice(0, 10))}</td>
                 <td class="p-3">
@@ -2459,10 +2548,10 @@ async function renderTrackerTab() {
                 <td class="p-3 text-right ${b.clv_pct >= 0 ? 'text-emerald-400' : 'text-slate-400'}">${b.clv_pct !== null ? `${b.clv_pct >= 0 ? '+' : ''}${b.clv_pct}%` : '—'}</td>
                 <td class="p-3 text-right font-bold ${stCls}">${b.status.toUpperCase()} (${b.pnl >= 0 ? '+' : ''}${fmtGbp(b.pnl)})</td>
               </tr>`;
-                  })
-                  .join('')
-              : `<tr><td colspan="6" class="p-6 text-center text-slate-400">No bets logged yet for this user.</td></tr>`
-          }
+        })
+        .join('')
+      : `<tr><td colspan="6" class="p-6 text-center text-slate-400">No bets logged yet for this user.</td></tr>`
+    }
         </tbody>
       </table>
     </div>
@@ -2520,8 +2609,8 @@ async function renderBacktestTab() {
         </thead>
         <tbody>
           ${data.results
-            .map(
-              (r) => `
+      .map(
+        (r) => `
             <tr class="border-b border-slate-800/70">
               <td class="p-3 font-semibold text-white">${esc(r.league_name)}</td>
               <td class="p-3 text-emerald-300">${esc(r.market)}</td>
@@ -2534,8 +2623,8 @@ async function renderBacktestTab() {
               <td class="p-3 text-right font-bold ${r.kelly_roi_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${r.kelly_roi_pct >= 0 ? '+' : ''}${r.kelly_roi_pct}%</td>
               <td class="p-3 text-right ${r.avg_clv_pct >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${r.avg_clv_pct >= 0 ? '+' : ''}${r.avg_clv_pct}%</td>
             </tr>`
-            )
-            .join('')}
+      )
+      .join('')}
         </tbody>
       </table>
     </div>
@@ -2552,8 +2641,8 @@ async function renderBacktestTab() {
             <thead class="text-slate-400 border-b border-slate-800"><tr><th class="py-1 text-left">Club</th><th class="py-1">Div</th><th class="py-1 text-right">Elo</th><th class="py-1 text-right">Last 5</th><th class="py-1 text-right">Form</th></tr></thead>
             <tbody>
               ${data.top_elo_teams
-                .map(
-                  (t) => `
+      .map(
+        (t) => `
                 <tr class="border-b border-slate-800/60">
                   <td class="py-1.5 font-medium text-white">${esc(t.team_name)}</td>
                   <td class="py-1.5 text-center text-slate-400">${esc(t.div)}</td>
@@ -2561,8 +2650,8 @@ async function renderBacktestTab() {
                   <td class="py-1.5 text-right ${t.elo_change_last5 >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${t.elo_change_last5 >= 0 ? '+' : ''}${t.elo_change_last5}</td>
                   <td class="py-1.5 text-right font-mono">${esc(t.form_last6)}</td>
                 </tr>`
-                )
-                .join('')}
+      )
+      .join('')}
             </tbody>
           </table>
         </div>
@@ -2602,9 +2691,10 @@ async function renderLeaderboardTab() {
           <tr><th class="p-3">#</th><th class="p-3">Member</th><th class="p-3 text-right">Settled Bets</th><th class="p-3 text-right">Win %</th><th class="p-3 text-right">P&amp;L</th><th class="p-3 text-right">ROI</th><th class="p-3 text-right">Avg CLV</th></tr>
         </thead>
         <tbody>
-          ${data.leaderboard
-            .map(
-              (m, idx) => `
+          ${data.leaderboard.length
+      ? data.leaderboard
+        .map(
+          (m, idx) => `
             <tr class="border-b border-slate-800/70">
               <td class="p-3 font-bold text-slate-400">${idx + 1}</td>
               <td class="p-3 font-semibold text-white flex items-center gap-2">
@@ -2617,15 +2707,17 @@ async function renderLeaderboardTab() {
               <td class="p-3 text-right font-bold ${m.roi_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${m.roi_pct >= 0 ? '+' : ''}${m.roi_pct}%</td>
               <td class="p-3 text-right">${m.avg_clv_pct >= 0 ? '+' : ''}${m.avg_clv_pct}%</td>
             </tr>`
-            )
-            .join('')}
+        )
+        .join('')
+      : `<tr><td colspan="7" class="p-6 text-center text-slate-400">No members on the leaderboard yet — create your account and log a bet to appear here.</td></tr>`
+    }
         </tbody>
       </table>
     </div>
 
     <div class="bg-panel border border-slate-800 rounded-2xl p-5 max-w-lg space-y-3">
       <h3 class="text-sm font-bold text-white">Invite a Friend</h3>
-      <p class="text-xs text-slate-400">Default invite code in <code>.env</code> is <code>ACCALAB2026</code>.</p>
+      <p class="text-xs text-slate-400">Optional group invite code (default <code>ACCALAB2026</code>).</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
         <input id="new-friend-name" type="text" placeholder="Friend's Name" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
         <input id="new-friend-code" type="text" placeholder="Invite Code" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
@@ -2672,12 +2764,12 @@ async function renderSettingsTab() {
 
   const filteredNews = state.newsMyClubsOnly
     ? (newsRes.news || []).filter(
-        (n) =>
-          (n.matched_teams || []).some((t) => state.favouriteTeams.includes(t)) ||
-          state.favouriteTeams.some((ft) =>
-            String(n.title || '').toLowerCase().includes(ft.toLowerCase())
-          )
-      )
+      (n) =>
+        (n.matched_teams || []).some((t) => state.favouriteTeams.includes(t)) ||
+        state.favouriteTeams.some((ft) =>
+          String(n.title || '').toLowerCase().includes(ft.toLowerCase())
+        )
+    )
     : newsRes.news || [];
 
   main.innerHTML = `
@@ -2706,14 +2798,14 @@ async function renderSettingsTab() {
 
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         ${['E0', 'E1', 'E2', 'E3']
-          .map(
-            (div) => `
+      .map(
+        (div) => `
           <label class="flex items-center gap-2 px-3 py-2 rounded-xl bg-card border border-slate-800 cursor-pointer">
             <input type="checkbox" class="set-league-cb accent-emerald-500" value="${div}" ${state.preferredLeagues.includes(div) ? 'checked' : ''} />
             <span class="text-slate-200 font-medium">${esc(leagueMeta[div] || div)}</span>
           </label>`
-          )
-          .join('')}
+      )
+      .join('')}
       </div>
 
       <div id="set-team-picker" class="max-h-52 overflow-y-auto p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5"></div>
@@ -2753,20 +2845,19 @@ async function renderSettingsTab() {
       <!-- Alerts Feed -->
       <div class="bg-panel border border-slate-800 rounded-2xl p-4 space-y-2 max-h-96 overflow-y-auto scrollbar-thin">
         <h3 class="text-sm font-bold text-white">Value &amp; System Alerts</h3>
-        ${
-          alertsRes.alerts.length
-            ? alertsRes.alerts
-                .map(
-                  (a) => `
+        ${alertsRes.alerts.length
+      ? alertsRes.alerts
+        .map(
+          (a) => `
             <div class="p-3 rounded-xl bg-card border ${a.is_read ? 'border-slate-800' : 'border-emerald-500/40'} text-xs">
               <div class="font-bold text-emerald-300">${esc(a.title)}</div>
               <div class="text-slate-300 mt-1">${esc(a.message)}</div>
               <div class="text-[10px] text-slate-500 mt-1">${esc(a.created_at)}</div>
             </div>`
-                )
-                .join('')
-            : '<div class="text-xs text-slate-500">No alerts generated yet.</div>'
-        }
+        )
+        .join('')
+      : '<div class="text-xs text-slate-500">No alerts generated yet.</div>'
+    }
       </div>
     </div>
 
@@ -2780,20 +2871,19 @@ async function renderSettingsTab() {
         </label>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
-        ${
-          filteredNews.length
-            ? filteredNews
-                .slice(0, 12)
-                .map(
-                  (n) => `
+        ${filteredNews.length
+      ? filteredNews
+        .slice(0, 12)
+        .map(
+          (n) => `
                 <a href="${esc(n.url)}" target="_blank" rel="noopener" class="p-3 rounded-xl bg-card border border-slate-800 hover:border-slate-600 block">
                   <div class="flex justify-between text-[10px] text-emerald-400 font-semibold"><span>${esc(n.source)}</span><span>${esc((n.matched_teams || []).join(', '))}</span></div>
                   <div class="font-semibold text-white mt-1">${esc(n.title)}</div>
                 </a>`
-                )
-                .join('')
-            : '<div class="col-span-2 text-xs text-slate-400 py-4 text-center">No RSS headlines match your followed clubs yet — follow more clubs above or uncheck "My Clubs Only".</div>'
-        }
+        )
+        .join('')
+      : '<div class="col-span-2 text-xs text-slate-400 py-4 text-center">No RSS headlines match your followed clubs yet — follow more clubs above or uncheck "My Clubs Only".</div>'
+    }
       </div>
     </div>
   `;
@@ -2813,15 +2903,14 @@ async function renderSettingsTab() {
               <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">${esc(leagueMeta[div] || div)}</div>
               <div class="flex flex-wrap gap-1.5">
                 ${teams
-                  .map((t) => {
-                    const on = state.favouriteTeams.includes(t);
-                    return `<button type="button" data-pref-team="${esc(t)}" class="px-2.5 py-1 rounded-full text-[11px] border transition ${
-                      on
-                        ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-semibold'
-                        : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-                    }">${on ? '★ ' : ''}${esc(t)}</button>`;
-                  })
-                  .join('')}
+              .map((t) => {
+                const on = state.favouriteTeams.includes(t);
+                return `<button type="button" data-pref-team="${esc(t)}" class="px-2.5 py-1 rounded-full text-[11px] border transition ${on
+                    ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-semibold'
+                    : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
+                  }">${on ? '★ ' : ''}${esc(t)}</button>`;
+              })
+              .join('')}
               </div>
             </div>`;
         })
@@ -2850,7 +2939,7 @@ async function renderSettingsTab() {
     })
   );
 
-  document.getElementById('settings-auth-btn').addEventListener('click', () => openAuthModal('login'));
+  document.getElementById('settings-auth-btn').addEventListener('click', () => openAuthModal());
   document.getElementById('settings-logout-btn')?.addEventListener('click', async () => {
     await api('/api/auth/logout', { method: 'POST', body: '{}' });
     showToast('Logged out');
@@ -2930,9 +3019,8 @@ async function triggerSync(withBacktest = false, force = false) {
 async function renderActiveTab() {
   document.querySelectorAll('.nav-btn').forEach((btn) => {
     const active = btn.dataset.tab === state.activeTab;
-    btn.className = `nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${
-      active ? 'bg-emerald-500/15 text-emerald-400' : 'text-slate-300 hover:bg-slate-800/70'
-    }`;
+    btn.className = `nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${active ? 'bg-emerald-500/15 text-emerald-400' : 'text-slate-300 hover:bg-slate-800/70'
+      }`;
   });
   document.querySelectorAll('.nav-btn-mob').forEach((btn) => {
     const active = btn.dataset.tab === state.activeTab;
@@ -2975,10 +3063,20 @@ function renderAuthModalBody(mode = 'login') {
         </div>
       ` : ''}
 
+      ${!users.length ? `
+        <div class="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div class="text-xs font-bold text-emerald-300">Ready to set up your personal AccaLab account?</div>
+            <div class="text-[11px] text-slate-300 mt-0.5">No accounts are registered yet — create yours in seconds.</div>
+          </div>
+          <button id="switch-to-reg-btn" type="button" class="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold shrink-0">Create Account →</button>
+        </div>
+      ` : ''}
+
       <form id="auth-login-form" class="space-y-3">
         <div>
           <label class="block text-xs text-slate-400 mb-1">Username or Email</label>
-          <input id="login-username" type="text" required placeholder="e.g. admin" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-sm text-white" />
+          <input id="login-username" type="text" required placeholder="Your username or email" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-sm text-white" />
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">Password</label>
@@ -2987,17 +3085,9 @@ function renderAuthModalBody(mode = 'login') {
         <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm">Log In to My Account</button>
       </form>
 
-      ${users.length ? `
-        <div class="mt-4 pt-4 border-t border-slate-800">
-          <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Quick Demo Sign-In (password: accalab)</div>
-          <div class="flex flex-wrap gap-1.5">
-            ${users.map((usr) => `
-              <button type="button" data-quick-login="${esc(usr.username)}" class="px-2.5 py-1.5 rounded-lg bg-surface border border-slate-700 hover:border-emerald-500/50 text-xs text-slate-200 flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full" style="background:${esc(usr.avatar_color || '#10b981')}"></span>
-                ${esc(usr.display_name)}
-              </button>
-            `).join('')}
-          </div>
+      ${users.length && !state.authenticated ? `
+        <div class="mt-3 text-center text-[11px] text-slate-400">
+          New to this group? <button id="switch-to-reg-link" type="button" class="text-emerald-400 hover:text-emerald-300 font-semibold underline">Create a personal account</button>
         </div>
       ` : ''}
 
@@ -3012,6 +3102,9 @@ function renderAuthModalBody(mode = 'login') {
         </form>
       ` : ''}
     `;
+
+    document.getElementById('switch-to-reg-btn')?.addEventListener('click', () => renderAuthModalBody('register'));
+    document.getElementById('switch-to-reg-link')?.addEventListener('click', () => renderAuthModalBody('register'));
 
     document.getElementById('auth-login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -3034,26 +3127,6 @@ function renderAuthModalBody(mode = 'login') {
         showToast(err.message, true);
       }
     });
-
-    body.querySelectorAll('[data-quick-login]').forEach((btn) =>
-      btn.addEventListener('click', async () => {
-        try {
-          const res = await api('/api/auth/login', {
-            method: 'POST',
-            body: JSON.stringify({ username: btn.dataset.quickLogin, password: 'accalab' }),
-          });
-          state.activeUserId = res.user.id;
-          localStorage.setItem('accalab_user_id', String(state.activeUserId));
-          document.getElementById('auth-modal').classList.add('hidden');
-          await loadDashboard(true);
-          saveSlip(false);
-          await renderActiveTab();
-          showToast(`Signed in as ${res.user.display_name}`);
-        } catch (err) {
-          showToast(err.message, true);
-        }
-      })
-    );
 
     const logoutBtn = document.getElementById('auth-logout-btn');
     if (logoutBtn) {
@@ -3103,6 +3176,11 @@ function renderAuthModalBody(mode = 'login') {
   const selectedTeams = new Set();
 
   body.innerHTML = `
+    ${!users.length ? `
+      <div class="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-slate-200">
+        <b class="text-emerald-300">Welcome to AccaLab!</b> Set up your personal account below to save your bankroll, default stake, favourite English clubs, watchlist and tracked bets.
+      </div>
+    ` : ''}
     <form id="auth-register-form" class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
         <div>
@@ -3122,12 +3200,12 @@ function renderAuthModalBody(mode = 'login') {
           <input id="reg-password" type="password" required minlength="4" placeholder="Min 4 chars" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
         <div>
-          <label class="block text-xs text-slate-400 mb-1">Group Invite Code</label>
-          <input id="reg-invite" type="text" value="ACCALAB2026" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
-        </div>
-        <div>
           <label class="block text-xs text-slate-400 mb-1">Starting Bankroll (£)</label>
           <input id="reg-bankroll" type="number" min="10" step="10" value="250" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Default Stake (£)</label>
+          <input id="reg-default-stake" type="number" min="1" step="1" value="10" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">Risk Profile (Kelly)</label>
@@ -3146,6 +3224,10 @@ function renderAuthModalBody(mode = 'login') {
             <label class="block text-xs text-slate-400 mb-1">Avatar Colour</label>
             <input id="reg-color" type="color" value="#10b981" class="w-full h-[34px] rounded-lg bg-surface border border-slate-700 p-0.5 cursor-pointer" />
           </div>
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-xs text-slate-400 mb-1">Group Invite Code (optional)</label>
+          <input id="reg-invite" type="text" value="ACCALAB2026" placeholder="ACCALAB2026" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
       </div>
 
@@ -3169,7 +3251,7 @@ function renderAuthModalBody(mode = 'login') {
         <div id="reg-team-picker" class="max-h-40 overflow-y-auto p-2 rounded-xl bg-surface border border-slate-800 space-y-2"></div>
       </div>
 
-      <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm">Create Account &amp; Personalise App</button>
+      <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm">Create My Account &amp; Start</button>
     </form>
   `;
 
@@ -3184,13 +3266,12 @@ function renderAuthModalBody(mode = 'login') {
           <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">${esc(leagueMeta[div] || div)}</div>
           <div class="flex flex-wrap gap-1">
             ${teams.map((t) => {
-              const on = selectedTeams.has(t);
-              return `<button type="button" data-reg-team="${esc(t)}" class="px-2 py-0.5 rounded-full text-[11px] border transition ${
-                on
-                  ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-semibold'
-                  : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-              }">${on ? '★ ' : ''}${esc(t)}</button>`;
-            }).join('')}
+        const on = selectedTeams.has(t);
+        return `<button type="button" data-reg-team="${esc(t)}" class="px-2 py-0.5 rounded-full text-[11px] border transition ${on
+            ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-semibold'
+            : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
+          }">${on ? '★ ' : ''}${esc(t)}</button>`;
+      }).join('')}
           </div>
         </div>
       `;
@@ -3222,6 +3303,7 @@ function renderAuthModalBody(mode = 'login') {
           password: document.getElementById('reg-password').value,
           invite_code: document.getElementById('reg-invite').value.trim(),
           bankroll: Number(document.getElementById('reg-bankroll').value || 250),
+          default_stake: Number(document.getElementById('reg-default-stake')?.value || 10),
           kelly_fraction: Number(document.getElementById('reg-kelly').value || 0.25),
           min_edge_pct: Number(document.getElementById('reg-min-edge').value || 3.0),
           avatar_color: document.getElementById('reg-color').value || '#10b981',
@@ -3242,8 +3324,10 @@ function renderAuthModalBody(mode = 'login') {
   });
 }
 
-function openAuthModal(initialMode = 'login') {
-  renderAuthModalBody(initialMode);
+function openAuthModal(initialMode) {
+  const users = state.dashboard?.users || [];
+  const resolvedMode = initialMode || (users.length ? 'login' : 'register');
+  renderAuthModalBody(resolvedMode);
   document.getElementById('auth-modal').classList.remove('hidden');
 }
 
@@ -3289,27 +3373,25 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
             <button id="b365-reopen-cur-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold">
               ${isMulti ? `Open Leg ${activeLegIdx + 1} ↗` : 'Open Match in Bet365 ↗'}
             </button>
-            ${
-              hasNext
-                ? `<button id="b365-next-leg-btn" type="button" class="px-3.5 py-2 rounded-xl btn-bet365 text-xs font-extrabold">
+            ${hasNext
+        ? `<button id="b365-next-leg-btn" type="button" class="px-3.5 py-2 rounded-xl btn-bet365 text-xs font-extrabold">
                     ✓ Added — Next: Send Leg ${activeLegIdx + 2} to Same Tab →
                   </button>`
-                : ''
-            }
+        : ''
+      }
           </div>
         </div>
 
-        ${
-          expLegs.length
-            ? `<div class="p-2.5 rounded-lg bg-slatebg/80 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-2">
+        ${expLegs.length
+        ? `<div class="p-2.5 rounded-lg bg-slatebg/80 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-2">
                 <div class="min-w-0">
                   <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">What to tap on Bet365 right now</div>
                   <div class="text-white font-bold mt-0.5">${esc(curLeg.home_team)} v ${esc(curLeg.away_team)} → <span class="text-cyan-300">${esc(curLeg.b365_market_name)}</span>: <span class="text-emerald-300">${esc(curLeg.b365_selection_name || curLeg.selection_label)} @ ${fmtOdds(curLeg.odds)}</span></div>
                 </div>
                 <span class="text-[10px] font-mono text-amber-300 shrink-0">Bet365 keeps your slip across legs</span>
               </div>`
-            : ''
-        }
+        : ''
+      }
       </div>
 
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
@@ -3325,28 +3407,26 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
           <span class="text-[11px] text-slate-400">Uses <code class="text-cyan-300">Home v Away</code> search</span>
         </div>
         ${expLegs
-          .map((l, idx) => {
-            const isCur = idx === activeLegIdx;
-            const isDone = completedLegs.has(idx);
-            return `
-          <div class="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs transition ${
-            isCur
+        .map((l, idx) => {
+          const isCur = idx === activeLegIdx;
+          const isDone = completedLegs.has(idx);
+          return `
+          <div class="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs transition ${isCur
               ? 'bg-emerald-500/10 border-emerald-400/70'
               : isDone
                 ? 'bg-card/60 border-slate-800 opacity-80'
                 : 'bg-card border-slate-800'
-          }">
+            }">
             <div class="min-w-0">
               <div class="flex items-center gap-1.5 flex-wrap">
                 <span class="font-bold text-white">${idx + 1}. ${esc(l.selection_label)}</span>
                 <span class="text-emerald-400 font-mono font-bold">@ ${fmtOdds(l.odds)}</span>
-                ${
-                  isDone
-                    ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">Done ✓</span>'
-                    : isCur
-                      ? '<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">Active in Bet365</span>'
-                      : '<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">Queued</span>'
-                }
+                ${isDone
+              ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">Done ✓</span>'
+              : isCur
+                ? '<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">Active in Bet365</span>'
+                : '<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">Queued</span>'
+            }
               </div>
               <div class="text-[11px] text-cyan-300 mt-0.5 truncate">${esc(l.b365_path)}</div>
             </div>
@@ -3359,8 +3439,8 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
               </button>
             </div>
           </div>`;
-          })
-          .join('')}
+        })
+        .join('')}
       </div>
 
       <div class="p-3 rounded-xl bg-surface border border-slate-800 space-y-2 text-xs">
@@ -3428,7 +3508,7 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
 
     document.getElementById('b365-copy-bookmarklet-btn')?.addEventListener('click', () => {
       const bm = buildBet365Bookmarklet(exp.slip_token || '');
-      navigator.clipboard?.writeText(bm).catch(() => {});
+      navigator.clipboard?.writeText(bm).catch(() => { });
       showToast('Copied Bookmarklet! Paste into a browser bookmark URL & tap it on Bet365.');
     });
 
@@ -3439,7 +3519,7 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
     });
 
     document.getElementById('b365-copy-btn')?.addEventListener('click', () => {
-      navigator.clipboard?.writeText(exp.clipboard_text).catch(() => {});
+      navigator.clipboard?.writeText(exp.clipboard_text).catch(() => { });
       showToast('Copied formatted slip to clipboard!');
     });
 
@@ -3484,7 +3564,7 @@ async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Su
       method: 'POST',
       body: JSON.stringify({ legs, stake, title, options_override: optionsOverride }),
     });
-    navigator.clipboard?.writeText(exp.clipboard_text).catch(() => {});
+    navigator.clipboard?.writeText(exp.clipboard_text).catch(() => { });
     state.slip = legs.map((l) => ({ ...l }));
     state.slipStake = Number(exp.stake || stake || 10);
     saveSlip();
@@ -3546,7 +3626,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
       state.activeRiskLevel = riskId;
       try {
         localStorage.setItem('accalab_risk_level', riskId);
-      } catch (_) {}
+      } catch (_) { }
       if (state.activeTab === 'fixtures') renderFixturesTab();
     };
 
@@ -3567,15 +3647,14 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">1. Choose Your Risk Level</div>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
             ${riskLevels
-              .map((rl) => {
-                const isActive = rl.id === activeRisk;
-                const pOdds = rl.primary?.eval?.combined_odds;
-                return `
-              <button type="button" data-risk-tier="${esc(rl.id)}" class="p-2.5 rounded-xl text-left border transition ${
-                  isActive
-                    ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm shadow-emerald-500/20'
-                    : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
-                }">
+          .map((rl) => {
+            const isActive = rl.id === activeRisk;
+            const pOdds = rl.primary?.eval?.combined_odds;
+            return `
+              <button type="button" data-risk-tier="${esc(rl.id)}" class="p-2.5 rounded-xl text-left border transition ${isActive
+                ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm shadow-emerald-500/20'
+                : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
+              }">
                 <div class="flex items-center justify-between gap-1">
                   <span class="text-xs font-extrabold">${esc(rl.emoji || '')} ${esc(rl.short_label || rl.label)}</span>
                   ${pOdds ? `<span class="text-[11px] font-mono font-bold ${isActive ? 'text-emerald-300' : 'text-emerald-400'}">${esc(fmtOdds(pOdds))}</span>` : ''}
@@ -3583,8 +3662,8 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
                 <div class="text-[10px] font-semibold mt-0.5 ${isActive ? 'text-emerald-200' : 'text-slate-400'}">${esc(rl.target_odds_label || '')}</div>
                 <div class="text-[10px] text-slate-400 truncate mt-0.5">Default £${Number(rl.default_stake || 5).toFixed(0)} stake</div>
               </button>`;
-              })
-              .join('')}
+          })
+          .join('')}
           </div>
         </div>
 
@@ -3592,21 +3671,20 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">2. Pick Angle Within ${esc(tier.short_label || activeRisk)}</div>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
             ${tierOptions
-              .map(
-                (item) => `
-              <button type="button" data-sug-tab="${esc(item.id)}" class="px-3 py-2 rounded-xl text-left border transition ${
-                  item.id === s.id
-                    ? 'bg-indigo-500/20 border-indigo-400 text-white'
-                    : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
-                }">
+          .map(
+            (item) => `
+              <button type="button" data-sug-tab="${esc(item.id)}" class="px-3 py-2 rounded-xl text-left border transition ${item.id === s.id
+                ? 'bg-indigo-500/20 border-indigo-400 text-white'
+                : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
+              }">
                 <div class="flex items-center justify-between gap-1">
                   <span class="text-[10px] font-bold uppercase tracking-wider ${item.id === s.id ? 'text-indigo-300' : 'text-slate-400'}">${esc(item.badge)}</span>
                   <span class="text-[11px] font-mono font-bold text-emerald-400">${esc(fmtOdds(item.eval?.combined_odds || 1))}</span>
                 </div>
                 <div class="text-xs font-bold truncate mt-0.5">${esc(item.title)}</div>
               </button>`
-              )
-              .join('')}
+          )
+          .join('')}
           </div>
         </div>
 
@@ -3636,15 +3714,14 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
             <div class="text-xs font-semibold text-slate-300">Stake Tuner</div>
             <div class="flex flex-wrap items-center gap-1.5">
               ${quickStakes
-                .map(
-                  (amt) => `
-                <button type="button" data-sug-stake="${amt}" class="px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${
-                    Math.abs(stakeNum - amt) < 0.01
-                      ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
-                      : 'bg-surface border-slate-700 text-slate-300 hover:border-slate-500'
-                  }">£${amt}</button>`
-                )
-                .join('')}
+          .map(
+            (amt) => `
+                <button type="button" data-sug-stake="${amt}" class="px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${Math.abs(stakeNum - amt) < 0.01
+                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                : 'bg-surface border-slate-700 text-slate-300 hover:border-slate-500'
+              }">£${amt}</button>`
+          )
+          .join('')}
               <div class="flex items-center gap-1 ml-1">
                 <span class="text-xs text-slate-400">£</span>
                 <input id="sug-stake-input" type="number" min="0.5" step="0.5" value="${stakeNum}" class="w-16 px-2 py-1 rounded-lg bg-surface border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-emerald-400" />
@@ -3654,8 +3731,8 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
 
           <div class="space-y-2">
             ${(s.legs || [])
-              .map(
-                (l, i) => `
+          .map(
+            (l, i) => `
               <div class="p-3 rounded-xl bg-surface/80 border border-slate-700/80 flex items-center justify-between gap-2 text-xs">
                 <div class="min-w-0">
                   <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}</div>
@@ -3667,8 +3744,8 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
                   <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
                 </div>
               </div>`
-              )
-              .join('')}
+          )
+          .join('')}
           </div>
 
           <div class="p-3 rounded-xl bg-panel border border-slate-800 space-y-1.5">
@@ -3729,11 +3806,10 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           if (expBtn) expBtn.textContent = `🚀 1-Touch Export to Bet365 (£${currentStake % 1 === 0 ? currentStake.toFixed(0) : currentStake.toFixed(2)})`;
           body.querySelectorAll('[data-sug-stake]').forEach((b) => {
             const match = Math.abs(Number(b.dataset.sugStake) - currentStake) < 0.01;
-            b.className = `px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${
-              match
+            b.className = `px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${match
                 ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
                 : 'bg-surface border-slate-700 text-slate-300 hover:border-slate-500'
-            }`;
+              }`;
           });
         });
       }
@@ -3752,6 +3828,11 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
         showToast(`Loaded "${s.title}" (£${state.slipStake}) into your Bet Slip!`);
       });
       document.getElementById('sug-save-draft-btn').addEventListener('click', async () => {
+        if (!state.activeUserId || Number(state.activeUserId) === 0) {
+          showToast('Create your account first to save accumulator drafts!');
+          openAuthModal('register');
+          return;
+        }
         try {
           const saved = await api('/api/user/saved-accas', {
             method: 'POST',
@@ -3783,7 +3864,7 @@ function bindGlobalEvents() {
   const onUserChange = async (e) => {
     const targetId = Number(e.target.value);
     if (state.authenticated) {
-      await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
+      await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => { });
     }
     state.activeUserId = targetId;
     localStorage.setItem('accalab_user_id', String(state.activeUserId));
@@ -3796,11 +3877,11 @@ function bindGlobalEvents() {
 
   const openAuthSidebar = document.getElementById('open-auth-modal-btn');
   if (openAuthSidebar) {
-    openAuthSidebar.addEventListener('click', () => openAuthModal('login'));
+    openAuthSidebar.addEventListener('click', () => openAuthModal());
   }
   const openAuthMobile = document.getElementById('open-auth-modal-mobile-btn');
   if (openAuthMobile) {
-    openAuthMobile.addEventListener('click', () => openAuthModal('login'));
+    openAuthMobile.addEventListener('click', () => openAuthModal());
   }
   const closeAuth = document.getElementById('close-auth-modal');
   if (closeAuth) {
@@ -3836,12 +3917,15 @@ function bindGlobalEvents() {
 
 async function boot() {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+    navigator.serviceWorker.register('./sw.js').catch(() => { });
   }
   bindGlobalEvents();
   await loadDashboard(true);
   saveSlip(false);
   await renderActiveTab();
+  if (!(state.dashboard?.users || []).length) {
+    openAuthModal('register');
+  }
 }
 
 boot();

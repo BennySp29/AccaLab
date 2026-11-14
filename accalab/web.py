@@ -86,19 +86,25 @@ def create_app() -> Flask:
         if sid:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (int(sid),)).fetchone()
             if row:
-                return _serialize_user(row)
+                d = _serialize_user(row)
+                d["is_guest"] = False
+                return d
         uid = request.args.get("user_id") or request.headers.get("X-User-Id")
-        if uid and str(uid).isdigit():
+        if uid and str(uid).isdigit() and int(uid) > 0:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (int(uid),)).fetchone()
             if row:
-                return _serialize_user(row)
+                d = _serialize_user(row)
+                d["is_guest"] = False
+                return d
         row = conn.execute("SELECT * FROM users ORDER BY id ASC LIMIT 1").fetchone()
         if row:
-            return _serialize_user(row)
+            d = _serialize_user(row)
+            d["is_guest"] = False
+            return d
         return {
-            "id": 1,
-            "username": "admin",
-            "display_name": "You (Admin)",
+            "id": 0,
+            "username": "guest",
+            "display_name": "Guest",
             "email": "",
             "avatar_color": "#10b981",
             "bankroll": 250.0,
@@ -111,6 +117,7 @@ def create_app() -> Flask:
             "preferred_leagues": ["E0", "E1", "E2", "E3"],
             "default_stake": 10.0,
             "active_slip": [],
+            "is_guest": True,
         }
 
     def _all_teams_by_league(conn: Any) -> dict[str, list[str]]:
@@ -308,7 +315,7 @@ def create_app() -> Flask:
             featured_suggestion = suggestions_data.get("top_single")
             return jsonify(
                 {
-                    "authenticated": bool(session.get("user_id")),
+                    "authenticated": bool(session.get("user_id") and int(session.get("user_id")) == int(user["id"]) and int(user["id"]) > 0),
                     "active_user": user,
                     "users": users,
                     "watched_fixture_ids": watched_ids,
@@ -787,11 +794,13 @@ def create_app() -> Flask:
 
         with db_session() as conn:
             uid = payload.get("user_id")
-            if uid:
+            if uid and str(uid).isdigit() and int(uid) > 0:
                 urow = conn.execute("SELECT * FROM users WHERE id = ?", (int(uid),)).fetchone()
-                user = dict(urow) if urow else _get_active_user(conn)
+                user = _serialize_user(urow) if urow else _get_active_user(conn)
             else:
                 user = _get_active_user(conn)
+            if int(user["id"]) == 0:
+                return jsonify({"error": "Please create your account or sign in first."}), 401
 
             ev_summary = evaluate_acca(legs, stake=stake)
             bet_type = "acca" if len(legs) > 1 else "single"
@@ -893,7 +902,7 @@ def create_app() -> Flask:
             user = _get_active_user(conn)
             return jsonify(
                 {
-                    "authenticated": bool(session.get("user_id")),
+                    "authenticated": bool(session.get("user_id") and int(session.get("user_id")) == int(user["id"]) and int(user["id"]) > 0),
                     "user": user,
                     "all_teams": _all_teams_by_league(conn),
                 }
@@ -903,7 +912,7 @@ def create_app() -> Flask:
     def api_auth_register() -> tuple[Response, int] | Response:
         data = request.get_json(silent=True) or {}
         invite = (data.get("invite_code") or "").strip()
-        if invite != ACCALAB_INVITE_CODE:
+        if invite and invite != ACCALAB_INVITE_CODE:
             return jsonify({"error": "Invalid group invite code"}), 403
         display_name = (data.get("display_name") or "").strip()
         raw_username = (data.get("username") or display_name).strip().lower()
@@ -993,6 +1002,8 @@ def create_app() -> Flask:
             return jsonify({"error": "New password must be at least 4 characters"}), 400
         with db_session() as conn:
             user = _get_active_user(conn)
+            if int(user["id"]) == 0:
+                return jsonify({"error": "Please create your account or sign in first."}), 401
             row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()
             if not row or not check_password_hash(row["password_hash"], curr):
                 return jsonify({"error": "Current password is incorrect"}), 401
@@ -1003,15 +1014,17 @@ def create_app() -> Flask:
         return jsonify({"ok": True})
 
     @app.route("/api/user/preferences", methods=["POST"])
-    def api_user_preferences() -> Response:
+    def api_user_preferences() -> tuple[Response, int] | Response:
         data = request.get_json(silent=True) or {}
         with db_session() as conn:
             uid = data.get("user_id")
-            if uid and not session.get("user_id"):
+            if uid and not session.get("user_id") and str(uid).isdigit() and int(uid) > 0:
                 row = conn.execute("SELECT * FROM users WHERE id = ?", (int(uid),)).fetchone()
                 user = _serialize_user(row) if row else _get_active_user(conn)
             else:
                 user = _get_active_user(conn)
+            if int(user["id"]) == 0:
+                return jsonify({"error": "Please create your account or sign in first."}), 401
 
             fav_teams = list(user["favourite_teams"])
             if "favourite_teams" in data and isinstance(data["favourite_teams"], list):
@@ -1094,6 +1107,8 @@ def create_app() -> Flask:
         now = utc_now_iso()
         with db_session() as conn:
             user = _get_active_user(conn)
+            if int(user["id"]) == 0:
+                return jsonify({"error": "Please create your account or sign in first."}), 401
             exists = conn.execute(
                 "SELECT id FROM saved_fixtures WHERE user_id = ? AND fixture_id = ?",
                 (user["id"], fid_int),
@@ -1125,6 +1140,8 @@ def create_app() -> Flask:
             stake = 10.0
         with db_session() as conn:
             user = _get_active_user(conn)
+            if int(user["id"]) == 0:
+                return jsonify({"ok": True, "leg_count": len(legs), "default_stake": stake})
             conn.execute(
                 "UPDATE users SET active_slip_json = ?, default_stake = ? WHERE id = ?",
                 (json.dumps(legs), stake, user["id"]),
@@ -1146,6 +1163,8 @@ def create_app() -> Flask:
                     rows.append(d)
                 return jsonify({"saved_accas": rows})
 
+            if int(user["id"]) == 0:
+                return jsonify({"error": "Please create your account or sign in first."}), 401
             data = request.get_json(silent=True) or {}
             legs = data.get("legs") or []
             if not legs:
@@ -1182,6 +1201,8 @@ def create_app() -> Flask:
     def api_user_saved_acca_delete(acca_id: int) -> tuple[Response, int] | Response:
         with db_session() as conn:
             user = _get_active_user(conn)
+            if int(user["id"]) == 0:
+                return jsonify({"error": "Please create your account or sign in first."}), 401
             cur = conn.execute(
                 "DELETE FROM saved_accas WHERE id = ? AND user_id = ?",
                 (acca_id, user["id"]),
@@ -1194,7 +1215,7 @@ def create_app() -> Flask:
     def api_users_create() -> tuple[Response, int] | Response:
         data = request.get_json(silent=True) or {}
         invite = (data.get("invite_code") or "").strip()
-        if invite != ACCALAB_INVITE_CODE:
+        if invite and invite != ACCALAB_INVITE_CODE:
             return jsonify({"error": "Invalid group invite code"}), 403
         display_name = (data.get("display_name") or "").strip()
         if not display_name:
@@ -1233,11 +1254,17 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "user": new_user}), 201
 
     @app.route("/api/users/settings", methods=["POST"])
-    def api_users_update_settings() -> Response:
+    def api_users_update_settings() -> tuple[Response, int] | Response:
         data = request.get_json(silent=True) or {}
         with db_session() as conn:
             uid = data.get("user_id")
-            user = _serialize_user(conn.execute("SELECT * FROM users WHERE id = ?", (int(uid),)).fetchone()) if uid else _get_active_user(conn)
+            if uid and str(uid).isdigit() and int(uid) > 0:
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (int(uid),)).fetchone()
+                user = _serialize_user(row) if row else _get_active_user(conn)
+            else:
+                user = _get_active_user(conn)
+            if int(user["id"]) == 0:
+                return jsonify({"error": "Please create your account or sign in first."}), 401
             conn.execute(
                 """
                 UPDATE users SET

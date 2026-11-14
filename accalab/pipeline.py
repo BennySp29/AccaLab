@@ -20,7 +20,7 @@ from accalab.ingest import (
     ingest_upcoming_fixtures,
 )
 from accalab.modeling import run_model_and_predictions, run_walk_forward_backtest
-from accalab.value_engine import generate_value_alerts, seed_demo_historical_bets, settle_bets
+from accalab.value_engine import generate_value_alerts, settle_bets
 
 
 def _sync_counts(conn) -> dict[str, int]:
@@ -64,7 +64,6 @@ def run_full_sync(run_backtest: bool = True, force: bool = False) -> dict[str, A
             news_res = ingest_news_feeds(conn, client=client)
 
         model_res = run_model_and_predictions(conn)
-        seed_demo_historical_bets(conn)
         settled_cnt = settle_bets(conn)
 
         bt_res: list[dict[str, Any]] = []

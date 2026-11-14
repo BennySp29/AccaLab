@@ -441,66 +441,8 @@ def settle_bets(conn: sqlite3.Connection) -> int:
 
 
 def seed_demo_historical_bets(conn: sqlite3.Connection) -> None:
-    """Seed realistic settled bets from actual 2026/27 played matches so P&L & CLV charts work immediately."""
-    existing_bets = conn.execute("SELECT COUNT(*) AS cnt FROM bets").fetchone()["cnt"]
-    if existing_bets > 0:
-        return
-
-    users = {r["username"]: r["id"] for r in conn.execute("SELECT id, username FROM users").fetchall()}
-    if not users:
-        return
-
-    sample_matches = [
-        dict(r)
-        for r in conn.execute(
-            """
-            SELECT * FROM historical_matches
-            WHERE season = ? AND b365h IS NOT NULL AND b365ch IS NOT NULL AND b365_over25 IS NOT NULL
-            ORDER BY match_date DESC
-            LIMIT 24
-            """,
-            (CURRENT_SEASON,),
-        ).fetchall()
-    ]
-    if len(sample_matches) < 8:
-        return
-
-    admin_id = users.get("admin") or next(iter(users.values()))
-    dave_id = users.get("dave") or admin_id
-    callum_id = users.get("callum") or admin_id
-
-    specs = [
-        (admin_id, sample_matches[0], "1X2_H", f"{sample_matches[0]['home_team']} Win", sample_matches[0]["b365h"], 0.54, 15.0, "Model home value"),
-        (admin_id, sample_matches[1], "OU_O25", "Over 2.5 Goals", sample_matches[1]["b365_over25"], 0.56, 12.0, "High xG pace"),
-        (admin_id, sample_matches[2], "1X2_A", f"{sample_matches[2]['away_team']} Win", sample_matches[2]["b365a"], 0.41, 10.0, "Away Elo edge"),
-        (admin_id, sample_matches[3], "OU_U25", "Under 2.5 Goals", sample_matches[3]["b365_under25"], 0.55, 14.0, "Low-scoring matchup"),
-        (dave_id, sample_matches[4], "1X2_H", f"{sample_matches[4]['home_team']} Win", sample_matches[4]["b365h"], 0.58, 20.0, "Weekend single"),
-        (dave_id, sample_matches[5], "OU_O25", "Over 2.5 Goals", sample_matches[5]["b365_over25"], 0.53, 15.0, "Goals angle"),
-        (callum_id, sample_matches[6], "1X2_D", "Draw", sample_matches[6]["b365d"], 0.31, 10.0, "Tight mid-table clash"),
-        (callum_id, sample_matches[7], "1X2_H", f"{sample_matches[7]['home_team']} Win", sample_matches[7]["b365h"], 0.61, 25.0, "Home banker"),
-    ]
-
-    for uid, m, mkt, sel, odds, m_prob, stake, note in specs:
-        if not odds:
-            continue
-        ev_pct = round((m_prob * odds - 1.0) * 100.0, 2)
-        cur = conn.execute(
-            """
-            INSERT INTO bets (user_id, bet_type, stake, combined_odds, combined_model_prob, expected_value_pct, status, notes, placed_at)
-            VALUES (?, 'single', ?, ?, ?, ?, 'pending', ?, ?)
-            """,
-            (uid, stake, round(odds, 2), m_prob, ev_pct, note, f"{m['match_date']}T12:00:00Z"),
-        )
-        bet_id = cur.lastrowid
-        conn.execute(
-            """
-            INSERT INTO bet_legs (bet_id, fixture_id, div, match_date, home_team, away_team, market, selection_label, odds_taken, model_prob)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (bet_id, m["div"], m["match_date"], m["home_team"], m["away_team"], mkt, sel, round(odds, 2), m_prob),
-        )
-
-    settle_bets(conn)
+    """No-op: production mode never seeds synthetic demo bets."""
+    return
 
 
 def send_telegram_message(text: str, chat_id: str | None = None) -> tuple[bool, str]:
