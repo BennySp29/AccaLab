@@ -6,6 +6,9 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   sync-and-predict:
     runs-on: ubuntu-latest
@@ -19,12 +22,24 @@ jobs:
           python-version: '3.12'
 
       - name: Install runtime dependencies
-        run: pip install flask httpx beautifulsoup4 google-genai pydantic python-dotenv
+        run: pip install -r requirements.txt
 
-      - name: Run AccaLab ingestion, modelling & alert check
+      - name: Run AccaLab ingestion, modelling & static snapshot export
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_DEFAULT_CHAT_ID: ${{ secrets.TELEGRAM_DEFAULT_CHAT_ID }}
-        run: python run.py sync --no-backtest
+        run: |
+          python run.py sync --no-backtest
+          python run.py export-static
+
+      - name: Commit and push updated static snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/snapshot.json accalab/static/snapshot.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: refresh live AccaLab snapshot"
+            git push
+          fi

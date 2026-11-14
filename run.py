@@ -8,6 +8,7 @@ import sys
 
 from accalab.db import db_session, init_db
 from accalab.pipeline import run_full_sync
+from accalab.static_export import export_static_site
 from accalab.web import create_app
 
 
@@ -17,6 +18,8 @@ def main() -> int:
 
     sync_p = sub.add_parser("sync", help="Ingest live data, fit Dixon-Coles + Elo, backtest & settle bets")
     sync_p.add_argument("--no-backtest", action="store_true", help="Skip walk-forward backtest recomputation")
+
+    sub.add_parser("export-static", help="Export static GitHub Pages bundle & pre-computed JSON snapshot")
 
     serve_p = sub.add_parser("serve", help="Start the AccaLab PWA web server")
     serve_p.add_argument("--host", default="127.0.0.1")
@@ -28,6 +31,11 @@ def main() -> int:
 
     if cmd == "sync":
         result = run_full_sync(run_backtest=not args.no_backtest)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if cmd == "export-static":
+        result = export_static_site()
         print(json.dumps(result, indent=2))
         return 0
 

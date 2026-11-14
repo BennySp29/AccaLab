@@ -38,16 +38,1032 @@ function showToast(msg, isError = false) {
   setTimeout(() => el.classList.add('hidden'), 3400);
 }
 
+const GH_STATE_KEY = 'accalab_gh_state_v1';
+let _staticSnapshot = null;
+
+const cloneJson = (v) => JSON.parse(JSON.stringify(v));
+const roundNum = (val, dec = 2) => {
+  const f = 10 ** dec;
+  return Math.round((Number(val) || 0) * f) / f;
+};
+
+function kellyStakeClient(modelProb, odds, bankroll, kellyFraction = 0.25, maxPct = 0.05) {
+  if (!odds || odds <= 1.01 || !modelProb || modelProb <= 0) {
+    return { kelly_pct: 0.0, suggested_stake: 0.0 };
+  }
+  const edge = modelProb * odds - 1.0;
+  if (edge <= 0) {
+    return { kelly_pct: 0.0, suggested_stake: 0.0 };
+  }
+  const fullKelly = edge / (odds - 1.0);
+  const fracPct = Math.min(maxPct, Math.max(0.0, kellyFraction * fullKelly));
+  return {
+    kelly_pct: roundNum(fracPct * 100.0, 2),
+    suggested_stake: roundNum((Number(bankroll) || 250) * fracPct, 2),
+  };
+}
+
+function devigThreeWayClient(o1, o2, o3) {
+  const inv = [1.0 / o1, 1.0 / o2, 1.0 / o3];
+  const total = inv[0] + inv[1] + inv[2];
+  return [inv[0] / total, inv[1] / total, inv[2] / total, (total - 1.0) * 100.0];
+}
+
+function devigTwoWayClient(o1, o2) {
+  const inv1 = 1.0 / o1;
+  const inv2 = 1.0 / o2;
+  const total = inv1 + inv2;
+  return [inv1 / total, inv2 / total, (total - 1.0) * 100.0];
+}
+
+function evaluateAccaClient(legs = [], stake = 10.0) {
+  const cleanStake = Number.isFinite(Number(stake)) && Number(stake) > 0 ? Number(stake) : 10.0;
+  if (!legs || !legs.length) {
+    return {
+      legs: [],
+      leg_count: 0,
+      stake: roundNum(cleanStake, 2),
+      combined_odds: 1.0,
+      naive_prob_pct: 100.0,
+      combined_model_prob: 1.0,
+      combined_model_prob_pct: 100.0,
+      fair_combined_odds: 1.0,
+      expected_value_gbp: 0.0,
+      expected_value_pct: 0.0,
+      potential_return: 0.0,
+      expected_profit: 0.0,
+      compounded_margin_pct: 0.0,
+      implied_prob_pct: 100.0,
+      warnings: [],
+    };
+  }
+  let combOdds = 1.0;
+  let combProb = 1.0;
+  const byFixture = {};
+  const warnings = [];
+  for (const leg of legs) {
+    const o = Number(leg.odds || 1.0);
+    let p = Number(leg.model_prob || 0.5);
+    if (p > 1.0) p /= 100.0;
+    combOdds *= o;
+    combProb *= p;
+    if (leg.fixture_id !== undefined && leg.fixture_id !== null) {
+      if (!byFixture[leg.fixture_id]) byFixture[leg.fixture_id] = [];
+      byFixture[leg.fixture_id].push(leg.market || '');
+    }
+  }
+  for (const [fid, mkts] of Object.entries(byFixture)) {
+    if (mkts.length > 1) {
+      warnings.push(
+        `Same-match correlation detected on fixture #${fid} (${mkts.join(', ')}): independent multiplication overstates joint probability.`
+      );
+    }
+  }
+  if (legs.length >= 5) {
+    const marg = ((1.052 ** legs.length) - 1.0) * 100.0;
+    warnings.push(
+      `${legs.length}-fold accumulator compounds bookmaker margin (~${marg.toFixed(1)}% house edge). Consider 2–4 legs for steadier ROI.`
+    );
+  }
+  const evPct = (combProb * combOdds - 1.0) * 100.0;
+  const impliedProd = 1.0 / Math.max(combOdds, 1.01);
+  const compoundedMarginPct = ((1.052 ** legs.length) - 1.0) * 100.0;
+  const naiveProbPct = roundNum(combProb * 100.0, 2);
+  const expectedProfit = roundNum(cleanStake * (combProb * combOdds - 1.0), 2);
+  return {
+    legs,
+    leg_count: legs.length,
+    stake: roundNum(cleanStake, 2),
+    combined_odds: roundNum(combOdds, 2),
+    naive_prob_pct: naiveProbPct,
+    combined_model_prob: roundNum(combProb, 5),
+    combined_model_prob_pct: naiveProbPct,
+    fair_combined_odds: roundNum(1.0 / Math.max(combProb, 0.0001), 2),
+    expected_value_gbp: expectedProfit,
+    expected_value_pct: roundNum(evPct, 2),
+    potential_return: roundNum(cleanStake * combOdds, 2),
+    expected_profit: expectedProfit,
+    compounded_margin_pct: roundNum(compoundedMarginPct, 1),
+    implied_prob_pct: roundNum(impliedProd * 100.0, 2),
+    warnings,
+  };
+}
+
+const B365_MARKET_NAMES = {
+  '1X2_H': 'Full Time Result',
+  '1X2_D': 'Full Time Result',
+  '1X2_A': 'Full Time Result',
+  OU_O25: 'Goals Over/Under',
+  OU_U25: 'Goals Over/Under',
+  BTTS_Y: 'Both Teams to Score',
+  BTTS_N: 'Both Teams to Score',
+};
+
+function b365SelectionNameClient(leg) {
+  const mkt = String(leg.market || '');
+  if (mkt === '1X2_H') return String(leg.home_team || leg.selection_label || 'Home');
+  if (mkt === '1X2_D') return 'Draw';
+  if (mkt === '1X2_A') return String(leg.away_team || leg.selection_label || 'Away');
+  if (mkt === 'OU_O25') return 'Over 2.5';
+  if (mkt === 'OU_U25') return 'Under 2.5';
+  if (mkt === 'BTTS_Y') return 'Yes';
+  if (mkt === 'BTTS_N') return 'No';
+  return String(leg.selection_label || mkt);
+}
+
+function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Suggested Bet', optionsOverride = '', leaguesMeta = {}) {
+  const parsedStake = Number(stake);
+  const cleanStake = Number.isFinite(parsedStake) && parsedStake >= 1.0 ? parsedStake : 10.0;
+  const evalSummary = evaluateAccaClient(legs, cleanStake);
+  const exportedLegs = [];
+  const legOptionTokens = [];
+
+  for (const leg of legs) {
+    const div = String(leg.div || '');
+    const leagueName = leaguesMeta[div]?.name || leg.league_name || div || 'English Football';
+    const home = String(leg.home_team || '').trim();
+    const away = String(leg.away_team || '').trim();
+    const mkt = String(leg.market || '1X2_H');
+    const b365Market = B365_MARKET_NAMES[mkt] || 'Full Time Result';
+    const b365Selection = b365SelectionNameClient(leg);
+    const oddsVal = roundNum(Number(leg.odds || 1.0), 2);
+    const searchTerm = home || away || 'Football';
+    const searchUrl = `https://www.bet365.com/#/AX/K^${encodeURIComponent(searchTerm)}`;
+
+    const optTok = String(leg.b365_options_id || '').trim();
+    if (optTok) legOptionTokens.push(optTok);
+
+    exportedLegs.push({
+      fixture_id: leg.fixture_id,
+      div,
+      league_name: leagueName,
+      match_date: leg.match_date || '',
+      home_team: home,
+      away_team: away,
+      market: mkt,
+      selection_label: leg.selection_label || b365Selection,
+      odds: oddsVal,
+      b365_market_name: b365Market,
+      b365_selection_name: b365Selection,
+      b365_path: `Soccer → United Kingdom → ${leagueName} → ${home} v ${away} → ${b365Market}`,
+      b365_search_url: searchUrl,
+    });
+  }
+
+  const betType = legs.length > 1 ? 'combo' : 'single';
+  const overrideClean = String(optionsOverride || '').trim();
+  const resolvedOptions =
+    overrideClean || (legOptionTokens.length === legs.length && legOptionTokens.length ? legOptionTokens.join(',') : '');
+  const prefillTemplateUrl = `https://www.bet365.com/en/sports?options={eventId}-{marketId}-{selectionId}&type=${betType}&stake=${cleanStake.toFixed(2)}&currency=GBP`;
+
+  let deepLinkUrl = null;
+  let launchUrl = exportedLegs[0]?.b365_search_url || 'https://www.bet365.com/#/HO/';
+  let mode = 'express_handoff';
+  if (resolvedOptions) {
+    const safeOpts = encodeURIComponent(resolvedOptions).replaceAll('%2C', ',').replaceAll('%2D', '-').replaceAll('%7E', '~');
+    deepLinkUrl = `https://www.bet365.com/en/sports?options=${safeOpts}&type=${betType}&stake=${cleanStake.toFixed(2)}&currency=GBP`;
+    launchUrl = deepLinkUrl;
+    mode = 'direct_prefill';
+  }
+
+  const lines = [
+    `${title} (${legs.length > 1 ? `Acca ${legs.length}-Fold` : 'Single'})`,
+    `Stake: £${cleanStake.toFixed(2)} | Combined Odds: ${evalSummary.combined_odds.toFixed(2)} | Potential Return: £${evalSummary.potential_return.toFixed(2)}`,
+    `Model Hit Prob: ${evalSummary.combined_model_prob_pct}% | Expected Value: ${evalSummary.expected_value_pct >= 0 ? '+' : ''}${evalSummary.expected_value_pct.toFixed(1)}%`,
+    '',
+  ];
+  exportedLegs.forEach((item, idx) => {
+    lines.push(
+      `${idx + 1}. ${item.home_team} v ${item.away_team} (${item.league_name}) — ${item.b365_market_name}: ${item.selection_label} @ ${item.odds.toFixed(2)}`
+    );
+  });
+
+  return {
+    title,
+    mode,
+    bet_type: betType,
+    stake: roundNum(cleanStake, 2),
+    launch_url: launchUrl,
+    deep_link_url: deepLinkUrl,
+    prefill_template_url: prefillTemplateUrl,
+    clipboard_text: lines.join('\n'),
+    eval: evalSummary,
+    legs: exportedLegs,
+  };
+}
+
+async function loadStaticSnapshot(forceReload = false) {
+  if (_staticSnapshot && !forceReload) return _staticSnapshot;
+  const suffix = forceReload ? `?t=${Date.now()}` : '';
+  const res = await fetch(`./static/snapshot.json${suffix}`);
+  if (!res.ok) throw new Error(`Unable to load static snapshot (HTTP ${res.status})`);
+  _staticSnapshot = await res.json();
+  return _staticSnapshot;
+}
+
+function getGhState(snap) {
+  let raw = null;
+  try {
+    raw = JSON.parse(localStorage.getItem(GH_STATE_KEY) || 'null');
+  } catch {
+    raw = null;
+  }
+  if (raw && Array.isArray(raw.users) && raw.users.length) {
+    return raw;
+  }
+  const users = cloneJson(snap.dashboard?.users || []);
+  const passwordsByUserId = {};
+  for (const u of users) passwordsByUserId[u.id] = 'accalab';
+  const watchedByUser = {};
+  const activeU = snap.dashboard?.active_user;
+  if (activeU) {
+    watchedByUser[activeU.id] = cloneJson(snap.dashboard?.watched_fixture_ids || []);
+  }
+  const betsByUser = {};
+  for (const [uid, payload] of Object.entries(snap.bets_by_user || {})) {
+    betsByUser[uid] = cloneJson(payload?.bets || []);
+  }
+  const savedAccasByUser = cloneJson(snap.saved_accas_by_user || {});
+  const init = {
+    users,
+    passwordsByUserId,
+    authenticatedUserId: null,
+    watchedByUser,
+    savedAccasByUser,
+    betsByUser,
+    customOddsByFixture: {},
+    alertsRead: false,
+    nextIds: {
+      user: Math.max(10, ...users.map((u) => Number(u.id) || 0)) + 1,
+      bet: 1000,
+      acca: 1000,
+    },
+  };
+  localStorage.setItem(GH_STATE_KEY, JSON.stringify(init));
+  return init;
+}
+
+function saveGhState(gh) {
+  localStorage.setItem(GH_STATE_KEY, JSON.stringify(gh));
+}
+
+function sanitizeStaticUser(u) {
+  const copy = cloneJson(u);
+  delete copy.password_hash;
+  copy.favourite_teams = Array.isArray(copy.favourite_teams) ? copy.favourite_teams : [];
+  copy.preferred_leagues = Array.isArray(copy.preferred_leagues) && copy.preferred_leagues.length
+    ? copy.preferred_leagues
+    : ['E0', 'E1', 'E2', 'E3'];
+  copy.active_slip = Array.isArray(copy.active_slip) ? copy.active_slip : [];
+  copy.default_stake = Number(copy.default_stake || 10);
+  return copy;
+}
+
+function resolveStaticUser(gh, queryParams) {
+  if (gh.authenticatedUserId) {
+    const authed = gh.users.find((u) => Number(u.id) === Number(gh.authenticatedUserId));
+    if (authed) return authed;
+  }
+  const reqId = Number(queryParams.get('user_id') || state.activeUserId);
+  if (reqId) {
+    const picked = gh.users.find((u) => Number(u.id) === reqId);
+    if (picked) return picked;
+  }
+  return gh.users[0];
+}
+
+function computeStaticBestEdge(fix) {
+  const cands = [
+    ['1X2_H', `${fix.home_team} Win`, fix.prob_home, fix.b365h],
+    ['1X2_D', 'Draw', fix.prob_draw, fix.b365d],
+    ['1X2_A', `${fix.away_team} Win`, fix.prob_away, fix.b365a],
+    ['OU_O25', 'Over 2.5', fix.prob_over25, fix.b365_over25],
+    ['OU_U25', 'Under 2.5', fix.prob_under25, fix.b365_under25],
+    ['BTTS_Y', 'BTTS Yes', fix.prob_btts_yes, fix.b365_btts_yes],
+    ['BTTS_N', 'BTTS No', fix.prob_btts_no, fix.b365_btts_no],
+  ];
+  let best = { market: '', label: '', edge_pct: -999.0, odds: 0.0 };
+  for (const [market, label, prob, odd] of cands) {
+    if (odd && Number(odd) > 1.01) {
+      const edge = (Number(prob) * Number(odd) - 1.0) * 100.0;
+      if (edge > best.edge_pct) {
+        best = { market, label, edge_pct: roundNum(edge, 1), odds: roundNum(odd, 2) };
+      }
+    }
+  }
+  return best;
+}
+
+function applyStaticCustomOdds(fix, customOddsMap) {
+  const co = customOddsMap?.[String(fix.id)];
+  if (!co) return fix;
+  const merged = { ...fix, ...co, odds_source: 'user_manual' };
+  merged.best_edge = computeStaticBestEdge(merged);
+  return merged;
+}
+
+function computeStaticUserBetsData(gh, snap, user) {
+  const leaguesMeta = snap.dashboard?.leagues || {};
+  const rawBets = cloneJson(gh.betsByUser[user.id] || snap.bets_by_user?.[user.id]?.bets || []);
+  const settled = rawBets.filter((b) => b.status === 'won' || b.status === 'lost');
+  const wins = settled.filter((b) => b.status === 'won').length;
+  const totStake = settled.reduce((acc, b) => acc + Number(b.stake || 0), 0);
+  const totPnl = settled.reduce((acc, b) => acc + Number(b.pnl || 0), 0);
+  const clvs = settled.map((b) => b.clv_pct).filter((v) => v !== null && v !== undefined);
+
+  const byLeague = {};
+  for (const b of settled) {
+    const legs = b.legs || [];
+    const share = 1.0 / Math.max(1, legs.length);
+    for (const lg of legs) {
+      const dv = lg.div;
+      if (!byLeague[dv]) {
+        byLeague[dv] = {
+          div: dv,
+          league_name: leaguesMeta[dv]?.name || dv,
+          bets: 0,
+          wins: 0,
+          pnl: 0.0,
+          staked: 0.0,
+        };
+      }
+      byLeague[dv].bets += 1;
+      if (b.status === 'won') byLeague[dv].wins += 1;
+      byLeague[dv].pnl += Number(b.pnl || 0) * share;
+      byLeague[dv].staked += Number(b.stake || 0) * share;
+    }
+  }
+  const byLeagueArr = Object.values(byLeague).map((v) => ({
+    ...v,
+    pnl: roundNum(v.pnl, 2),
+    staked: roundNum(v.staked, 2),
+    roi_pct: v.staked > 0 ? roundNum((v.pnl / v.staked) * 100.0, 1) : 0.0,
+  }));
+
+  let running = 0.0;
+  const pnlSeries = [...settled].reverse().map((b) => {
+    running += Number(b.pnl || 0);
+    return { label: String(b.placed_at || '').slice(0, 10), pnl: roundNum(running, 2) };
+  });
+
+  const monthPrefix = new Date().toISOString().slice(0, 7);
+  const monthStaked = rawBets
+    .filter((b) => String(b.placed_at || '').startsWith(monthPrefix))
+    .reduce((acc, b) => acc + Number(b.stake || 0), 0);
+
+  return {
+    user: sanitizeStaticUser(user),
+    bets: rawBets,
+    stats: {
+      total_bets: rawBets.length,
+      settled_count: settled.length,
+      pending_count: rawBets.filter((b) => b.status === 'pending').length,
+      win_rate_pct: settled.length ? roundNum((100.0 * wins) / settled.length, 1) : 0.0,
+      total_staked: roundNum(totStake, 2),
+      total_pnl: roundNum(totPnl, 2),
+      roi_pct: totStake > 0 ? roundNum((totPnl / totStake) * 100.0, 2) : 0.0,
+      avg_clv_pct: clvs.length ? roundNum(clvs.reduce((a, b) => a + b, 0) / clvs.length, 2) : 0.0,
+      month_staked: roundNum(monthStaked, 2),
+    },
+    by_league: byLeagueArr,
+    pnl_series: pnlSeries,
+  };
+}
+
+function buildStaticSuggestBet(gh, snap, user) {
+  const base = cloneJson(snap.suggest_bet || { suggestions: [], by_id: {}, top_single: null });
+  const favSet = new Set(user.favourite_teams || []);
+  const prefLeagues = new Set(user.preferred_leagues || ['E0', 'E1', 'E2', 'E3']);
+  const watchedSet = new Set(gh.watchedByUser[user.id] || []);
+
+  if (favSet.size || watchedSet.size || prefLeagues.size < 4) {
+    const allVal = snap.value_bets || [];
+    let pool = allVal.filter((o) => favSet.has(o.home_team) || favSet.has(o.away_team) || watchedSet.has(o.fixture_id));
+    if (!pool.length) pool = allVal.filter((o) => prefLeagues.has(o.div));
+    if (!pool.length) pool = allVal;
+
+    const picked = [];
+    const seenFids = new Set();
+    for (const o of pool) {
+      if (o.odds < 1.25 || o.odds > 5.5 || seenFids.has(o.fixture_id)) continue;
+      seenFids.add(o.fixture_id);
+      picked.push({
+        fixture_id: o.fixture_id,
+        div: o.div,
+        league_name: o.league_name,
+        match_date: o.match_date,
+        home_team: o.home_team,
+        away_team: o.away_team,
+        market: o.market,
+        selection_label: o.selection_label,
+        odds: o.odds,
+        model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
+        edge_pct: o.edge_pct,
+        odds_source: o.odds_source,
+      });
+      if (picked.length === 2) break;
+    }
+
+    if (picked.length) {
+      const stake = Number(user.default_stake || 10);
+      const ev = evaluateAccaClient(picked, stake);
+      const myPkg = {
+        id: 'my_clubs',
+        title: 'My Clubs Special',
+        badge: 'Personalised',
+        subtitle: 'Tailored to your followed clubs, watchlist & preferred leagues',
+        confidence_score: Math.min(95, Math.max(58, Math.round(62 + (picked[0]?.edge_pct || 4) * 1.5))),
+        stake: roundNum(stake, 2),
+        legs: picked,
+        eval: ev,
+        reasons: [
+          `Matched to your profile (${favSet.size} followed clubs, ${watchedSet.size} watchlist matches).`,
+          `Combined odds ${ev.combined_odds.toFixed(2)} with ${ev.combined_model_prob_pct}% model probability (${ev.expected_value_pct >= 0 ? '+' : ''}${ev.expected_value_pct}% EV).`,
+          ...picked.map((l) => `${l.home_team} vs ${l.away_team}: ${l.selection_label} @ ${l.odds.toFixed(2)} (+${l.edge_pct}% EV).`),
+        ].slice(0, 4),
+        bet365_export: buildBet365ExportClient(picked, stake, 'My Clubs Special', '', snap.dashboard?.leagues),
+      };
+      base.suggestions = (base.suggestions || []).map((s) => (s.id === 'my_clubs' ? myPkg : s));
+      base.by_id = Object.fromEntries(base.suggestions.map((s) => [s.id, s]));
+    }
+  }
+  return base;
+}
+
+async function staticApi(path, opts = {}) {
+  const [pathname, queryStr = ''] = path.split('?');
+  const query = new URLSearchParams(queryStr);
+  const method = String(opts.method || 'GET').toUpperCase();
+  const bodyData = opts.body ? (typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body) : {};
+  const isSyncRefresh = pathname === '/api/sync';
+  const snap = await loadStaticSnapshot(isSyncRefresh);
+  const gh = getGhState(snap);
+  const activeUser = resolveStaticUser(gh, query);
+  const leaguesMeta = snap.dashboard?.leagues || {};
+
+  if (pathname === '/api/dashboard') {
+    const favSet = new Set(activeUser.favourite_teams || []);
+    const watchedIds = cloneJson(gh.watchedByUser[activeUser.id] || []);
+    const watchedSet = new Set(watchedIds);
+    const savedAccas = gh.savedAccasByUser[activeUser.id] || [];
+    const fixtures = (snap.fixtures || []).map((f) => applyStaticCustomOdds(f, gh.customOddsByFixture));
+    const forYou = fixtures
+      .filter((f) => favSet.has(f.home_team) || favSet.has(f.away_team) || watchedSet.has(f.id))
+      .slice(0, 6)
+      .map((f) => ({ ...f, is_watched: watchedSet.has(f.id) }));
+
+    const betsData = computeStaticUserBetsData(gh, snap, activeUser);
+    const baseCounts = cloneJson(snap.dashboard?.counts || {});
+    baseCounts.unread_alerts = gh.alertsRead ? 0 : baseCounts.unread_alerts;
+    baseCounts.saved_accas = savedAccas.length;
+    baseCounts.watched_fixtures = watchedIds.length;
+
+    const opps = (snap.value_bets || []).filter((o) => o.edge_pct >= Number(activeUser.min_edge_pct || 4.0));
+    const sugg = buildStaticSuggestBet(gh, snap, activeUser);
+
+    return {
+      authenticated: Boolean(gh.authenticatedUserId && Number(gh.authenticatedUserId) === Number(activeUser.id)),
+      active_user: sanitizeStaticUser(activeUser),
+      users: gh.users.map(sanitizeStaticUser),
+      watched_fixture_ids: watchedIds,
+      favourite_teams: activeUser.favourite_teams || [],
+      for_you_fixtures: forYou,
+      all_teams_by_league: snap.dashboard?.all_teams_by_league || {},
+      counts: baseCounts,
+      leagues_counts: snap.dashboard?.leagues_counts || {},
+      user_summary: {
+        total_bets: betsData.stats.total_bets,
+        pending_bets: betsData.stats.pending_count,
+        settled_bets: betsData.stats.settled_count,
+        total_pnl: betsData.stats.total_pnl,
+        roi_pct: betsData.stats.roi_pct,
+        avg_clv_pct: betsData.stats.avg_clv_pct,
+      },
+      top_value_bets: opps.slice(0, 6),
+      featured_suggestion: sugg.top_single || snap.dashboard?.featured_suggestion || null,
+      quota: snap.dashboard?.quota || {},
+      integrations: snap.dashboard?.integrations || {},
+      leagues: leaguesMeta,
+    };
+  }
+
+  if (pathname === '/api/fixtures') {
+    const div = (query.get('div') || '').trim();
+    const search = (query.get('search') || '').trim().toLowerCase();
+    const dateFilter = (query.get('date') || '').trim();
+    const favSet = new Set(activeUser.favourite_teams || []);
+    const watchedSet = new Set(gh.watchedByUser[activeUser.id] || []);
+
+    const list = (snap.fixtures || [])
+      .map((f) => applyStaticCustomOdds(f, gh.customOddsByFixture))
+      .filter((f) => {
+        if (div && !['MY_TEAMS', 'WATCHLIST'].includes(div) && f.div !== div) return false;
+        if (dateFilter && f.match_date !== dateFilter) return false;
+        const isFav = favSet.has(f.home_team) || favSet.has(f.away_team);
+        const isWatched = watchedSet.has(f.id);
+        if (div === 'MY_TEAMS' && !isFav && !isWatched) return false;
+        if (div === 'WATCHLIST' && !isWatched) return false;
+        if (search && !f.home_team.toLowerCase().includes(search) && !f.away_team.toLowerCase().includes(search)) return false;
+        return true;
+      })
+      .map((f) => ({
+        ...f,
+        is_watched: watchedSet.has(f.id),
+        is_favourite_match: favSet.has(f.home_team) || favSet.has(f.away_team),
+      }));
+    return {
+      fixtures: list,
+      total: list.length,
+      watched_fixture_ids: [...watchedSet],
+      favourite_teams: [...favSet],
+    };
+  }
+
+  const fixOddsMatch = pathname.match(/^\/api\/fixture\/(\d+)\/odds$/);
+  if (fixOddsMatch && method === 'POST') {
+    const fid = fixOddsMatch[1];
+    const existing = cloneJson(gh.customOddsByFixture[fid] || {});
+    for (const k of ['b365h', 'b365d', 'b365a', 'b365_over25', 'b365_under25', 'b365_btts_yes', 'b365_btts_no']) {
+      const val = Number(bodyData[k]);
+      if (Number.isFinite(val) && val > 1.01) existing[k] = val;
+    }
+    gh.customOddsByFixture[fid] = existing;
+    saveGhState(gh);
+    return { ok: true, fixture_id: Number(fid), odds_source: 'user_manual' };
+  }
+
+  const fixAiMatch = pathname.match(/^\/api\/fixture\/(\d+)\/ai-summary$/);
+  if (fixAiMatch && method === 'POST') {
+    const detail = snap.fixture_details?.[fixAiMatch[1]];
+    if (!detail) throw new Error('Fixture not found');
+    return {
+      ai_summary: detail.fixture.ai_summary,
+      ai_summary_source: detail.fixture.ai_summary_source || 'grounded_analyst_static',
+      cached: true,
+    };
+  }
+
+  const fixDetailMatch = pathname.match(/^\/api\/fixture\/(\d+)$/);
+  if (fixDetailMatch) {
+    const fid = fixDetailMatch[1];
+    const base = snap.fixture_details?.[fid];
+    if (!base) throw new Error('Fixture not found');
+    const d = cloneJson(base);
+    d.fixture = applyStaticCustomOdds(d.fixture, gh.customOddsByFixture);
+    d.standings = cloneJson(snap.standings_by_div?.[d.fixture.div] || d.standings || []);
+
+    const f = d.fixture;
+    const [fh, fd, fa, over1x2] = f.b365h && f.b365d && f.b365a ? devigThreeWayClient(f.b365h, f.b365d, f.b365a) : [0, 0, 0, 0];
+    const [fo, fu, overOu] = f.b365_over25 && f.b365_under25 ? devigTwoWayClient(f.b365_over25, f.b365_under25) : [0, 0, 0];
+    const [fby, fbn] = f.b365_btts_yes && f.b365_btts_no ? devigTwoWayClient(f.b365_btts_yes, f.b365_btts_no) : [0, 0];
+
+    d.overround_1x2_pct = roundNum(over1x2, 2);
+    d.overround_ou25_pct = roundNum(overOu, 2);
+    d.markets = [
+      ['1X2_H', `${f.home_team} Win`, f.prob_home, f.b365h, fh],
+      ['1X2_D', 'Draw', f.prob_draw, f.b365d, fd],
+      ['1X2_A', `${f.away_team} Win`, f.prob_away, f.b365a, fa],
+      ['OU_O25', 'Over 2.5 Goals', f.prob_over25, f.b365_over25, fo],
+      ['OU_U25', 'Under 2.5 Goals', f.prob_under25, f.b365_under25, fu],
+      ['BTTS_Y', 'BTTS Yes', f.prob_btts_yes, f.b365_btts_yes, fby],
+      ['BTTS_N', 'BTTS No', f.prob_btts_no, f.b365_btts_no, fbn],
+    ].map(([market, label, mProb, odd, fairB]) => {
+      const edge = odd ? (mProb * odd - 1.0) * 100.0 : 0.0;
+      const ks = kellyStakeClient(mProb, odd || 1.0, activeUser.bankroll, activeUser.kelly_fraction);
+      return {
+        market,
+        label,
+        model_prob_pct: roundNum(mProb * 100.0, 1),
+        fair_odds: roundNum(1.0 / Math.max(mProb, 0.01), 2),
+        b365_odds: odd ? roundNum(odd, 2) : null,
+        implied_fair_pct: fairB ? roundNum(fairB * 100.0, 1) : null,
+        edge_pct: roundNum(edge, 2),
+        kelly_pct: ks.kelly_pct,
+        suggested_stake: ks.suggested_stake,
+      };
+    });
+    return d;
+  }
+
+  if (pathname === '/api/value-bets') {
+    const div = (query.get('div') || '').trim();
+    const minEdge = Number(query.get('min_edge') ?? 2.0);
+    const officialOnly = query.get('official_only') === '1';
+    const opps = (snap.value_bets || [])
+      .filter((o) => {
+        if (div && o.div !== div) return false;
+        if (officialOnly && !['bet365_official', 'api_football_b365', 'user_manual'].includes(o.odds_source)) return false;
+        if (officialOnly && o.odds_source === 'bet365_official' && String(o.market).startsWith('BTTS')) return false;
+        return Number(o.edge_pct) >= minEdge;
+      })
+      .map((o) => {
+        const ks = kellyStakeClient(Number(o.model_prob_pct) / 100.0, o.odds, activeUser.bankroll, activeUser.kelly_fraction);
+        return { ...o, kelly_pct: ks.kelly_pct, suggested_stake: ks.suggested_stake };
+      });
+    return {
+      opportunities: opps,
+      total: opps.length,
+      bankroll: activeUser.bankroll,
+      kelly_fraction: activeUser.kelly_fraction,
+    };
+  }
+
+  if (pathname === '/api/acca/presets') {
+    return { presets: cloneJson(snap.acca_presets || []) };
+  }
+
+  if (pathname === '/api/acca/evaluate' && method === 'POST') {
+    return evaluateAccaClient(bodyData.legs || [], bodyData.stake ?? 10.0);
+  }
+
+  if (pathname === '/api/suggest-bet') {
+    return buildStaticSuggestBet(gh, snap, activeUser);
+  }
+
+  if (pathname === '/api/bet365/export' && method === 'POST') {
+    return buildBet365ExportClient(
+      bodyData.legs || [],
+      bodyData.stake ?? 10.0,
+      (bodyData.title || 'AccaLab Suggested Bet').trim(),
+      bodyData.options_override || '',
+      leaguesMeta
+    );
+  }
+
+  if (pathname === '/api/bets') {
+    if (method === 'GET') {
+      return computeStaticUserBetsData(gh, snap, activeUser);
+    }
+    if (method === 'POST') {
+      const legs = bodyData.legs || [];
+      if (!legs.length) throw new Error('At least one leg is required');
+      const stake = Number(bodyData.stake ?? 10.0);
+      if (!Number.isFinite(stake) || stake <= 0) throw new Error('Stake must be positive');
+      const targetUser = gh.users.find((u) => Number(u.id) === Number(bodyData.user_id)) || activeUser;
+      const ev = evaluateAccaClient(legs, stake);
+      const betId = gh.nextIds.bet++;
+      const now = new Date().toISOString();
+      if (!gh.betsByUser[targetUser.id]) {
+        gh.betsByUser[targetUser.id] = cloneJson(snap.bets_by_user?.[targetUser.id]?.bets || []);
+      }
+      gh.betsByUser[targetUser.id].unshift({
+        id: betId,
+        user_id: targetUser.id,
+        bet_type: legs.length > 1 ? 'acca' : 'single',
+        stake: roundNum(stake, 2),
+        combined_odds: ev.combined_odds,
+        combined_model_prob: ev.combined_model_prob,
+        expected_value_pct: ev.expected_value_pct,
+        status: 'pending',
+        pnl: 0.0,
+        clv_pct: null,
+        notes: (bodyData.notes || '').trim(),
+        placed_at: now,
+        settled_at: null,
+        legs: legs.map((l) => ({
+          bet_id: betId,
+          fixture_id: l.fixture_id,
+          div: l.div || 'E0',
+          match_date: l.match_date || now.slice(0, 10),
+          home_team: l.home_team || '',
+          away_team: l.away_team || '',
+          market: l.market || '1X2_H',
+          selection_label: l.selection_label || l.market,
+          odds_taken: Number(l.odds || 2.0),
+          model_prob: Number(l.model_prob || 0.5),
+          closing_odds: null,
+          leg_status: 'pending',
+        })),
+      });
+      saveGhState(gh);
+      return { ok: true, bet_id: betId, auto_settled: 0 };
+    }
+  }
+
+  if (pathname === '/api/bets/settle' && method === 'POST') {
+    return { settled: 0 };
+  }
+
+  if (pathname === '/api/leaderboard') {
+    const board = gh.users
+      .filter((u) => Number(u.show_on_leaderboard ?? 1) === 1)
+      .map((u) => {
+        const bData = computeStaticUserBetsData(gh, snap, u);
+        return {
+          user_id: u.id,
+          display_name: u.display_name,
+          username: u.username,
+          avatar_color: u.avatar_color,
+          bets_settled: bData.stats.settled_count,
+          win_rate_pct: bData.stats.win_rate_pct,
+          total_staked: bData.stats.total_staked,
+          total_pnl: bData.stats.total_pnl,
+          roi_pct: bData.stats.roi_pct,
+          avg_clv_pct: bData.stats.avg_clv_pct,
+        };
+      })
+      .sort((a, b) => b.roi_pct - a.roi_pct || b.total_pnl - a.total_pnl);
+    return { leaderboard: board, invite_code_hint: 'Ask admin for invite code' };
+  }
+
+  if (pathname === '/api/users' && method === 'POST') {
+    if ((bodyData.invite_code || '').trim() !== 'ACCALAB2026') {
+      throw new Error('Invalid group invite code');
+    }
+    const displayName = (bodyData.display_name || '').trim();
+    if (!displayName) throw new Error('Display name is required');
+    const newId = gh.nextIds.user++;
+    const newUser = sanitizeStaticUser({
+      id: newId,
+      username: displayName.toLowerCase().replaceAll(/[^a-z0-9]/g, '') || `friend${newId}`,
+      display_name: displayName,
+      email: '',
+      avatar_color: bodyData.avatar_color || '#8b5cf6',
+      bankroll: Number(bodyData.bankroll || 200),
+      kelly_fraction: Number(bodyData.kelly_fraction || 0.25),
+      min_edge_pct: Number(bodyData.min_edge_pct || 4.0),
+      telegram_chat_id: (bodyData.telegram_chat_id || '').trim(),
+      monthly_stake_limit: Number(bodyData.monthly_stake_limit || 150),
+      show_on_leaderboard: bodyData.show_on_leaderboard === false ? 0 : 1,
+      favourite_teams: [],
+      preferred_leagues: ['E0', 'E1', 'E2', 'E3'],
+      default_stake: 10.0,
+      active_slip: [],
+    });
+    gh.users.push(newUser);
+    gh.passwordsByUserId[newId] = String(bodyData.password || 'accalab');
+    gh.authenticatedUserId = newId;
+    saveGhState(gh);
+    return { ok: true, user: newUser };
+  }
+
+  if (pathname === '/api/auth/me') {
+    return {
+      authenticated: Boolean(gh.authenticatedUserId && Number(gh.authenticatedUserId) === Number(activeUser.id)),
+      user: sanitizeStaticUser(activeUser),
+      all_teams: snap.dashboard?.all_teams_by_league || {},
+    };
+  }
+
+  if (pathname === '/api/auth/register' && method === 'POST') {
+    if ((bodyData.invite_code || '').trim() !== 'ACCALAB2026') {
+      throw new Error('Invalid group invite code');
+    }
+    const displayName = (bodyData.display_name || '').trim();
+    const rawUname = (bodyData.username || displayName).trim().toLowerCase();
+    const username = rawUname.replaceAll(/[^a-z0-9_-]/g, '');
+    const password = String(bodyData.password || '');
+    if (!displayName || !username) throw new Error('Display name and username are required');
+    if (password.length < 4) throw new Error('Password must be at least 4 characters');
+    if (gh.users.some((u) => String(u.username).toLowerCase() === username)) {
+      throw new Error(`Username '${username}' is already taken`);
+    }
+    const newId = gh.nextIds.user++;
+    const newUser = sanitizeStaticUser({
+      id: newId,
+      username,
+      display_name: displayName,
+      email: (bodyData.email || '').trim().toLowerCase(),
+      avatar_color: bodyData.avatar_color || '#8b5cf6',
+      bankroll: Number(bodyData.bankroll || 200),
+      kelly_fraction: Number(bodyData.kelly_fraction || 0.25),
+      min_edge_pct: Number(bodyData.min_edge_pct || 4.0),
+      telegram_chat_id: (bodyData.telegram_chat_id || '').trim(),
+      monthly_stake_limit: Number(bodyData.monthly_stake_limit || 150),
+      show_on_leaderboard: bodyData.show_on_leaderboard === false ? 0 : 1,
+      favourite_teams: Array.isArray(bodyData.favourite_teams) ? bodyData.favourite_teams : [],
+      preferred_leagues:
+        Array.isArray(bodyData.preferred_leagues) && bodyData.preferred_leagues.length
+          ? bodyData.preferred_leagues
+          : ['E0', 'E1', 'E2', 'E3'],
+      default_stake: Number(bodyData.default_stake || 10.0),
+      active_slip: [],
+    });
+    gh.users.push(newUser);
+    gh.passwordsByUserId[newId] = password;
+    gh.authenticatedUserId = newId;
+    saveGhState(gh);
+    return { ok: true, user: newUser };
+  }
+
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const ident = (bodyData.username || '').trim().toLowerCase();
+    const password = String(bodyData.password || '');
+    const match = gh.users.find(
+      (u) =>
+        String(u.username || '').toLowerCase() === ident ||
+        String(u.email || '').toLowerCase() === ident ||
+        String(u.display_name || '').toLowerCase() === ident
+    );
+    const expectedPw = match ? gh.passwordsByUserId[match.id] || 'accalab' : null;
+    if (!match || password !== expectedPw) {
+      throw new Error('Invalid username or password');
+    }
+    gh.authenticatedUserId = match.id;
+    saveGhState(gh);
+    return { ok: true, user: sanitizeStaticUser(match) };
+  }
+
+  if (pathname === '/api/auth/logout' && method === 'POST') {
+    gh.authenticatedUserId = null;
+    saveGhState(gh);
+    return { ok: true };
+  }
+
+  if (pathname === '/api/auth/password' && method === 'POST') {
+    const curr = String(bodyData.current_password || '');
+    const newPw = String(bodyData.new_password || '');
+    if (newPw.length < 4) throw new Error('New password must be at least 4 characters');
+    if (curr !== (gh.passwordsByUserId[activeUser.id] || 'accalab')) {
+      throw new Error('Current password is incorrect');
+    }
+    gh.passwordsByUserId[activeUser.id] = newPw;
+    saveGhState(gh);
+    return { ok: true };
+  }
+
+  if (pathname === '/api/user/preferences' && method === 'POST') {
+    const target = gh.users.find((u) => Number(u.id) === Number(activeUser.id));
+    if (Array.isArray(bodyData.favourite_teams)) {
+      target.favourite_teams = bodyData.favourite_teams.filter((t) => String(t).trim());
+    } else if (bodyData.toggle_team) {
+      const tName = String(bodyData.toggle_team).trim();
+      const curFavs = target.favourite_teams || [];
+      target.favourite_teams = curFavs.includes(tName)
+        ? curFavs.filter((t) => t !== tName)
+        : [...curFavs, tName];
+    }
+    if (Array.isArray(bodyData.preferred_leagues) && bodyData.preferred_leagues.length) {
+      target.preferred_leagues = bodyData.preferred_leagues;
+    }
+    if (bodyData.display_name) target.display_name = String(bodyData.display_name).trim();
+    if (bodyData.avatar_color) target.avatar_color = bodyData.avatar_color;
+    if (bodyData.bankroll !== undefined) target.bankroll = Number(bodyData.bankroll);
+    if (bodyData.kelly_fraction !== undefined) target.kelly_fraction = Number(bodyData.kelly_fraction);
+    if (bodyData.min_edge_pct !== undefined) target.min_edge_pct = Number(bodyData.min_edge_pct);
+    if (bodyData.monthly_stake_limit !== undefined) target.monthly_stake_limit = Number(bodyData.monthly_stake_limit);
+    if (bodyData.telegram_chat_id !== undefined) target.telegram_chat_id = String(bodyData.telegram_chat_id || '').trim();
+    if (bodyData.default_stake !== undefined) target.default_stake = Number(bodyData.default_stake);
+    saveGhState(gh);
+    return { ok: true, user: sanitizeStaticUser(target) };
+  }
+
+  if (pathname === '/api/user/watchlist') {
+    const ids = gh.watchedByUser[activeUser.id] || [];
+    const watchedSet = new Set(ids);
+    const list = (snap.fixtures || [])
+      .filter((f) => watchedSet.has(f.id))
+      .map((f) => ({
+        fixture_id: f.id,
+        note: '',
+        div: f.div,
+        match_date: f.match_date,
+        kickoff_time: f.kickoff_time,
+        home_team: f.home_team,
+        away_team: f.away_team,
+        b365h: f.b365h,
+        b365d: f.b365d,
+        b365a: f.b365a,
+        odds_source: f.odds_source,
+      }));
+    return { watchlist: list, fixture_ids: ids };
+  }
+
+  if (pathname === '/api/user/watchlist/toggle' && method === 'POST') {
+    const fid = Number(bodyData.fixture_id);
+    if (!fid) throw new Error('Valid fixture_id is required');
+    const cur = gh.watchedByUser[activeUser.id] || [];
+    let watched = false;
+    if (cur.includes(fid)) {
+      gh.watchedByUser[activeUser.id] = cur.filter((x) => x !== fid);
+    } else {
+      gh.watchedByUser[activeUser.id] = [...cur, fid];
+      watched = true;
+    }
+    saveGhState(gh);
+    return { ok: true, watched, watched_fixture_ids: gh.watchedByUser[activeUser.id] };
+  }
+
+  if (pathname === '/api/user/slip' && method === 'PUT') {
+    const target = gh.users.find((u) => Number(u.id) === Number(activeUser.id));
+    target.active_slip = Array.isArray(bodyData.legs) ? bodyData.legs : [];
+    target.default_stake = Math.max(1.0, Number(bodyData.stake || 10.0));
+    saveGhState(gh);
+    return { ok: true, leg_count: target.active_slip.length, default_stake: target.default_stake };
+  }
+
+  if (pathname === '/api/user/saved-accas') {
+    const cur = gh.savedAccasByUser[activeUser.id] || [];
+    if (method === 'GET') {
+      return { saved_accas: cloneJson(cur) };
+    }
+    if (method === 'POST') {
+      const legs = bodyData.legs || [];
+      if (!legs.length) throw new Error('Cannot save an empty accumulator');
+      const stake = Math.max(1.0, Number(bodyData.stake || 10.0));
+      const ev = evaluateAccaClient(legs, stake);
+      const saved = {
+        id: gh.nextIds.acca++,
+        user_id: activeUser.id,
+        name: (bodyData.name || '').trim() || `Draft Acca (${legs.length} legs)`,
+        stake,
+        legs: cloneJson(legs),
+        combined_odds: ev.combined_odds,
+        combined_prob: ev.combined_model_prob,
+        ev_pct: ev.expected_value_pct,
+        created_at: new Date().toISOString(),
+      };
+      gh.savedAccasByUser[activeUser.id] = [saved, ...cur];
+      saveGhState(gh);
+      return { ok: true, saved_acca: saved };
+    }
+  }
+
+  const delAccaMatch = pathname.match(/^\/api\/user\/saved-accas\/(\d+)$/);
+  if (delAccaMatch && method === 'DELETE') {
+    const accaId = Number(delAccaMatch[1]);
+    const cur = gh.savedAccasByUser[activeUser.id] || [];
+    const next = cur.filter((a) => Number(a.id) !== accaId);
+    if (next.length === cur.length) throw new Error('Saved acca not found');
+    gh.savedAccasByUser[activeUser.id] = next;
+    saveGhState(gh);
+    return { ok: true };
+  }
+
+  if (pathname === '/api/backtest') {
+    return cloneJson(snap.backtest || { results: [], top_elo_teams: [] });
+  }
+
+  if (pathname === '/api/news') {
+    const team = (query.get('team') || '').trim().toLowerCase();
+    const items = (snap.news || []).filter(
+      (n) =>
+        !team ||
+        (n.matched_teams || []).some((t) => t.toLowerCase().includes(team)) ||
+        String(n.title || '').toLowerCase().includes(team)
+    );
+    return { news: items };
+  }
+
+  if (pathname === '/api/alerts') {
+    const alerts = (snap.alerts || []).map((a) => (gh.alertsRead ? { ...a, is_read: 1 } : a));
+    return { alerts };
+  }
+
+  if (pathname === '/api/alerts/mark-read' && method === 'POST') {
+    gh.alertsRead = true;
+    saveGhState(gh);
+    return { ok: true };
+  }
+
+  if (pathname === '/api/alerts/test-telegram' && method === 'POST') {
+    return { ok: true, message: 'Telegram test alerts require running the local or cloud Flask server with TELEGRAM_BOT_TOKEN.' };
+  }
+
+  if (pathname === '/api/sync' && method === 'POST') {
+    return {
+      ok: true,
+      summary: { cached: true, counts: cloneJson(snap.dashboard?.counts || {}) },
+      quota: cloneJson(snap.dashboard?.quota || {}),
+    };
+  }
+
+  throw new Error(`Unsupported static route: ${pathname}`);
+}
+
 async function api(path, opts = {}) {
   const sep = path.includes('?') ? '&' : '?';
   const url = path.startsWith('/api/') ? `${path}${sep}user_id=${state.activeUserId}` : path;
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', 'X-User-Id': String(state.activeUserId) },
-    ...opts,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
+  const forceStatic =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.endsWith('github.io') ||
+      window.location.protocol === 'file:' ||
+      window.__ACCALAB_STATIC__ === true);
+
+  if (forceStatic && path.startsWith('/api/')) {
+    return staticApi(url, opts);
+  }
+
+  try {
+    const res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(state.activeUserId) },
+      ...opts,
+    });
+    const ct = res.headers.get('content-type') || '';
+    if ((res.status === 404 || res.status === 405) && !ct.includes('application/json') && path.startsWith('/api/')) {
+      window.__ACCALAB_STATIC__ = true;
+      return staticApi(url, opts);
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  } catch (err) {
+    if (path.startsWith('/api/') && err instanceof TypeError) {
+      window.__ACCALAB_STATIC__ = true;
+      return staticApi(url, opts);
+    }
+    throw err;
+  }
 }
 
 function saveSlip(syncServer = true) {
@@ -2297,7 +3313,7 @@ function bindGlobalEvents() {
 
 async function boot() {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
   bindGlobalEvents();
   await loadDashboard(true);

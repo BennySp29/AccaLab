@@ -84,6 +84,14 @@ def run_full_sync(run_backtest: bool = True, force: bool = False) -> dict[str, A
 
         counts = _sync_counts(conn)
 
+    static_res: dict[str, Any] = {}
+    try:
+        from accalab.static_export import export_static_site
+
+        static_res = export_static_site()
+    except Exception as exc:
+        static_res = {"error": str(exc)}
+
     return {
         "cached": False,
         "last_sync_at": sync_ts,
@@ -95,4 +103,5 @@ def run_full_sync(run_backtest: bool = True, force: bool = False) -> dict[str, A
         "new_alerts": alerts_cnt,
         "backtest_computed": len(bt_res),
         "counts": counts,
+        "static_export": static_res,
     }

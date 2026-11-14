@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#060913" />
+  <title>AccaLab — Football Betting Assistant</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Plus Jakarta Sans', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          },
+          colors: {
+            slatebg: '#060913',
+            panel: '#0c1322',
+            card: '#131d33',
+            surface: '#192540',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body {
+      background-color: #060913;
+      background-image:
+        radial-gradient(circle at 12% 0%, rgba(16, 185, 129, 0.09), transparent 42%),
+        radial-gradient(circle at 88% 12%, rgba(6, 182, 212, 0.07), transparent 40%);
+      color: #e2e8f0;
+      font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    .glass-panel {
+      background: rgba(12, 19, 34, 0.84);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+    .card-hover {
+      transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .card-hover:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 28px -12px rgba(16, 185, 129, 0.22);
+    }
+    @keyframes fadeInSlide {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in {
+      animation: fadeInSlide 0.22s ease-out;
+    }
+    .btn-bet365 {
+      background: linear-gradient(135deg, #027b5b 0%, #059669 100%);
+      color: #ffdf1b;
+      border: 1px solid rgba(255, 223, 27, 0.28);
+      box-shadow: 0 6px 18px -6px rgba(2, 123, 91, 0.55);
+      transition: filter 0.15s ease, transform 0.15s ease;
+    }
+    .btn-bet365:hover {
+      filter: brightness(1.08);
+      transform: translateY(-1px);
+    }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col lg:flex-row pb-20 lg:pb-0 selection:bg-emerald-500/30">
+
+  <!-- Desktop Sidebar -->
+  <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 glass-panel border-r border-slate-800/80 z-30">
+    <div class="p-5 border-b border-slate-800/80 flex items-center gap-3">
+      <img src="./icon.svg" alt="AccaLab" class="w-9 h-9 rounded-xl ring-1 ring-emerald-500/30" />
+      <div>
+        <h1 class="text-lg font-extrabold tracking-tight text-white">AccaLab</h1>
+        <p class="text-xs font-medium text-emerald-400">EPL → League Two</p>
+      </div>
+    </div>
+
+    <div class="px-3 pt-3">
+      <button id="open-suggest-sidebar-btn" class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition">
+        <span>✨ Suggest a Bet</span>
+      </button>
+    </div>
+
+    <nav id="desktop-nav" class="flex-1 p-3 space-y-1 overflow-y-auto">
+      <button data-tab="fixtures" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium bg-emerald-500/15 text-emerald-400">
+        <span>⚽</span><span>Match Previews</span>
+      </button>
+      <button data-tab="value" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <span>💎</span><span>Value Finder</span>
+      </button>
+      <button data-tab="acca" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <span>🧮</span><span>Acca Builder</span>
+      </button>
+      <button data-tab="tracker" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <span>📈</span><span>Bet Tracker &amp; CLV</span>
+      </button>
+      <button data-tab="backtest" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <span>🔬</span><span>Model &amp; Backtest</span>
+      </button>
+      <button data-tab="leaderboard" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <span>🏆</span><span>Friends Leaderboard</span>
+      </button>
+      <button data-tab="settings" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <span class="flex items-center gap-3"><span>🔔</span><span>Alerts &amp; Settings</span></span>
+        <span id="sidebar-alert-badge" class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
+      </button>
+    </nav>
+
+    <div class="p-4 border-t border-slate-800/80 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <span id="sidebar-avatar" class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-slate-950 bg-emerald-400 shrink-0">Y</span>
+          <div class="min-w-0">
+            <div id="sidebar-username" class="text-xs font-bold text-white truncate">You (Admin)</div>
+            <div id="sidebar-auth-status" class="text-[10px] text-slate-400">Session active</div>
+          </div>
+        </div>
+        <button id="open-auth-modal-btn" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-emerald-300 shrink-0">Account</button>
+      </div>
+      <div>
+        <label class="text-[11px] uppercase tracking-wider text-slate-400">Switch Demo / Friend</label>
+        <select id="user-switcher" class="mt-1 w-full bg-surface border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white"></select>
+      </div>
+      <div class="text-xs text-slate-400 flex justify-between">
+        <span>Bankroll:</span>
+        <span id="sidebar-bankroll" class="font-semibold font-mono text-emerald-400">£250.00</span>
+      </div>
+      <button id="sync-btn-sidebar" class="w-full py-2 px-3 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-semibold transition">
+        ↻ Smart Sync Data
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <div class="flex-1 lg:pl-64 flex flex-col min-h-screen">
+    <!-- Top Header Bar -->
+    <header class="sticky top-0 z-20 glass-panel border-b border-slate-800/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2.5 lg:hidden">
+        <img src="./icon.svg" alt="AccaLab" class="w-8 h-8 rounded-lg" />
+        <span class="font-extrabold text-white">AccaLab</span>
+      </div>
+      <div id="kpi-strip" class="flex flex-wrap items-center gap-2 text-xs">
+        <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700 text-slate-300">Loading stats...</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="open-suggest-btn" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-emerald-500/20 transition">
+          <span>✨ Suggest Bet</span>
+        </button>
+        <select id="user-switcher-mobile" class="lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
+        <button id="open-auth-modal-mobile-btn" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Account</button>
+        <button id="open-slip-btn" class="relative px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
+          <span>🧾 Bet Slip</span>
+          <span id="slip-count-badge" class="bg-slate-950/80 text-emerald-300 px-1.5 py-0.5 rounded-full text-[11px] font-mono">0</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Active View Container -->
+    <main id="main-content" class="flex-1 p-4 md:p-6 max-w-7xl w-full mx-auto space-y-6 animate-fade-in">
+      <div class="text-slate-400 text-sm">Loading AccaLab analytics...</div>
+    </main>
+  </div>
+
+  <!-- Mobile Bottom Navigation -->
+  <nav id="mobile-nav" class="lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 flex justify-around py-2 z-30">
+    <button data-tab="fixtures" class="nav-btn-mob flex flex-col items-center text-[11px] text-emerald-400">
+      <span class="text-lg">⚽</span><span>Matches</span>
+    </button>
+    <button data-tab="value" class="nav-btn-mob flex flex-col items-center text-[11px] text-slate-400">
+      <span class="text-lg">💎</span><span>Value</span>
+    </button>
+    <button data-tab="acca" class="nav-btn-mob flex flex-col items-center text-[11px] text-slate-400">
+      <span class="text-lg">🧮</span><span>Acca</span>
+    </button>
+    <button data-tab="tracker" class="nav-btn-mob flex flex-col items-center text-[11px] text-slate-400">
+      <span class="text-lg">📈</span><span>Tracker</span>
+    </button>
+    <button data-tab="backtest" class="nav-btn-mob flex flex-col items-center text-[11px] text-slate-400">
+      <span class="text-lg">🔬</span><span>Model</span>
+    </button>
+    <button data-tab="settings" class="nav-btn-mob flex flex-col items-center text-[11px] text-slate-400">
+      <span class="text-lg">⚙️</span><span>More</span>
+    </button>
+  </nav>
+
+  <!-- Match Preview Drawer/Modal -->
+  <div id="preview-modal" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm z-40 overflow-y-auto p-3 md:p-6">
+    <div class="max-w-4xl mx-auto bg-panel border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden my-4 animate-fade-in">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div>
+          <span id="modal-league-tag" class="text-xs font-semibold uppercase tracking-wider text-emerald-400"></span>
+          <h2 id="modal-match-title" class="text-lg md:text-xl font-bold text-white mt-0.5"></h2>
+        </div>
+        <button id="close-preview-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm">✕ Close</button>
+      </div>
+      <div id="preview-modal-body" class="p-5 space-y-5 max-h-[82vh] overflow-y-auto scrollbar-thin"></div>
+    </div>
+  </div>
+
+  <!-- Floating Bet Slip Drawer -->
+  <div id="slip-drawer" class="hidden fixed inset-y-0 right-0 w-full max-w-md glass-panel border-l border-slate-700/80 z-50 flex flex-col shadow-2xl">
+    <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+      <h3 class="font-bold text-white text-base">🧾 Acca &amp; Bet Slip</h3>
+      <button id="close-slip-btn" class="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs">✕</button>
+    </div>
+    <div id="slip-body" class="flex-1 p-4 overflow-y-auto space-y-3 scrollbar-thin"></div>
+    <div id="slip-footer" class="p-4 border-t border-slate-800 bg-panel/95 space-y-3"></div>
+  </div>
+
+  <!-- Smart Bet Suggester & Bet365 Express Export Modal -->
+  <div id="suggest-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 overflow-y-auto p-3 md:p-6">
+    <div class="max-w-2xl mx-auto bg-panel border border-emerald-500/30 rounded-2xl shadow-2xl overflow-hidden my-4 animate-fade-in">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between gap-3 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10">
+        <div>
+          <h2 id="suggest-modal-title" class="text-lg font-extrabold text-white">✨ Smart Bet Assistant &amp; Bet365 Export</h2>
+          <p id="suggest-modal-subtitle" class="text-xs text-slate-300">Data-backed selections built from Dixon-Coles, Elo, shots, Bet365 odds &amp; team news</p>
+        </div>
+        <button id="close-suggest-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs shrink-0">✕ Close</button>
+      </div>
+      <div id="suggest-modal-body" class="p-5 space-y-4 max-h-[80vh] overflow-y-auto scrollbar-thin"></div>
+    </div>
+  </div>
+
+  <!-- Account Sign Up / Log In Modal -->
+  <div id="auth-modal" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm z-50 overflow-y-auto p-3 md:p-6">
+    <div class="max-w-lg mx-auto bg-panel border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden my-6 animate-fade-in">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div>
+          <h2 class="text-lg font-bold text-white">Your AccaLab Account</h2>
+          <p class="text-xs text-slate-400">Save favourite clubs, watchlist matches, draft accas &amp; bankroll settings</p>
+        </div>
+        <button id="close-auth-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">✕ Close</button>
+      </div>
+      <div class="px-5 pt-4 flex gap-2 border-b border-slate-800">
+        <button id="auth-tab-login" class="px-4 py-2 text-xs font-bold border-b-2 border-emerald-400 text-emerald-400">Log In</button>
+        <button id="auth-tab-register" class="px-4 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-white">Create Account</button>
+      </div>
+      <div id="auth-modal-body" class="p-5 space-y-4 max-h-[75vh] overflow-y-auto scrollbar-thin"></div>
+    </div>
+  </div>
+
+  <!-- Toast Banner -->
+  <div id="toast" class="hidden fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium shadow-xl z-50"></div>
+
+  <script type="module" src="./static/app.js"></script>
+</body>
+</html>
