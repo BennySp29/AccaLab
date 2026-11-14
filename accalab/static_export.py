@@ -82,6 +82,7 @@ def export_static_site() -> dict[str, Any]:
     shutil.copy2(pkg_static / "manifest.json", BASE_DIR / "manifest.json")
     shutil.copy2(pkg_static / "sw.js", BASE_DIR / "sw.js")
     shutil.copy2(pkg_static / "app.js", root_static / "app.js")
+    shutil.copy2(pkg_static / "accalab-bet365.user.js", root_static / "accalab-bet365.user.js")
 
     icon_bytes = client.get("/icon.svg").data
     (BASE_DIR / "icon.svg").write_bytes(icon_bytes)
@@ -99,6 +100,7 @@ def export_static_site() -> dict[str, Any]:
             "sw.js",
             "icon.svg",
             "static/app.js",
+            "static/accalab-bet365.user.js",
             "static/snapshot.json",
             "accalab/static/snapshot.json",
         ],

@@ -196,6 +196,64 @@ function evaluateAccaClient(legs = [], stake = 10.0) {
   };
 }
 
+const B365_TEAM_SEARCH_NAMES = {
+  "Nott'm Forest": 'Nottingham Forest',
+  'Sheffield Weds': 'Sheffield Wednesday',
+  Peterboro: 'Peterborough',
+  'Bristol Rvs': 'Bristol Rovers',
+  'Milton Keynes Dons': 'MK Dons',
+  'West Brom': 'West Bromwich Albion',
+  'Sheffield United': 'Sheff Utd',
+};
+
+function b365SearchTeam(name) {
+  const cleaned = String(name || '').trim();
+  return B365_TEAM_SEARCH_NAMES[cleaned] || cleaned;
+}
+
+function isFixtureUpcomingClient(fix, nowDate = new Date()) {
+  if (!fix) return true;
+  const iso = nowDate.toISOString();
+  const todayIso = iso.slice(0, 10);
+  const nowHhmm = iso.slice(11, 16);
+  const mdate = String(fix.match_date || '').trim();
+  if (!mdate) return true;
+  if (mdate > todayIso) return true;
+  if (mdate < todayIso) return false;
+  const ko = String(fix.kickoff_time || '').trim();
+  if (!ko) return true;
+  return ko > nowHhmm;
+}
+
+function encodeSlipTokenClient(payload) {
+  const raw = JSON.stringify(payload);
+  try {
+    if (typeof TextEncoder !== 'undefined' && typeof btoa === 'function') {
+      const bytes = new TextEncoder().encode(raw);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+  } catch (_) {}
+  try {
+    if (typeof btoa === 'function') {
+      return btoa(unescape(encodeURIComponent(raw))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+  } catch (_) {}
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(raw, 'utf8').toString('base64url');
+  }
+  return '';
+}
+
+function openInBet365Tab(url) {
+  const win = window.open(url, 'accalab_bet365_tab');
+  try {
+    if (win && win.focus) win.focus();
+  } catch (_) {}
+  return win;
+}
+
 const B365_MARKET_NAMES = {
   '1X2_H': 'Full Time Result',
   '1X2_D': 'Full Time Result',
@@ -220,42 +278,72 @@ function b365SelectionNameClient(leg) {
 
 function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Suggested Bet', optionsOverride = '', leaguesMeta = {}) {
   const parsedStake = Number(stake);
-  const cleanStake = Number.isFinite(parsedStake) && parsedStake >= 1.0 ? parsedStake : 10.0;
+  const cleanStake = Number.isFinite(parsedStake) && parsedStake >= 0.5 ? parsedStake : 10.0;
   const evalSummary = evaluateAccaClient(legs, cleanStake);
+  const combFrac = fmtOdds(evalSummary.combined_odds);
+  evalSummary.combined_odds_fractional = combFrac;
   const exportedLegs = [];
   const legOptionTokens = [];
+  const compactLegs = [];
 
   for (const leg of legs) {
     const div = String(leg.div || '');
     const leagueName = leaguesMeta[div]?.name || leg.league_name || div || 'English Football';
     const home = String(leg.home_team || '').trim();
     const away = String(leg.away_team || '').trim();
+    const b365Home = b365SearchTeam(home);
+    const b365Away = b365SearchTeam(away);
     const mkt = String(leg.market || '1X2_H');
     const b365Market = B365_MARKET_NAMES[mkt] || 'Full Time Result';
     const b365Selection = b365SelectionNameClient(leg);
     const oddsVal = roundNum(Number(leg.odds || 1.0), 2);
-    const searchTerm = home || away || 'Football';
-    const searchUrl = `https://www.bet365.com/#/AX/K^${encodeURIComponent(searchTerm)}`;
+    const oddsFrac = fmtOdds(oddsVal);
+    const searchTerm = b365Home && b365Away ? `${b365Home} v ${b365Away}` : b365Home || b365Away || 'Football';
+    const searchHash = `#/AX/K^${encodeURIComponent(searchTerm)}`;
 
     const optTok = String(leg.b365_options_id || '').trim();
     if (optTok) legOptionTokens.push(optTok);
+
+    compactLegs.push({
+      h: b365Home,
+      a: b365Away,
+      k: searchTerm,
+      l: String(leg.selection_label || b365Selection),
+      m: b365Market,
+      s: b365Selection,
+      o: oddsFrac,
+      lg: leagueName,
+    });
 
     exportedLegs.push({
       fixture_id: leg.fixture_id,
       div,
       league_name: leagueName,
       match_date: leg.match_date || '',
+      kickoff_time: leg.kickoff_time || '',
       home_team: home,
       away_team: away,
       market: mkt,
       selection_label: leg.selection_label || b365Selection,
       odds: oddsVal,
-      odds_fractional: fmtOdds(oddsVal),
+      odds_fractional: oddsFrac,
       b365_market_name: b365Market,
       b365_selection_name: b365Selection,
+      b365_search_query: searchTerm,
+      b365_search_hash: searchHash,
       b365_path: `Soccer → United Kingdom → ${leagueName} → ${home} v ${away} → ${b365Market}`,
-      b365_search_url: searchUrl,
+      b365_search_url: `https://www.bet365.com/${searchHash}`,
     });
+  }
+
+  const slipToken = encodeSlipTokenClient({
+    t: title,
+    st: roundNum(cleanStake, 2),
+    od: combFrac,
+    legs: compactLegs,
+  });
+  for (const item of exportedLegs) {
+    item.b365_search_url = `https://www.bet365.com/?accalab_slip=${slipToken}${item.b365_search_hash}`;
   }
 
   const betType = legs.length > 1 ? 'combo' : 'single';
@@ -265,7 +353,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
   const prefillTemplateUrl = `https://www.bet365.com/en/sports?options={eventId}-{marketId}-{selectionId}&type=${betType}&stake=${cleanStake.toFixed(2)}&currency=GBP`;
 
   let deepLinkUrl = null;
-  let launchUrl = exportedLegs[0]?.b365_search_url || 'https://www.bet365.com/#/HO/';
+  let launchUrl = exportedLegs[0]?.b365_search_url || `https://www.bet365.com/?accalab_slip=${slipToken}#/HO/`;
   let mode = 'express_handoff';
   if (resolvedOptions) {
     const safeOpts = encodeURIComponent(resolvedOptions).replaceAll('%2C', ',').replaceAll('%2D', '-').replaceAll('%7E', '~');
@@ -276,7 +364,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
 
   const lines = [
     `${title} (${legs.length > 1 ? `Acca ${legs.length}-Fold` : 'Single'})`,
-    `Stake: £${cleanStake.toFixed(2)} | Combined Odds: ${fmtOdds(evalSummary.combined_odds)} | Potential Return: £${evalSummary.potential_return.toFixed(2)}`,
+    `Stake: £${cleanStake.toFixed(2)} | Combined Odds: ${combFrac} | Potential Return: £${evalSummary.potential_return.toFixed(2)}`,
     `Model Hit Prob: ${evalSummary.combined_model_prob_pct}% | Expected Value: ${evalSummary.expected_value_pct >= 0 ? '+' : ''}${evalSummary.expected_value_pct.toFixed(1)}%`,
     '',
   ];
@@ -291,6 +379,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
     mode,
     bet_type: betType,
     stake: roundNum(cleanStake, 2),
+    slip_token: slipToken,
     launch_url: launchUrl,
     deep_link_url: deepLinkUrl,
     prefill_template_url: prefillTemplateUrl,
@@ -483,9 +572,69 @@ function buildStaticSuggestBet(gh, snap, user) {
   const favSet = new Set(user.favourite_teams || []);
   const prefLeagues = new Set(user.preferred_leagues || ['E0', 'E1', 'E2', 'E3']);
   const watchedSet = new Set(gh.watchedByUser[user.id] || []);
+  const fixById = new Map((snap.fixtures || []).map((f) => [f.id, f]));
+  const allFix = snap.fixtures || [];
+  const hasUpcoming = allFix.some((f) => isFixtureUpcomingClient(f));
+  const isItemUpcoming = (item) => {
+    if (!hasUpcoming) return true;
+    const fx = fixById.get(item.fixture_id);
+    return fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(item);
+  };
+
+  const upcomingOpps = (snap.value_bets || []).filter(isItemUpcoming);
+  const toLeg = (o) => ({
+    fixture_id: o.fixture_id,
+    div: o.div,
+    league_name: o.league_name,
+    match_date: o.match_date,
+    kickoff_time: fixById.get(o.fixture_id)?.kickoff_time || o.kickoff_time || '',
+    home_team: o.home_team,
+    away_team: o.away_team,
+    market: o.market,
+    selection_label: o.selection_label,
+    odds: o.odds,
+    odds_fractional: fmtOdds(o.odds),
+    model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
+    edge_pct: o.edge_pct,
+    odds_source: o.odds_source,
+  });
+
+  if (hasUpcoming && upcomingOpps.length) {
+    const refreshPkg = (pkg) => {
+      if (!pkg || !Array.isArray(pkg.legs)) return pkg;
+      if (pkg.legs.every(isItemUpcoming)) return pkg;
+      const targetLen = pkg.legs.length;
+      const kept = pkg.legs.filter(isItemUpcoming);
+      const usedFids = new Set(kept.map((l) => l.fixture_id));
+      for (const cand of upcomingOpps) {
+        if (kept.length >= targetLen) break;
+        if (usedFids.has(cand.fixture_id) || cand.odds < 1.25 || cand.odds > 5.5) continue;
+        usedFids.add(cand.fixture_id);
+        kept.push(toLeg(cand));
+      }
+      if (!kept.length) return pkg;
+      const ev = evaluateAccaClient(kept, pkg.stake || 5);
+      ev.combined_odds_fractional = fmtOdds(ev.combined_odds);
+      pkg.legs = kept;
+      pkg.eval = ev;
+      pkg.bet365_export = buildBet365ExportClient(kept, pkg.stake || 5, pkg.title, '', snap.dashboard?.leagues);
+      return pkg;
+    };
+
+    for (const tier of base.risk_levels || []) {
+      tier.options = (tier.options || []).map(refreshPkg);
+      if (tier.primary) tier.primary = base.by_id?.[tier.primary.id] ? refreshPkg(tier.primary) : tier.options[0];
+      if (base.by_risk?.[tier.id]) base.by_risk[tier.id] = tier;
+    }
+    base.suggestions = (base.suggestions || []).map(refreshPkg);
+    for (const [k, v] of Object.entries(base.by_id || {})) {
+      base.by_id[k] = refreshPkg(v);
+    }
+    if (base.top_single) base.top_single = refreshPkg(base.top_single);
+  }
 
   if (favSet.size || watchedSet.size || prefLeagues.size < 4) {
-    const allVal = snap.value_bets || [];
+    const allVal = upcomingOpps.length ? upcomingOpps : snap.value_bets || [];
     let pool = allVal.filter((o) => favSet.has(o.home_team) || favSet.has(o.away_team) || watchedSet.has(o.fixture_id));
     if (!pool.length) pool = allVal.filter((o) => prefLeagues.has(o.div));
     if (!pool.length) pool = allVal;
@@ -495,21 +644,7 @@ function buildStaticSuggestBet(gh, snap, user) {
     for (const o of pool) {
       if (o.odds < 1.25 || o.odds > 5.5 || seenFids.has(o.fixture_id)) continue;
       seenFids.add(o.fixture_id);
-      picked.push({
-        fixture_id: o.fixture_id,
-        div: o.div,
-        league_name: o.league_name,
-        match_date: o.match_date,
-        home_team: o.home_team,
-        away_team: o.away_team,
-        market: o.market,
-        selection_label: o.selection_label,
-        odds: o.odds,
-        odds_fractional: fmtOdds(o.odds),
-        model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
-        edge_pct: o.edge_pct,
-        odds_source: o.odds_source,
-      });
+      picked.push(toLeg(o));
       if (picked.length === 3) break;
     }
 
@@ -564,7 +699,9 @@ async function staticApi(path, opts = {}) {
     const watchedIds = cloneJson(gh.watchedByUser[activeUser.id] || []);
     const watchedSet = new Set(watchedIds);
     const savedAccas = gh.savedAccasByUser[activeUser.id] || [];
-    const fixtures = (snap.fixtures || []).map((f) => applyStaticCustomOdds(f, gh.customOddsByFixture));
+    const allFixtures = (snap.fixtures || []).map((f) => applyStaticCustomOdds(f, gh.customOddsByFixture));
+    const upcomingFix = allFixtures.filter((f) => isFixtureUpcomingClient(f));
+    const fixtures = upcomingFix.length ? upcomingFix : allFixtures;
     const forYou = fixtures
       .filter((f) => favSet.has(f.home_team) || favSet.has(f.away_team) || watchedSet.has(f.id))
       .slice(0, 6)
@@ -575,8 +712,16 @@ async function staticApi(path, opts = {}) {
     baseCounts.unread_alerts = gh.alertsRead ? 0 : baseCounts.unread_alerts;
     baseCounts.saved_accas = savedAccas.length;
     baseCounts.watched_fixtures = watchedIds.length;
+    baseCounts.upcoming_fixtures = fixtures.length;
+    const dynamicLeagueCounts = {};
+    for (const fx of fixtures) dynamicLeagueCounts[fx.div] = (dynamicLeagueCounts[fx.div] || 0) + 1;
 
-    const opps = (snap.value_bets || []).filter((o) => o.edge_pct >= Number(activeUser.min_edge_pct || 4.0));
+    const opps = (snap.value_bets || [])
+      .filter((o) => {
+        const fx = allFixtures.find((f) => f.id === o.fixture_id);
+        return upcomingFix.length ? (fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(o)) : true;
+      })
+      .filter((o) => o.edge_pct >= Number(activeUser.min_edge_pct || 4.0));
     const sugg = buildStaticSuggestBet(gh, snap, activeUser);
 
     return {
@@ -588,7 +733,7 @@ async function staticApi(path, opts = {}) {
       for_you_fixtures: forYou,
       all_teams_by_league: snap.dashboard?.all_teams_by_league || {},
       counts: baseCounts,
-      leagues_counts: snap.dashboard?.leagues_counts || {},
+      leagues_counts: fixtures.length ? dynamicLeagueCounts : snap.dashboard?.leagues_counts || {},
       user_summary: {
         total_bets: betsData.stats.total_bets,
         pending_bets: betsData.stats.pending_count,
@@ -613,8 +758,11 @@ async function staticApi(path, opts = {}) {
     const favSet = new Set(activeUser.favourite_teams || []);
     const watchedSet = new Set(gh.watchedByUser[activeUser.id] || []);
 
-    const list = (snap.fixtures || [])
-      .map((f) => applyStaticCustomOdds(f, gh.customOddsByFixture))
+    const allMapped = (snap.fixtures || []).map((f) => applyStaticCustomOdds(f, gh.customOddsByFixture));
+    const upcomingMapped = allMapped.filter((f) => isFixtureUpcomingClient(f));
+    const baseRows = !dateFilter && upcomingMapped.length ? upcomingMapped : allMapped;
+
+    const list = baseRows
       .filter((f) => {
         if (div && !['MY_TEAMS', 'WATCHLIST'].includes(div) && f.div !== div) return false;
         if (dateFilter && f.match_date !== dateFilter) return false;
@@ -708,8 +856,14 @@ async function staticApi(path, opts = {}) {
     const div = (query.get('div') || '').trim();
     const minEdge = Number(query.get('min_edge') ?? 2.0);
     const officialOnly = query.get('official_only') === '1';
+    const fixById = new Map((snap.fixtures || []).map((f) => [f.id, f]));
+    const hasUpcoming = (snap.fixtures || []).some((f) => isFixtureUpcomingClient(f));
     const opps = (snap.value_bets || [])
       .filter((o) => {
+        if (hasUpcoming) {
+          const fx = fixById.get(o.fixture_id);
+          if (!(fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(o))) return false;
+        }
         if (div && o.div !== div) return false;
         if (officialOnly && !['bet365_official', 'api_football_b365', 'user_manual'].includes(o.odds_source)) return false;
         if (officialOnly && o.odds_source === 'bet365_official' && String(o.market).startsWith('BTTS')) return false;
@@ -3093,6 +3247,11 @@ function openAuthModal(initialMode = 'login') {
   document.getElementById('auth-modal').classList.remove('hidden');
 }
 
+function buildBet365Bookmarklet(slipToken = '') {
+  const fnSrc = `(function(fallbackTok){try{var q=new URLSearchParams(location.search||'').get('accalab_slip')||fallbackTok||'';if(q){sessionStorage.setItem('accalab_b365_slip_bm',q)}var tok=sessionStorage.getItem('accalab_b365_slip_bm')||q;if(!tok){alert('Open a slip from AccaLab first.');return}var b=tok.replace(/-/g,'+').replace(/_/g,'/');while(b.length%4)b+='=';var u=Uint8Array.from(atob(b),function(c){return c.charCodeAt(0)});var slip=JSON.parse(new TextDecoder().decode(u));var i=0;var old=document.getElementById('accalab-bm-bar');if(old)old.remove();var w=document.createElement('div');w.id='accalab-bm-bar';w.style.cssText='position:fixed;left:12px;bottom:12px;z-index:2147483647;width:320px;max-width:calc(100vw - 24px);background:#0f172a;color:#fff;border:1px solid #10b981;border-radius:12px;padding:10px;font:12px/1.4 system-ui,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.6)';function draw(){w.replaceChildren();var l=slip.legs[i];var h=document.createElement('div');h.style.cssText='font-weight:800;color:#34d399;margin-bottom:4px';h.textContent='AccaLab ('+(i+1)+'/'+slip.legs.length+') @ '+(slip.od||'');var m=document.createElement('div');m.style.cssText='font-weight:700';m.textContent=l.h+' v '+l.a;var s=document.createElement('div');s.style.cssText='color:#38bdf8;margin:3px 0 8px';s.textContent=l.m+': '+(l.s||l.l)+' @ '+l.o;var r=document.createElement('div');r.style.cssText='display:flex;gap:6px';var go=document.createElement('button');go.textContent='Open Match';go.style.cssText='flex:1;padding:6px;border-radius:8px;border:0;background:#10b981;color:#064e3b;font-weight:800;cursor:pointer';go.onclick=function(){location.hash='#/AX/K^'+encodeURIComponent(l.k||(l.h+' v '+l.a))};var nx=document.createElement('button');nx.textContent=i<slip.legs.length-1?'Next ->':'Done';nx.style.cssText='padding:6px 10px;border-radius:8px;border:1px solid #34d399;background:#065f46;color:#fff;font-weight:700;cursor:pointer';nx.onclick=function(){if(i<slip.legs.length-1){i++;draw();location.hash='#/AX/K^'+encodeURIComponent(slip.legs[i].k||(slip.legs[i].h+' v '+slip.legs[i].a))}else{w.remove()}};r.append(go,nx);w.append(h,m,s,r)}draw();document.body.appendChild(w)}catch(e){alert('AccaLab Companion error: '+e.message)}})('${String(slipToken || '').replace(/'/g, '')}');`;
+  return `javascript:${encodeURIComponent(fnSrc)}`;
+}
+
 function renderBet365HandoffModal(exp, legs, stake, title) {
   const modal = document.getElementById('suggest-modal');
   const titleEl = document.getElementById('suggest-modal-title');
@@ -3100,99 +3259,219 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
   const body = document.getElementById('suggest-modal-body');
   if (!modal || !body) return;
 
-  titleEl.textContent = '🚀 Bet365 Express Handoff';
+  const expLegs = exp.legs || [];
+  let activeLegIdx = 0;
+  const completedLegs = new Set();
+
+  titleEl.textContent = '🚀 Bet365 Slip Builder Handoff';
   subEl.textContent =
     exp.mode === 'direct_prefill'
       ? 'Direct Bet365 betslip deep-link launched — review or log once placed'
-      : 'Bet365 opened & slip copied — tap any leg below to jump straight to that market';
+      : 'Same-tab Bet365 builder: step through each leg below so Bet365 keeps adding to your slip';
 
   const ev = exp.eval || {};
-  body.innerHTML = `
-    <div class="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex flex-wrap items-center justify-between gap-2 text-xs">
-      <div>
-        <div class="font-bold text-emerald-300">${exp.mode === 'direct_prefill' ? 'Direct Slip Deep-Link Active' : 'Slip Copied + Bet365 Express Launch Ready'}</div>
-        <div class="text-slate-300 mt-0.5">${esc(exp.title)} (${exp.bet_type === 'combo' ? `${(exp.legs || []).length}-Fold Acca` : 'Single'})</div>
-      </div>
-      <a href="${esc(exp.launch_url)}" target="_blank" rel="noopener" class="px-3.5 py-2 rounded-xl btn-bet365 text-xs font-extrabold">Open Bet365 ↗</a>
-    </div>
 
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
-      <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Stake</div><div class="text-base font-bold font-mono text-white">${fmtGbp(exp.stake)}</div></div>
-      <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-base font-bold font-mono text-emerald-400">${fmtOdds(ev.combined_odds)}</div></div>
-      <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Potential Return</div><div class="text-base font-bold font-mono text-white">${fmtGbp(ev.potential_return || 0)}</div></div>
-      <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Model EV</div><div class="text-base font-bold font-mono ${Number(ev.expected_value_pct) >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${Number(ev.expected_value_pct) >= 0 ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
-    </div>
+  const renderHandoff = () => {
+    const curLeg = expLegs[activeLegIdx] || {};
+    const hasNext = activeLegIdx < expLegs.length - 1;
+    const isMulti = expLegs.length > 1;
 
-    <div class="space-y-2">
-      <div class="text-xs font-bold uppercase tracking-wider text-slate-400">1-Tap Match Jump &amp; Exact Bet365 Path</div>
-      ${(exp.legs || [])
-        .map(
-          (l, idx) => `
-        <div class="p-3 rounded-xl bg-card border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-          <div class="min-w-0">
-            <div class="font-bold text-white">${idx + 1}. ${esc(l.selection_label)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(l.odds)}</span></div>
-            <div class="text-[11px] text-cyan-300 mt-0.5 truncate">${esc(l.b365_path)}</div>
+    body.innerHTML = `
+      <div class="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 space-y-2.5 text-xs">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div class="font-bold text-emerald-300">
+              ${exp.mode === 'direct_prefill' ? 'Direct Slip Deep-Link Active' : `Step ${activeLegIdx + 1} of ${expLegs.length} Opened in Bet365 Tab`}
+            </div>
+            <div class="text-slate-300 mt-0.5">${esc(exp.title)} (${exp.bet_type === 'combo' ? `${expLegs.length}-Fold Acca` : 'Single'})</div>
           </div>
-          <a href="${esc(l.b365_search_url)}" target="_blank" rel="noopener" class="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold text-center">Open Match ↗</a>
-        </div>`
-        )
-        .join('')}
-    </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button id="b365-reopen-cur-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold">
+              ${isMulti ? `Open Leg ${activeLegIdx + 1} ↗` : 'Open Match in Bet365 ↗'}
+            </button>
+            ${
+              hasNext
+                ? `<button id="b365-next-leg-btn" type="button" class="px-3.5 py-2 rounded-xl btn-bet365 text-xs font-extrabold">
+                    ✓ Added — Next: Send Leg ${activeLegIdx + 2} to Same Tab →
+                  </button>`
+                : ''
+            }
+          </div>
+        </div>
 
-    <div class="p-3 rounded-xl bg-surface border border-slate-800 space-y-2 text-xs">
-      <div class="font-semibold text-slate-200">Optional: Bet365 Direct Betslip Options ID</div>
-      <p class="text-[11px] text-slate-400">Have a Bet365 <code class="text-cyan-300">eventId-marketId-selectionId</code> string? Paste it to open a pre-filled betslip URL with stake (£${Number(exp.stake).toFixed(2)}):</p>
-      <div class="flex gap-2">
-        <input id="b365-options-input" type="text" placeholder="e.g. 9047433-399573237-1189243230" class="flex-1 px-3 py-1.5 rounded-lg bg-slatebg border border-slate-700 text-xs font-mono text-white" />
-        <button id="b365-apply-options-btn" type="button" class="px-3 py-1.5 rounded-lg btn-bet365 text-xs font-bold">Launch Prefill ↗</button>
+        ${
+          expLegs.length
+            ? `<div class="p-2.5 rounded-lg bg-slatebg/80 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-2">
+                <div class="min-w-0">
+                  <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">What to tap on Bet365 right now</div>
+                  <div class="text-white font-bold mt-0.5">${esc(curLeg.home_team)} v ${esc(curLeg.away_team)} → <span class="text-cyan-300">${esc(curLeg.b365_market_name)}</span>: <span class="text-emerald-300">${esc(curLeg.b365_selection_name || curLeg.selection_label)} @ ${fmtOdds(curLeg.odds)}</span></div>
+                </div>
+                <span class="text-[10px] font-mono text-amber-300 shrink-0">Bet365 keeps your slip across legs</span>
+              </div>`
+            : ''
+        }
       </div>
-    </div>
 
-    <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
-      <button id="b365-back-suggest-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold">← Back to Suggestions</button>
-      <button id="b365-copy-btn" type="button" class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📋 Copy Slip Summary</button>
-      <button id="b365-log-bet-btn" type="button" class="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs text-white font-extrabold">✅ Bet Placed on Bet365 — Log to Tracker</button>
-    </div>
-  `;
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Stake</div><div class="text-base font-bold font-mono text-white">${fmtGbp(exp.stake)}</div></div>
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-base font-bold font-mono text-emerald-400">${fmtOdds(ev.combined_odds)}</div></div>
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Potential Return</div><div class="text-base font-bold font-mono text-white">${fmtGbp(ev.potential_return || 0)}</div></div>
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Model EV</div><div class="text-base font-bold font-mono ${Number(ev.expected_value_pct) >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${Number(ev.expected_value_pct) >= 0 ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
+      </div>
 
+      <div class="space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-bold uppercase tracking-wider text-slate-400">Same-Tab Match Queue (${completedLegs.size}/${expLegs.length} Added)</span>
+          <span class="text-[11px] text-slate-400">Uses <code class="text-cyan-300">Home v Away</code> search</span>
+        </div>
+        ${expLegs
+          .map((l, idx) => {
+            const isCur = idx === activeLegIdx;
+            const isDone = completedLegs.has(idx);
+            return `
+          <div class="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs transition ${
+            isCur
+              ? 'bg-emerald-500/10 border-emerald-400/70'
+              : isDone
+                ? 'bg-card/60 border-slate-800 opacity-80'
+                : 'bg-card border-slate-800'
+          }">
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="font-bold text-white">${idx + 1}. ${esc(l.selection_label)}</span>
+                <span class="text-emerald-400 font-mono font-bold">@ ${fmtOdds(l.odds)}</span>
+                ${
+                  isDone
+                    ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">Done ✓</span>'
+                    : isCur
+                      ? '<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">Active in Bet365</span>'
+                      : '<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">Queued</span>'
+                }
+              </div>
+              <div class="text-[11px] text-cyan-300 mt-0.5 truncate">${esc(l.b365_path)}</div>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button type="button" data-b365-done-idx="${idx}" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold">
+                ${isDone ? 'Undo' : '✓ Done'}
+              </button>
+              <button type="button" data-b365-open-idx="${idx}" class="px-3 py-1.5 rounded-lg bg-emerald-600/85 hover:bg-emerald-500 text-white font-semibold">
+                Open Match ↗
+              </button>
+            </div>
+          </div>`;
+          })
+          .join('')}
+      </div>
+
+      <div class="p-3 rounded-xl bg-surface border border-slate-800 space-y-2 text-xs">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="font-semibold text-emerald-300">⚡ Bet365 In-Page Slip Companion (No Tab Switching)</div>
+          <div class="flex flex-wrap gap-1.5">
+            <a href="./static/accalab-bet365.user.js" target="_blank" rel="noopener" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold">
+              Install Companion Userscript ↗
+            </a>
+            <button id="b365-copy-bookmarklet-btn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[11px] font-bold">
+              📋 Copy Overlay Bookmarklet
+            </button>
+          </div>
+        </div>
+        <p class="text-[11px] text-slate-400">
+          Why Bet365 doesn’t auto-fill multi-legs from a plain link alone: Bet365 locks betslip URL parameters behind internal partner IDs. Installing the Companion Userscript (Tampermonkey / iOS Userscripts) or running the Bookmarklet inside Bet365 floats this exact slip bar + Next Leg button right on top of Bet365 and highlights every match and selection on screen.
+        </p>
+      </div>
+
+      <div class="p-3 rounded-xl bg-surface border border-slate-800 space-y-2 text-xs">
+        <div class="font-semibold text-slate-200">Optional: Bet365 Direct Betslip Options ID</div>
+        <div class="flex gap-2">
+          <input id="b365-options-input" type="text" placeholder="e.g. 9047433-399573237-1189243230" class="flex-1 px-3 py-1.5 rounded-lg bg-slatebg border border-slate-700 text-xs font-mono text-white" />
+          <button id="b365-apply-options-btn" type="button" class="px-3 py-1.5 rounded-lg btn-bet365 text-xs font-bold">Launch Prefill ↗</button>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
+        <button id="b365-back-suggest-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold">← Back to Suggestions</button>
+        <button id="b365-copy-btn" type="button" class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📋 Copy Slip Summary</button>
+        <button id="b365-log-bet-btn" type="button" class="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs text-white font-extrabold">✅ Bet Placed on Bet365 — Log to Tracker</button>
+      </div>
+    `;
+
+    document.getElementById('b365-reopen-cur-btn')?.addEventListener('click', () => {
+      const targetUrl = expLegs[activeLegIdx]?.b365_search_url || exp.launch_url;
+      openInBet365Tab(targetUrl);
+    });
+
+    document.getElementById('b365-next-leg-btn')?.addEventListener('click', () => {
+      completedLegs.add(activeLegIdx);
+      if (activeLegIdx < expLegs.length - 1) activeLegIdx += 1;
+      const nextUrl = expLegs[activeLegIdx]?.b365_search_url || exp.launch_url;
+      openInBet365Tab(nextUrl);
+      renderHandoff();
+    });
+
+    body.querySelectorAll('[data-b365-open-idx]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.b365OpenIdx);
+        activeLegIdx = i;
+        openInBet365Tab(expLegs[i]?.b365_search_url || exp.launch_url);
+        renderHandoff();
+      })
+    );
+
+    body.querySelectorAll('[data-b365-done-idx]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.b365DoneIdx);
+        if (completedLegs.has(i)) completedLegs.delete(i);
+        else completedLegs.add(i);
+        renderHandoff();
+      })
+    );
+
+    document.getElementById('b365-copy-bookmarklet-btn')?.addEventListener('click', () => {
+      const bm = buildBet365Bookmarklet(exp.slip_token || '');
+      navigator.clipboard?.writeText(bm).catch(() => {});
+      showToast('Copied Bookmarklet! Paste into a browser bookmark URL & tap it on Bet365.');
+    });
+
+    document.getElementById('b365-apply-options-btn')?.addEventListener('click', async () => {
+      const opts = document.getElementById('b365-options-input').value.trim();
+      if (!opts) return showToast('Enter a Bet365 options string first', true);
+      exportToBet365(legs, stake, title, opts);
+    });
+
+    document.getElementById('b365-copy-btn')?.addEventListener('click', () => {
+      navigator.clipboard?.writeText(exp.clipboard_text).catch(() => {});
+      showToast('Copied formatted slip to clipboard!');
+    });
+
+    document.getElementById('b365-back-suggest-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
+
+    document.getElementById('b365-log-bet-btn')?.addEventListener('click', async () => {
+      try {
+        await api('/api/bets', {
+          method: 'POST',
+          body: JSON.stringify({
+            user_id: state.activeUserId,
+            stake,
+            legs,
+            notes: `${title} (Bet365)`,
+          }),
+        });
+        state.slip = [];
+        saveSlip();
+        renderSlip();
+        modal.classList.add('hidden');
+        document.getElementById('slip-drawer').classList.add('hidden');
+        await loadDashboard(false);
+        renderActiveTab();
+        showToast('Bet placed & logged to your tracker!');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+  };
+
+  renderHandoff();
   modal.classList.remove('hidden');
-
-  document.getElementById('b365-apply-options-btn').addEventListener('click', async () => {
-    const opts = document.getElementById('b365-options-input').value.trim();
-    if (!opts) return showToast('Enter a Bet365 options string first', true);
-    exportToBet365(legs, stake, title, opts);
-  });
-
-  document.getElementById('b365-copy-btn').addEventListener('click', () => {
-    navigator.clipboard?.writeText(exp.clipboard_text).catch(() => {});
-    showToast('Copied formatted slip to clipboard!');
-  });
-
-  document.getElementById('b365-back-suggest-btn').addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
-
-  document.getElementById('b365-log-bet-btn').addEventListener('click', async () => {
-    try {
-      await api('/api/bets', {
-        method: 'POST',
-        body: JSON.stringify({
-          user_id: state.activeUserId,
-          stake,
-          legs,
-          notes: `${title} (Bet365)`,
-        }),
-      });
-      state.slip = [];
-      saveSlip();
-      renderSlip();
-      modal.classList.add('hidden');
-      document.getElementById('slip-drawer').classList.add('hidden');
-      await loadDashboard(false);
-      renderActiveTab();
-      showToast('Bet placed & logged to your tracker!');
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
 }
 
 async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Suggested Bet', optionsOverride = '') {
@@ -3211,9 +3490,9 @@ async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Su
     saveSlip();
     renderSlip();
     if (state.activeTab === 'fixtures') renderFixturesTab();
-    window.open(exp.launch_url, '_blank', 'noopener');
+    openInBet365Tab(exp.launch_url);
     renderBet365HandoffModal(exp, legs, exp.stake, title);
-    showToast(exp.mode === 'direct_prefill' ? 'Launched Bet365 direct betslip!' : 'Opened Bet365 & copied slip details!');
+    showToast(exp.mode === 'direct_prefill' ? 'Launched Bet365 direct betslip!' : 'Opened Leg 1 on Bet365 & loaded slip stepper!');
   } catch (err) {
     showToast(err.message, true);
   }

@@ -42,6 +42,7 @@ from accalab.value_engine import (
     devig_two_way,
     evaluate_acca,
     find_value_opportunities,
+    is_fixture_upcoming,
     kelly_stake_amount,
     parse_odds_value,
     send_telegram_message,
@@ -242,7 +243,7 @@ def create_app() -> Flask:
             )
             fav_set = set(user.get("favourite_teams") or [])
             watched_set = set(watched_ids)
-            for_you_rows = [
+            scheduled_all = [
                 dict(r)
                 for r in conn.execute(
                     """
@@ -255,6 +256,11 @@ def create_app() -> Flask:
                     ORDER BY f.match_date ASC, f.kickoff_time ASC
                     """
                 ).fetchall()
+            ]
+            scheduled_upcoming = [r for r in scheduled_all if is_fixture_upcoming(r)] or scheduled_all
+            for_you_rows = [
+                r
+                for r in scheduled_upcoming
                 if r["home_team"] in fav_set or r["away_team"] in fav_set or r["id"] in watched_set
             ][:6]
             for fy in for_you_rows:
@@ -263,8 +269,12 @@ def create_app() -> Flask:
 
             counts = {
                 "historical_matches": conn.execute("SELECT COUNT(*) AS c FROM historical_matches").fetchone()["c"],
-                "upcoming_fixtures": conn.execute("SELECT COUNT(*) AS c FROM upcoming_fixtures WHERE status='scheduled'").fetchone()["c"],
-                "official_b365_fixtures": conn.execute("SELECT COUNT(*) AS c FROM upcoming_fixtures WHERE status='scheduled' AND odds_source IN ('bet365_official','api_football_b365','user_manual')").fetchone()["c"],
+                "upcoming_fixtures": len(scheduled_upcoming),
+                "official_b365_fixtures": sum(
+                    1
+                    for r in scheduled_upcoming
+                    if r.get("odds_source") in ("bet365_official", "api_football_b365", "user_manual")
+                ),
                 "teams_rated": conn.execute("SELECT COUNT(*) AS c FROM team_ratings").fetchone()["c"],
                 "news_items": conn.execute("SELECT COUNT(*) AS c FROM news_items").fetchone()["c"],
                 "unread_alerts": conn.execute("SELECT COUNT(*) AS c FROM alerts WHERE is_read = 0").fetchone()["c"],
@@ -285,10 +295,9 @@ def create_app() -> Flask:
                 "roi_pct": round((tot_pnl / tot_stake) * 100.0, 2) if tot_stake > 0 else 0.0,
                 "avg_clv_pct": round(sum(clvs) / len(clvs), 2) if clvs else 0.0,
             }
-            leagues_counts = {
-                r["div"]: r["cnt"]
-                for r in conn.execute("SELECT div, COUNT(*) AS cnt FROM upcoming_fixtures WHERE status='scheduled' GROUP BY div").fetchall()
-            }
+            leagues_counts: dict[str, int] = {}
+            for r in scheduled_upcoming:
+                leagues_counts[r["div"]] = leagues_counts.get(r["div"], 0) + 1
             integrations = {
                 "api_football_configured": bool(API_FOOTBALL_KEY),
                 "gemini_configured": bool(GEMINI_API_KEY),
@@ -354,9 +363,14 @@ def create_app() -> Flask:
                 params.append(date_filter)
             sql += " ORDER BY f.match_date ASC, f.kickoff_time ASC, f.div ASC"
 
+            raw_rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+            if not date_filter:
+                upcoming_raw = [r for r in raw_rows if is_fixture_upcoming(r)]
+                if upcoming_raw:
+                    raw_rows = upcoming_raw
+
             fixtures = []
-            for r in conn.execute(sql, params).fetchall():
-                d = dict(r)
+            for d in raw_rows:
                 is_fav = d["home_team"] in fav_set or d["away_team"] in fav_set
                 is_watched = d["id"] in watched_set
                 if div == "MY_TEAMS" and not (is_fav or is_watched):

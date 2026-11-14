@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -106,6 +108,9 @@ def find_value_opportunities(
         sql += " AND f.odds_source IN ('bet365_official', 'api_football_b365', 'user_manual')"
 
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    upcoming = [r for r in rows if is_fixture_upcoming(r)]
+    if upcoming:
+        rows = upcoming
 
     # Load backtest trust metrics per (div, market_group)
     bt_map: dict[tuple[str, str], dict[str, Any]] = {}
@@ -240,10 +245,13 @@ def build_acca_presets(conn: sqlite3.Connection, bankroll: float = 250.0) -> lis
             FROM upcoming_fixtures f
             JOIN predictions p ON p.fixture_id = f.id
             WHERE f.status = 'scheduled'
-            ORDER BY f.match_date ASC
+            ORDER BY f.match_date ASC, f.kickoff_time ASC
             """
         ).fetchall()
     ]
+    upcoming_all = [r for r in all_rows if is_fixture_upcoming(r)]
+    if upcoming_all:
+        all_rows = upcoming_all
 
     candidates: list[dict[str, Any]] = []
     for r in all_rows:
@@ -604,6 +612,40 @@ def parse_odds_value(val: Any, default: float | None = None) -> float | None:
         return default
 
 
+_B365_TEAM_SEARCH_NAMES: dict[str, str] = {
+    "Nott'm Forest": "Nottingham Forest",
+    "Sheffield Weds": "Sheffield Wednesday",
+    "Peterboro": "Peterborough",
+    "Bristol Rvs": "Bristol Rovers",
+    "Milton Keynes Dons": "MK Dons",
+    "West Brom": "West Bromwich Albion",
+    "Sheffield United": "Sheff Utd",
+}
+
+
+def _b365_search_team(name: str) -> str:
+    cleaned = str(name or "").strip()
+    return _B365_TEAM_SEARCH_NAMES.get(cleaned, cleaned)
+
+
+def is_fixture_upcoming(row: dict[str, Any], now_dt: datetime | None = None) -> bool:
+    """Return True if the fixture has not yet kicked off (UTC match_date + kickoff_time)."""
+    current = now_dt or datetime.now(timezone.utc)
+    today_iso = current.strftime("%Y-%m-%d")
+    now_hhmm = current.strftime("%H:%M")
+    mdate = str(row.get("match_date") or "").strip()
+    if not mdate:
+        return True
+    if mdate > today_iso:
+        return True
+    if mdate < today_iso:
+        return False
+    ko = str(row.get("kickoff_time") or "").strip()
+    if not ko:
+        return True
+    return ko > now_hhmm
+
+
 _BET365_MARKET_NAMES: dict[str, str] = {
     "1X2_H": "Full Time Result",
     "1X2_D": "Full Time Result",
@@ -640,33 +682,50 @@ def build_bet365_export(
     title: str = "AccaLab Suggested Bet",
     options_override: str = "",
 ) -> dict[str, Any]:
-    """Generate Bet365 handoff payload, search/deep-link URLs, and copyable slip text."""
+    """Generate Bet365 handoff payload, Home-v-Away search links, Companion token, and slip text."""
     try:
-        clean_stake = max(1.0, float(stake or 10.0))
+        clean_stake = max(0.5, float(stake or 10.0))
     except (TypeError, ValueError):
         clean_stake = 10.0
 
     eval_summary = evaluate_acca(legs, stake=clean_stake)
-    eval_summary["combined_odds_fractional"] = decimal_to_fractional(eval_summary.get("combined_odds"))
+    comb_frac = decimal_to_fractional(eval_summary.get("combined_odds"))
+    eval_summary["combined_odds_fractional"] = comb_frac
     exported_legs: list[dict[str, Any]] = []
     leg_option_tokens: list[str] = []
+    compact_legs: list[dict[str, str]] = []
 
     for leg in legs:
         div = str(leg.get("div") or "")
         league_name = LEAGUES.get(div, {}).get("name", div or "English Football")
         home = str(leg.get("home_team") or "").strip()
         away = str(leg.get("away_team") or "").strip()
+        b365_home = _b365_search_team(home)
+        b365_away = _b365_search_team(away)
         mkt = str(leg.get("market") or "1X2_H")
         b365_market = _BET365_MARKET_NAMES.get(mkt, "Full Time Result")
         b365_selection = _bet365_selection_name(leg)
         odds_val = round(float(leg.get("odds") or 1.0), 2)
         odds_frac = decimal_to_fractional(odds_val)
-        search_term = home or away or "Football"
-        search_url = f"https://www.bet365.com/#/AX/K^{urllib.parse.quote(search_term)}"
+        search_term = f"{b365_home} v {b365_away}" if (b365_home and b365_away) else (b365_home or b365_away or "Football")
+        search_hash = f"#/AX/K^{urllib.parse.quote(search_term)}"
 
         opt_tok = str(leg.get("b365_options_id") or "").strip()
         if opt_tok:
             leg_option_tokens.append(opt_tok)
+
+        compact_legs.append(
+            {
+                "h": b365_home,
+                "a": b365_away,
+                "k": search_term,
+                "l": str(leg.get("selection_label") or b365_selection),
+                "m": b365_market,
+                "s": b365_selection,
+                "o": odds_frac,
+                "lg": league_name,
+            }
+        )
 
         exported_legs.append(
             {
@@ -674,6 +733,7 @@ def build_bet365_export(
                 "div": div,
                 "league_name": league_name,
                 "match_date": leg.get("match_date", ""),
+                "kickoff_time": leg.get("kickoff_time", ""),
                 "home_team": home,
                 "away_team": away,
                 "market": mkt,
@@ -682,10 +742,23 @@ def build_bet365_export(
                 "odds_fractional": odds_frac,
                 "b365_market_name": b365_market,
                 "b365_selection_name": b365_selection,
+                "b365_search_query": search_term,
+                "b365_search_hash": search_hash,
                 "b365_path": f"Soccer → United Kingdom → {league_name} → {home} v {away} → {b365_market}",
-                "b365_search_url": search_url,
+                "b365_search_url": f"https://www.bet365.com/{search_hash}",
             }
         )
+
+    slip_payload = {
+        "t": title,
+        "st": round(clean_stake, 2),
+        "od": comb_frac,
+        "legs": compact_legs,
+    }
+    slip_raw = json.dumps(slip_payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    slip_token = base64.urlsafe_b64encode(slip_raw).decode("ascii").rstrip("=")
+    for item in exported_legs:
+        item["b365_search_url"] = f"https://www.bet365.com/?accalab_slip={slip_token}{item['b365_search_hash']}"
 
     bet_type = "combo" if len(legs) > 1 else "single"
     override_clean = (options_override or "").strip()
@@ -706,10 +779,9 @@ def build_bet365_export(
         mode = "direct_prefill"
     else:
         deep_link_url = None
-        launch_url = exported_legs[0]["b365_search_url"] if exported_legs else "https://www.bet365.com/#/HO/"
+        launch_url = exported_legs[0]["b365_search_url"] if exported_legs else f"https://www.bet365.com/?accalab_slip={slip_token}#/HO/"
         mode = "express_handoff"
 
-    comb_frac = decimal_to_fractional(eval_summary["combined_odds"])
     lines = [
         f"{title} ({'Acca ' + str(len(legs)) + '-Fold' if len(legs) > 1 else 'Single'})",
         f"Stake: £{clean_stake:.2f} | Combined Odds: {comb_frac} | Potential Return: £{eval_summary['potential_return']:.2f}",
@@ -726,6 +798,7 @@ def build_bet365_export(
         "mode": mode,
         "bet_type": bet_type,
         "stake": round(clean_stake, 2),
+        "slip_token": slip_token,
         "launch_url": launch_url,
         "deep_link_url": deep_link_url,
         "prefill_template_url": prefill_template_url,
@@ -778,8 +851,9 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
         ).fetchall()
     ]
 
+    rows = [r for r in rows if is_fixture_upcoming(r)] or rows
     if not rows:
-        return {"suggestions": [], "by_id": {}, "top_single": None}
+        return {"risk_levels": [], "by_risk": {}, "suggestions": [], "by_id": {}, "top_single": None}
 
     bt_map: dict[tuple[str, str], dict[str, Any]] = {
         (b["div"], b["market"]): dict(b)
@@ -900,6 +974,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
                 "div": l["div"],
                 "league_name": l["league_name"],
                 "match_date": l["match_date"],
+                "kickoff_time": l.get("kickoff_time") or "",
                 "home_team": l["home_team"],
                 "away_team": l["away_team"],
                 "market": l["market"],
