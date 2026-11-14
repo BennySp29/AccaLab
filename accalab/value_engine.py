@@ -548,6 +548,62 @@ def generate_value_alerts(conn: sqlite3.Connection) -> int:
     return created
 
 
+_UK_FRACTIONAL_TABLE: tuple[tuple[int, int], ...] = (
+    (1, 10), (1, 9), (1, 8), (1, 7), (1, 6), (1, 5), (2, 9), (1, 4), (2, 7), (3, 10),
+    (1, 3), (4, 11), (2, 5), (4, 9), (1, 2), (8, 15), (4, 7), (8, 13), (4, 6), (8, 11),
+    (4, 5), (5, 6), (10, 11), (1, 1), (11, 10), (6, 5), (5, 4), (13, 10), (11, 8),
+    (7, 5), (6, 4), (8, 5), (13, 8), (7, 4), (9, 5), (15, 8), (2, 1), (9, 4), (5, 2),
+    (11, 4), (3, 1), (10, 3), (7, 2), (4, 1), (9, 2), (5, 1), (11, 2), (6, 1), (13, 2),
+    (7, 1), (15, 2), (8, 1), (9, 1), (10, 1),
+)
+
+
+def decimal_to_fractional(odds: float | None) -> str:
+    """Convert decimal odds (e.g. 2.0, 2.5, 3.5) to UK bookmaker fractional format (e.g. '1/1', '6/4', '5/2')."""
+    if odds is None:
+        return "—"
+    try:
+        dec = float(odds)
+    except (TypeError, ValueError):
+        return "—"
+    if dec <= 1.01:
+        return "—"
+    if dec > 11.0:
+        return f"{max(10, int(round(dec - 1.0)))}/1"
+    best_num, best_den = min(
+        _UK_FRACTIONAL_TABLE,
+        key=lambda frac: abs((1.0 + frac[0] / frac[1]) - dec),
+    )
+    return f"{best_num}/{best_den}"
+
+
+def parse_odds_value(val: Any, default: float | None = None) -> float | None:
+    """Parse UK fractional ('5/2', '1/1', 'evens') or decimal odds ('3.50') into a decimal float."""
+    if val in (None, ""):
+        return default
+    if isinstance(val, (int, float)):
+        f = float(val)
+        return round(f, 4) if f > 1.01 else default
+    s = str(val).strip().lower()
+    if s in ("evs", "evens", "evn"):
+        return 2.0
+    if "/" in s:
+        parts = s.split("/", 1)
+        try:
+            num = float(parts[0].strip())
+            den = float(parts[1].strip())
+            if num > 0 and den > 0:
+                dec = 1.0 + (num / den)
+                return round(dec, 4) if dec > 1.01 else default
+        except (TypeError, ValueError):
+            return default
+    try:
+        f = float(s)
+        return round(f, 4) if f > 1.01 else default
+    except (TypeError, ValueError):
+        return default
+
+
 _BET365_MARKET_NAMES: dict[str, str] = {
     "1X2_H": "Full Time Result",
     "1X2_D": "Full Time Result",
@@ -591,6 +647,7 @@ def build_bet365_export(
         clean_stake = 10.0
 
     eval_summary = evaluate_acca(legs, stake=clean_stake)
+    eval_summary["combined_odds_fractional"] = decimal_to_fractional(eval_summary.get("combined_odds"))
     exported_legs: list[dict[str, Any]] = []
     leg_option_tokens: list[str] = []
 
@@ -603,6 +660,7 @@ def build_bet365_export(
         b365_market = _BET365_MARKET_NAMES.get(mkt, "Full Time Result")
         b365_selection = _bet365_selection_name(leg)
         odds_val = round(float(leg.get("odds") or 1.0), 2)
+        odds_frac = decimal_to_fractional(odds_val)
         search_term = home or away or "Football"
         search_url = f"https://www.bet365.com/#/AX/K^{urllib.parse.quote(search_term)}"
 
@@ -621,6 +679,7 @@ def build_bet365_export(
                 "market": mkt,
                 "selection_label": leg.get("selection_label") or b365_selection,
                 "odds": odds_val,
+                "odds_fractional": odds_frac,
                 "b365_market_name": b365_market,
                 "b365_selection_name": b365_selection,
                 "b365_path": f"Soccer → United Kingdom → {league_name} → {home} v {away} → {b365_market}",
@@ -650,15 +709,16 @@ def build_bet365_export(
         launch_url = exported_legs[0]["b365_search_url"] if exported_legs else "https://www.bet365.com/#/HO/"
         mode = "express_handoff"
 
+    comb_frac = decimal_to_fractional(eval_summary["combined_odds"])
     lines = [
         f"{title} ({'Acca ' + str(len(legs)) + '-Fold' if len(legs) > 1 else 'Single'})",
-        f"Stake: £{clean_stake:.2f} | Combined Odds: {eval_summary['combined_odds']:.2f} | Potential Return: £{eval_summary['potential_return']:.2f}",
+        f"Stake: £{clean_stake:.2f} | Combined Odds: {comb_frac} | Potential Return: £{eval_summary['potential_return']:.2f}",
         f"Model Hit Prob: {eval_summary['combined_model_prob_pct']}% | Expected Value: {eval_summary['expected_value_pct']:+.1f}%",
         "",
     ]
     for idx, item in enumerate(exported_legs, start=1):
         lines.append(
-            f"{idx}. {item['home_team']} v {item['away_team']} ({item['league_name']}) — {item['b365_market_name']}: {item['selection_label']} @ {item['odds']:.2f}"
+            f"{idx}. {item['home_team']} v {item['away_team']} ({item['league_name']}) — {item['b365_market_name']}: {item['selection_label']} @ {item['odds_fractional']}"
         )
 
     return {
@@ -777,7 +837,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
             _, k_stake = kelly_stake_amount(m_prob, odds, bankroll, kelly_frac)
 
             reasons = [
-                f"Model rates {sel_label} at {m_prob*100:.1f}% (fair {(1.0/max(m_prob,0.01)):.2f}) vs {odds:.2f} odds ({edge_pct:+.1f}% edge), with xG {r['lambda_home']:.2f}–{r['mu_away']:.2f}.",
+                f"Model rates {sel_label} at {m_prob*100:.1f}% (fair {decimal_to_fractional(1.0/max(m_prob,0.01))}) vs {decimal_to_fractional(odds)} odds ({edge_pct:+.1f}% edge), xG {r['lambda_home']:.2f}–{r['mu_away']:.2f}.",
                 f"Elo & SoT: {r['home_team']} {h_elo:.0f} ({h_sot_for:.1f} SoT/g) vs {r['away_team']} {a_elo:.0f} ({a_sot_for:.1f} SoT/g).",
                 f"Form (Last 6): {h_form} vs {a_form} • {trust_badge}"
                 + (f" ({bt['flat_roi_pct']:+.1f}% backtest ROI)" if bt else ""),
@@ -800,6 +860,8 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
                     "market": m_code,
                     "selection_label": sel_label,
                     "odds": round(odds, 2),
+                    "odds_fractional": decimal_to_fractional(odds),
+                    "total_xg": round(float(r["lambda_home"]) + float(r["mu_away"]), 2),
                     "model_prob": round(m_prob, 5),
                     "model_prob_pct": round(m_prob * 100.0, 1),
                     "edge_pct": round(edge_pct, 2),
@@ -813,10 +875,11 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
             )
 
     if not candidates:
-        return {"suggestions": [], "by_id": {}, "top_single": None}
+        return {"risk_levels": [], "by_risk": {}, "suggestions": [], "by_id": {}, "top_single": None}
 
     def _build_pkg(
         pkg_id: str,
+        risk_level: str,
         title: str,
         badge: str,
         subtitle: str,
@@ -842,6 +905,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
                 "market": l["market"],
                 "selection_label": l["selection_label"],
                 "odds": l["odds"],
+                "odds_fractional": l.get("odds_fractional") or decimal_to_fractional(l["odds"]),
                 "model_prob": l["model_prob"],
                 "edge_pct": l["edge_pct"],
                 "odds_source": l["odds_source"],
@@ -849,9 +913,11 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
             for l in legs
         ]
         ev = evaluate_acca(clean_legs, stake=stake)
+        ev["combined_odds_fractional"] = decimal_to_fractional(ev.get("combined_odds"))
         b365 = build_bet365_export(clean_legs, stake=stake, title=title)
         return {
             "id": pkg_id,
+            "risk_level": risk_level,
             "title": title,
             "badge": badge,
             "subtitle": subtitle,
@@ -863,79 +929,306 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
             "bet365_export": b365,
         }
 
-    # 1. Top Single (strongest official or composite signal)
-    single_pool = sorted(
-        candidates,
-        key=lambda c: (1 if c["is_official"] else 0, c["confidence_score"], c["edge_pct"]),
+    def _pool_or_fallback(preferred: list[dict[str, Any]], needed: int, fallback_sorted: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len({c["fixture_id"] for c in preferred}) >= needed:
+            return preferred
+        seen = {(c["fixture_id"], c["market"]) for c in preferred}
+        return preferred + [c for c in fallback_sorted if (c["fixture_id"], c["market"]) not in seen]
+
+    # --- LOW RISK (1/1 - 2/1 Target, Safe Bankroll Builders) ---
+    low_stake = round(max(5.0, default_stake), 2)
+    low_single_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["model_prob"] >= 0.56 and c["odds"] <= 2.30],
+            1,
+            sorted(candidates, key=lambda c: (c["model_prob"], c["edge_pct"]), reverse=True),
+        ),
+        key=lambda c: (1 if c["is_official"] else 0, c["confidence_score"], c["model_prob"], c["edge_pct"]),
         reverse=True,
     )
-    best_single = single_pool[0]
-    single_stake = max(5.0, best_single["kelly_stake"] or default_stake)
-    pkg_single = _build_pkg(
-        "top_single",
-        "AI Best Bet Single",
-        "Top Confidence",
-        f"Highest-conviction pick from Dixon-Coles, Elo, shots & Bet365 value",
-        [best_single],
-        single_stake,
+    pkg_low_single = _build_pkg(
+        "low_single",
+        "low",
+        "Banker Single",
+        "Top Hit-Rate",
+        "Strongest high-probability single backed by Elo, shots & Bet365 value",
+        [low_single_pool[0]],
+        max(5.0, low_single_pool[0]["kelly_stake"] or low_stake),
     )
 
-    # 2. Banker Double (2 high-probability uncorrelated legs)
-    banker_pool = [c for c in candidates if c["model_prob"] >= 0.55 and c["edge_pct"] >= -1.5]
-    if len({c["fixture_id"] for c in banker_pool}) < 2:
-        banker_pool = candidates
-    banker_sorted = sorted(
-        banker_pool,
+    low_double_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["model_prob"] >= 0.55 and c["edge_pct"] >= -2.5],
+            2,
+            sorted(candidates, key=lambda c: (c["model_prob"], c["edge_pct"]), reverse=True),
+        ),
         key=lambda c: (1 if c["is_official"] else 0, c["model_prob"] * 100.0 + c["edge_pct"], c["confidence_score"]),
         reverse=True,
     )
-    double_legs = _pick_distinct_fixtures(banker_sorted, 2)
-    pkg_double = _build_pkg(
-        "banker_double",
-        "Banker Double",
-        "High Hit-Rate",
-        "2 uncorrelated strong-probability legs selected to minimize bookmaker drag",
-        double_legs,
-        default_stake,
+    pkg_low_double = _build_pkg(
+        "low_double",
+        "low",
+        "Steady Banker Double",
+        "Low Variance",
+        "2 uncorrelated short-priced favourites with minimal margin drag",
+        _pick_distinct_fixtures(low_double_pool, 2),
+        low_stake,
     )
 
-    # 3. Value Treble (3 positive-edge uncorrelated legs)
-    val_pool = [c for c in candidates if c["edge_pct"] >= 2.0]
-    if len({c["fixture_id"] for c in val_pool}) < 3:
-        val_pool = candidates
-    val_sorted = sorted(
-        val_pool,
+    low_goals_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["market"] in ("OU_O25", "BTTS_Y") and c["model_prob"] >= 0.52],
+            2,
+            sorted([c for c in candidates if c["market"] in ("OU_O25", "BTTS_Y")] or candidates, key=lambda c: c["model_prob"], reverse=True),
+        ),
+        key=lambda c: (c["model_prob"] * 100.0 + c["edge_pct"]),
+        reverse=True,
+    )
+    pkg_low_goals = _build_pkg(
+        "low_goals",
+        "low",
+        "Steady Goals Double",
+        "Goals Angle",
+        "2 highest-probability Over 2.5 / BTTS selections",
+        _pick_distinct_fixtures(low_goals_pool, 2),
+        low_stake,
+    )
+
+    # --- MEDIUM RISK (3/1 - 7/1 Target, Balanced Positive-EV Trebles) ---
+    med_stake = round(default_stake, 2)
+    med_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["odds"] <= 3.60 and c["edge_pct"] >= 2.0],
+            3,
+            sorted(candidates, key=lambda c: c["edge_pct"], reverse=True),
+        ),
         key=lambda c: (c["edge_pct"], c["confidence_score"]),
         reverse=True,
     )
-    treble_legs = _pick_distinct_fixtures(val_sorted, 3)
-    pkg_treble = _build_pkg(
-        "value_treble",
+    pkg_med_treble = _build_pkg(
+        "med_treble",
+        "medium",
         "Smart Value Treble",
-        "Max EV Edge",
-        "3 highest positive-EV selections across distinct fixtures",
-        treble_legs,
-        max(5.0, round(default_stake * 0.75, 2)),
+        "Balanced EV",
+        "3 positive-EV selections across distinct fixtures balancing hit-rate & price",
+        _pick_distinct_fixtures(med_pool, 3),
+        med_stake,
     )
 
-    # 4. My Clubs / Preferred Leagues Special
+    med_goals_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["market"] in ("OU_O25", "BTTS_Y") and c["edge_pct"] >= 0.0],
+            3,
+            sorted([c for c in candidates if c["market"] in ("OU_O25", "BTTS_Y")] or candidates, key=lambda c: c["edge_pct"], reverse=True),
+        ),
+        key=lambda c: (c["edge_pct"], c["total_xg"]),
+        reverse=True,
+    )
+    pkg_med_goals = _build_pkg(
+        "med_goals",
+        "medium",
+        "Goals & BTTS Treble",
+        "O2.5 / BTTS",
+        "3 attacking matchups topped by Poisson xG & Bet365 value",
+        _pick_distinct_fixtures(med_goals_pool, 3),
+        med_stake,
+    )
+
     fav_pool = [c for c in candidates if c["home_team"] in fav_teams or c["away_team"] in fav_teams]
     if not fav_pool:
         fav_pool = [c for c in candidates if c["div"] in pref_leagues] or candidates
     fav_sorted = sorted(fav_pool, key=lambda c: (c["confidence_score"], c["edge_pct"]), reverse=True)
-    my_legs = _pick_distinct_fixtures(fav_sorted, 2 if len({c["fixture_id"] for c in fav_sorted}) >= 2 else 1)
-    pkg_my = _build_pkg(
-        "my_clubs",
+    med_clubs_count = 3 if len({c["fixture_id"] for c in fav_sorted}) >= 3 else (2 if len({c["fixture_id"] for c in fav_sorted}) >= 2 else 1)
+    pkg_med_clubs = _build_pkg(
+        "med_clubs",
+        "medium",
         "My Clubs Special",
         "Personalised",
         "Tailored to your followed clubs and preferred English leagues",
-        my_legs,
-        default_stake,
+        _pick_distinct_fixtures(fav_sorted, med_clubs_count),
+        med_stake,
     )
 
-    suggestions = [pkg_single, pkg_double, pkg_treble, pkg_my]
+    # --- HIGH RISK (12/1 - 35/1 Target, Smaller Stake for Big Return) ---
+    high_stake = 5.0
+    high_5fold_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if 1.55 <= c["odds"] <= 3.40 and c["edge_pct"] >= 1.5],
+            5,
+            sorted(candidates, key=lambda c: c["edge_pct"], reverse=True),
+        ),
+        key=lambda c: (c["edge_pct"], c["confidence_score"]),
+        reverse=True,
+    )
+    pkg_high_5fold = _build_pkg(
+        "high_5fold",
+        "high",
+        "5-Fold Value Acca",
+        "12/1–35/1 Target",
+        "Small £5 stake across 5 uncorrelated positive-EV English selections",
+        _pick_distinct_fixtures(high_5fold_pool, 5),
+        high_stake,
+    )
+
+    high_goals_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["market"] in ("OU_O25", "BTTS_Y") and c["total_xg"] >= 2.55],
+            5,
+            sorted([c for c in candidates if c["market"] in ("OU_O25", "BTTS_Y")] or candidates, key=lambda c: (c["edge_pct"], c["total_xg"]), reverse=True),
+        ),
+        key=lambda c: (c["edge_pct"] + (c["total_xg"] - 2.5) * 8.0),
+        reverse=True,
+    )
+    pkg_high_goals = _build_pkg(
+        "high_goals_5fold",
+        "high",
+        "5-Fold Goals Bonanza",
+        "5-Leg O2.5/BTTS",
+        "High-tempo Over 2.5 & BTTS 5-fold chasing a big £5 acca return",
+        _pick_distinct_fixtures(high_goals_pool, 5),
+        high_stake,
+    )
+
+    high_dog_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["odds"] >= 2.35 and c["edge_pct"] >= 0.0],
+            3,
+            sorted([c for c in candidates if c["odds"] >= 2.0] or candidates, key=lambda c: (c["edge_pct"], c["odds"]), reverse=True),
+        ),
+        key=lambda c: (c["edge_pct"], c["odds"]),
+        reverse=True,
+    )
+    pkg_high_dogs = _build_pkg(
+        "high_underdogs",
+        "high",
+        "Value Underdog Treble",
+        "Upside 3-Fold",
+        "3 mispriced outsiders & away edges offering 15/1–30/1 payout upside",
+        _pick_distinct_fixtures(high_dog_pool, 3),
+        high_stake,
+    )
+
+    # --- MEGA LONGSHOT (40/1 - 150/1+ Target, Tiny Stake Huge Return) ---
+    long_stake = 2.0
+    long_7fold_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["odds"] >= 1.65 and c["edge_pct"] >= 0.5],
+            7,
+            sorted(candidates, key=lambda c: (c["edge_pct"], c["odds"]), reverse=True),
+        ),
+        key=lambda c: (c["edge_pct"] + c["confidence_score"] * 0.15, c["odds"]),
+        reverse=True,
+    )
+    pkg_long_7fold = _build_pkg(
+        "longshot_7fold",
+        "longshot",
+        "7-Fold Weekend Monster",
+        "40/1+ Super Acca",
+        "£2 micro-stake 7-fold builder hunting a 40/1–150/1+ jackpot return",
+        _pick_distinct_fixtures(long_7fold_pool, 7),
+        long_stake,
+    )
+
+    long_boomer_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["odds"] >= 2.60 and c["edge_pct"] >= 0.0],
+            4,
+            sorted([c for c in candidates if c["odds"] >= 2.20] or candidates, key=lambda c: (c["edge_pct"], c["odds"]), reverse=True),
+        ),
+        key=lambda c: (c["edge_pct"] * 1.2 + c["odds"] * 3.0),
+        reverse=True,
+    )
+    pkg_long_boomers = _build_pkg(
+        "longshot_boomers",
+        "longshot",
+        "4-Fold Longshot Boomers",
+        "High-Odds Value",
+        "4 big-priced value upsets & draws where Bet365 underestimates the upset",
+        _pick_distinct_fixtures(long_boomer_pool, 4),
+        long_stake,
+    )
+
+    long_goals_pool = sorted(
+        _pool_or_fallback(
+            [c for c in candidates if c["market"] in ("OU_O25", "BTTS_Y")],
+            6,
+            sorted(candidates, key=lambda c: (c["total_xg"], c["edge_pct"]), reverse=True),
+        ),
+        key=lambda c: (c["total_xg"] * 10.0 + c["edge_pct"]),
+        reverse=True,
+    )
+    pkg_long_goals = _build_pkg(
+        "longshot_goals_6fold",
+        "longshot",
+        "6-Fold Goals Explosion",
+        "6-Leg xG Special",
+        "6 highest-xG goals selections combined for massive small-stake return",
+        _pick_distinct_fixtures(long_goals_pool, 6),
+        long_stake,
+    )
+
+    risk_levels = [
+        {
+            "id": "low",
+            "label": "Low Risk • Safe Builder",
+            "short_label": "Low Risk",
+            "emoji": "🟢",
+            "target_odds_label": "1/1 – 2/1 Target",
+            "default_stake": low_stake,
+            "description": "High-probability singles & steady doubles designed for consistent hit rates",
+            "primary": pkg_low_single,
+            "options": [pkg_low_single, pkg_low_double, pkg_low_goals],
+        },
+        {
+            "id": "medium",
+            "label": "Medium Risk • Balanced Value",
+            "short_label": "Medium Risk",
+            "emoji": "🟡",
+            "target_odds_label": "3/1 – 7/1 Target",
+            "default_stake": med_stake,
+            "description": "Balanced 3-leg value trebles mixing solid win chance with Bet365 EV edge",
+            "primary": pkg_med_treble,
+            "options": [pkg_med_treble, pkg_med_goals, pkg_med_clubs],
+        },
+        {
+            "id": "high",
+            "label": "High Risk • Big Return",
+            "short_label": "High Risk",
+            "emoji": "🟠",
+            "target_odds_label": "12/1 – 35/1 Target",
+            "default_stake": high_stake,
+            "description": "Smaller £5 stake chasing big weekend payouts via 5-folds & value underdogs",
+            "primary": pkg_high_5fold,
+            "options": [pkg_high_5fold, pkg_high_goals, pkg_high_dogs],
+        },
+        {
+            "id": "longshot",
+            "label": "Mega Longshot • Small Stake",
+            "short_label": "Longshot",
+            "emoji": "🔥",
+            "target_odds_label": "40/1 – 150/1+ Target",
+            "default_stake": long_stake,
+            "description": "Tiny £1–£2 stake hunting huge 40/1 to 150/1+ payouts from model-backed outsiders",
+            "primary": pkg_long_7fold,
+            "options": [pkg_long_7fold, pkg_long_boomers, pkg_long_goals],
+        },
+    ]
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for rl in risk_levels:
+        for opt in rl["options"]:
+            by_id[opt["id"]] = opt
+    # Preserve friendly aliases
+    by_id["top_single"] = pkg_low_single
+    by_id["banker_double"] = pkg_low_double
+    by_id["value_treble"] = pkg_med_treble
+    by_id["my_clubs"] = pkg_med_clubs
+
+    primary_suggestions = [rl["primary"] for rl in risk_levels]
     return {
-        "suggestions": suggestions,
-        "by_id": {s["id"]: s for s in suggestions},
-        "top_single": pkg_single,
+        "risk_levels": risk_levels,
+        "by_risk": {rl["id"]: rl for rl in risk_levels},
+        "suggestions": primary_suggestions,
+        "by_id": by_id,
+        "top_single": pkg_low_single,
     }

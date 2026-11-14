@@ -14,6 +14,7 @@ const state = {
   newsMyClubsOnly: false,
   slip: JSON.parse(localStorage.getItem('accalab_slip') || '[]'),
   slipStake: Number(localStorage.getItem('accalab_slip_stake') || 10),
+  activeRiskLevel: localStorage.getItem('accalab_risk_level') || 'high',
   charts: {},
 };
 
@@ -27,6 +28,50 @@ const esc = (s) =>
 
 const fmtPct = (v) => `${Number(v || 0).toFixed(1)}%`;
 const fmtGbp = (v) => `£${Number(v || 0).toFixed(2)}`;
+
+const UK_FRACTIONAL_TABLE = [
+  [1, 10], [1, 9], [1, 8], [1, 7], [1, 6], [1, 5], [2, 9], [1, 4], [2, 7], [3, 10],
+  [1, 3], [4, 11], [2, 5], [4, 9], [1, 2], [8, 15], [4, 7], [8, 13], [4, 6], [8, 11],
+  [4, 5], [5, 6], [10, 11], [1, 1], [11, 10], [6, 5], [5, 4], [13, 10], [11, 8],
+  [7, 5], [6, 4], [8, 5], [13, 8], [7, 4], [9, 5], [15, 8], [2, 1], [9, 4], [5, 2],
+  [11, 4], [3, 1], [10, 3], [7, 2], [4, 1], [9, 2], [5, 1], [11, 2], [6, 1], [13, 2],
+  [7, 1], [15, 2], [8, 1], [9, 1], [10, 1],
+];
+
+function fmtOdds(dec) {
+  const val = Number(dec);
+  if (!Number.isFinite(val) || val <= 1.01) return '—';
+  if (val > 11.0) return `${Math.max(10, Math.round(val - 1.0))}/1`;
+  let best = UK_FRACTIONAL_TABLE[0];
+  let bestDiff = Infinity;
+  for (const frac of UK_FRACTIONAL_TABLE) {
+    const diff = Math.abs(1.0 + frac[0] / frac[1] - val);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = frac;
+    }
+  }
+  return `${best[0]}/${best[1]}`;
+}
+
+function parseOddsInput(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return null;
+  if (s === 'evs' || s === 'evens' || s === 'evn') return 2.0;
+  if (s.includes('/')) {
+    const [a, b] = s.split('/', 2);
+    const num = Number(a.trim());
+    const den = Number(b.trim());
+    if (Number.isFinite(num) && Number.isFinite(den) && num > 0 && den > 0) {
+      const dec = 1.0 + num / den;
+      return dec > 1.01 ? Math.round(dec * 10000) / 10000 : null;
+    }
+    return null;
+  }
+  const f = Number(s);
+  return Number.isFinite(f) && f > 1.01 ? Math.round(f * 10000) / 10000 : null;
+}
 
 function showToast(msg, isError = false) {
   const el = document.getElementById('toast');
@@ -84,6 +129,7 @@ function evaluateAccaClient(legs = [], stake = 10.0) {
       leg_count: 0,
       stake: roundNum(cleanStake, 2),
       combined_odds: 1.0,
+      combined_odds_fractional: fmtOdds(1.0),
       naive_prob_pct: 100.0,
       combined_model_prob: 1.0,
       combined_model_prob_pct: 100.0,
@@ -135,6 +181,7 @@ function evaluateAccaClient(legs = [], stake = 10.0) {
     leg_count: legs.length,
     stake: roundNum(cleanStake, 2),
     combined_odds: roundNum(combOdds, 2),
+    combined_odds_fractional: fmtOdds(combOdds),
     naive_prob_pct: naiveProbPct,
     combined_model_prob: roundNum(combProb, 5),
     combined_model_prob_pct: naiveProbPct,
@@ -203,6 +250,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
       market: mkt,
       selection_label: leg.selection_label || b365Selection,
       odds: oddsVal,
+      odds_fractional: fmtOdds(oddsVal),
       b365_market_name: b365Market,
       b365_selection_name: b365Selection,
       b365_path: `Soccer → United Kingdom → ${leagueName} → ${home} v ${away} → ${b365Market}`,
@@ -228,13 +276,13 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
 
   const lines = [
     `${title} (${legs.length > 1 ? `Acca ${legs.length}-Fold` : 'Single'})`,
-    `Stake: £${cleanStake.toFixed(2)} | Combined Odds: ${evalSummary.combined_odds.toFixed(2)} | Potential Return: £${evalSummary.potential_return.toFixed(2)}`,
+    `Stake: £${cleanStake.toFixed(2)} | Combined Odds: ${fmtOdds(evalSummary.combined_odds)} | Potential Return: £${evalSummary.potential_return.toFixed(2)}`,
     `Model Hit Prob: ${evalSummary.combined_model_prob_pct}% | Expected Value: ${evalSummary.expected_value_pct >= 0 ? '+' : ''}${evalSummary.expected_value_pct.toFixed(1)}%`,
     '',
   ];
   exportedLegs.forEach((item, idx) => {
     lines.push(
-      `${idx + 1}. ${item.home_team} v ${item.away_team} (${item.league_name}) — ${item.b365_market_name}: ${item.selection_label} @ ${item.odds.toFixed(2)}`
+      `${idx + 1}. ${item.home_team} v ${item.away_team} (${item.league_name}) — ${item.b365_market_name}: ${item.selection_label} @ ${fmtOdds(item.odds)}`
     );
   });
 
@@ -431,7 +479,7 @@ function computeStaticUserBetsData(gh, snap, user) {
 }
 
 function buildStaticSuggestBet(gh, snap, user) {
-  const base = cloneJson(snap.suggest_bet || { suggestions: [], by_id: {}, top_single: null });
+  const base = cloneJson(snap.suggest_bet || { risk_levels: [], by_risk: {}, suggestions: [], by_id: {}, top_single: null });
   const favSet = new Set(user.favourite_teams || []);
   const prefLeagues = new Set(user.preferred_leagues || ['E0', 'E1', 'E2', 'E3']);
   const watchedSet = new Set(gh.watchedByUser[user.id] || []);
@@ -457,18 +505,21 @@ function buildStaticSuggestBet(gh, snap, user) {
         market: o.market,
         selection_label: o.selection_label,
         odds: o.odds,
+        odds_fractional: fmtOdds(o.odds),
         model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
         edge_pct: o.edge_pct,
         odds_source: o.odds_source,
       });
-      if (picked.length === 2) break;
+      if (picked.length === 3) break;
     }
 
     if (picked.length) {
       const stake = Number(user.default_stake || 10);
       const ev = evaluateAccaClient(picked, stake);
+      ev.combined_odds_fractional = fmtOdds(ev.combined_odds);
       const myPkg = {
-        id: 'my_clubs',
+        id: 'med_clubs',
+        risk_level: 'medium',
         title: 'My Clubs Special',
         badge: 'Personalised',
         subtitle: 'Tailored to your followed clubs, watchlist & preferred leagues',
@@ -478,13 +529,20 @@ function buildStaticSuggestBet(gh, snap, user) {
         eval: ev,
         reasons: [
           `Matched to your profile (${favSet.size} followed clubs, ${watchedSet.size} watchlist matches).`,
-          `Combined odds ${ev.combined_odds.toFixed(2)} with ${ev.combined_model_prob_pct}% model probability (${ev.expected_value_pct >= 0 ? '+' : ''}${ev.expected_value_pct}% EV).`,
-          ...picked.map((l) => `${l.home_team} vs ${l.away_team}: ${l.selection_label} @ ${l.odds.toFixed(2)} (+${l.edge_pct}% EV).`),
+          `Combined odds ${fmtOdds(ev.combined_odds)} with ${ev.combined_model_prob_pct}% model probability (${ev.expected_value_pct >= 0 ? '+' : ''}${ev.expected_value_pct}% EV).`,
+          ...picked.map((l) => `${l.home_team} vs ${l.away_team}: ${l.selection_label} @ ${fmtOdds(l.odds)} (+${l.edge_pct}% EV).`),
         ].slice(0, 4),
         bet365_export: buildBet365ExportClient(picked, stake, 'My Clubs Special', '', snap.dashboard?.leagues),
       };
-      base.suggestions = (base.suggestions || []).map((s) => (s.id === 'my_clubs' ? myPkg : s));
-      base.by_id = Object.fromEntries(base.suggestions.map((s) => [s.id, s]));
+      if (base.by_risk?.medium) {
+        base.by_risk.medium.options = (base.by_risk.medium.options || []).map((o) =>
+          o.id === 'med_clubs' || o.id === 'my_clubs' ? myPkg : o
+        );
+      }
+      base.risk_levels = (base.risk_levels || []).map((rl) =>
+        rl.id === 'medium' && base.by_risk?.medium ? base.by_risk.medium : rl
+      );
+      base.by_id = { ...(base.by_id || {}), med_clubs: myPkg, my_clubs: myPkg };
     }
   }
   return base;
@@ -541,6 +599,7 @@ async function staticApi(path, opts = {}) {
       },
       top_value_bets: opps.slice(0, 6),
       featured_suggestion: sugg.top_single || snap.dashboard?.featured_suggestion || null,
+      featured_by_risk: sugg.by_risk || snap.dashboard?.featured_by_risk || {},
       quota: snap.dashboard?.quota || {},
       integrations: snap.dashboard?.integrations || {},
       leagues: leaguesMeta,
@@ -584,8 +643,8 @@ async function staticApi(path, opts = {}) {
     const fid = fixOddsMatch[1];
     const existing = cloneJson(gh.customOddsByFixture[fid] || {});
     for (const k of ['b365h', 'b365d', 'b365a', 'b365_over25', 'b365_under25', 'b365_btts_yes', 'b365_btts_no']) {
-      const val = Number(bodyData[k]);
-      if (Number.isFinite(val) && val > 1.01) existing[k] = val;
+      const val = parseOddsInput(bodyData[k]);
+      if (val && val > 1.01) existing[k] = val;
     }
     gh.customOddsByFixture[fid] = existing;
     saveGhState(gh);
@@ -1123,7 +1182,7 @@ function addLegToSlip(leg) {
   saveSlip();
   renderSlip();
   if (state.activeTab === 'fixtures') renderFixturesTab();
-  showToast(`Added ${leg.selection_label} @ ${Number(leg.odds).toFixed(2)}`);
+  showToast(`Added ${leg.selection_label} @ ${fmtOdds(leg.odds)}`);
 }
 
 function removeLegFromSlip(idx) {
@@ -1154,7 +1213,7 @@ async function renderSlip() {
         <div>
           <div class="text-xs text-slate-400">${esc(leg.home_team)} vs ${esc(leg.away_team)}</div>
           <div class="text-sm font-semibold text-white mt-0.5">${esc(leg.selection_label)}</div>
-          <div class="text-xs text-emerald-400 mt-0.5">Odds: <b>${Number(leg.odds).toFixed(2)}</b> • Model ${(Number(leg.model_prob) * (leg.model_prob > 1 ? 1 : 100)).toFixed(1)}%</div>
+          <div class="text-xs text-emerald-400 mt-0.5">Odds: <b class="font-mono">${fmtOdds(leg.odds)}</b> • Model ${(Number(leg.model_prob) * (leg.model_prob > 1 ? 1 : 100)).toFixed(1)}%</div>
         </div>
         <button data-rm-leg="${idx}" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-rose-600/30 text-slate-300">✕</button>
       </div>`
@@ -1176,7 +1235,7 @@ async function renderSlip() {
   const evCls = evalData.expected_value_pct >= 0 ? 'text-emerald-400' : 'text-rose-400';
   footer.innerHTML = `
     <div class="grid grid-cols-2 gap-2 text-xs">
-      <div class="text-slate-400">Combined Odds: <b class="text-white">${evalData.combined_odds.toFixed(2)}</b></div>
+      <div class="text-slate-400">Combined Odds: <b class="text-white font-mono">${fmtOdds(evalData.combined_odds)}</b></div>
       <div class="text-slate-400 text-right">Win Prob: <b class="text-white">${evalData.combined_model_prob_pct}%</b></div>
       <div class="text-slate-400">Expected Value: <b class="${evCls}">${evalData.expected_value_pct >= 0 ? '+' : ''}${evalData.expected_value_pct}%</b></div>
       <div class="text-slate-400 text-right">Est. House Margin: <b class="text-amber-300">${evalData.compounded_margin_pct}%</b></div>
@@ -1217,7 +1276,7 @@ async function renderSlip() {
     const res = await api('/api/user/saved-accas', {
       method: 'POST',
       body: JSON.stringify({
-        name: customName || `Saved ${state.slip.length}-Fold (${evalData.combined_odds.toFixed(2)})`,
+        name: customName || `Saved ${state.slip.length}-Fold (${fmtOdds(evalData.combined_odds)})`,
         stake: state.slipStake,
         legs: state.slip,
       }),
@@ -1388,27 +1447,66 @@ async function renderFixturesTab() {
       </div>`
       : '';
 
-  const fs = state.dashboard?.featured_suggestion;
+  const riskMap = state.dashboard?.featured_by_risk || {};
+  const activeRisk = riskMap[state.activeRiskLevel] ? state.activeRiskLevel : 'high';
+  const riskTier = riskMap[activeRisk] || null;
+  const fs = riskTier?.primary || state.dashboard?.featured_suggestion;
+  const riskPillSpecs = [
+    ['low', '🟢 Low (1/1–2/1)'],
+    ['medium', '🟡 Medium (3/1–7/1)'],
+    ['high', '🟠 High (12/1–35/1)'],
+    ['longshot', '🔥 Longshot (40/1+)'],
+  ];
   const featuredHtml =
     fs && fs.legs?.length
       ? `
-      <div class="bg-gradient-to-br from-emerald-500/15 via-panel to-cyan-500/10 border border-emerald-500/35 rounded-2xl p-4 md:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-lg shadow-emerald-950/30">
-        <div class="space-y-1.5 min-w-0">
+      <div class="bg-gradient-to-br from-emerald-500/15 via-panel to-cyan-500/10 border border-emerald-500/35 rounded-2xl p-4 md:p-5 space-y-3 shadow-lg shadow-emerald-950/30">
+        <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex flex-wrap items-center gap-2">
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-500 text-slate-950">✨ Today&apos;s Suggested Bet</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-emerald-500/40 text-emerald-300">${fs.confidence_score}% Confidence</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-slate-700 text-amber-300">${fs.eval?.expected_value_pct >= 0 ? '+' : ''}${fs.eval?.expected_value_pct ?? 0}% EV</span>
+            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-cyan-500/40 text-cyan-300">${fs.legs.length} ${fs.legs.length === 1 ? 'Leg' : 'Legs'}</span>
           </div>
-          <div class="text-base md:text-lg font-extrabold text-white truncate">
-            ${esc(fs.legs[0].selection_label)} <span class="text-emerald-400 font-mono">@ ${Number(fs.legs[0].odds).toFixed(2)}</span>
-            <span class="text-xs font-medium text-slate-300 ml-1">(${esc(fs.legs[0].home_team)} vs ${esc(fs.legs[0].away_team)})</span>
-          </div>
-          <p class="text-xs text-slate-300 line-clamp-2">${esc((fs.reasons && fs.reasons[0]) || fs.subtitle)}</p>
+          ${
+            Object.keys(riskMap).length
+              ? `<div class="flex flex-wrap gap-1.5">
+                  ${riskPillSpecs
+                    .map(
+                      ([rid, rlabel]) => `
+                    <button type="button" data-spot-risk="${rid}" class="px-2.5 py-1 rounded-full text-[11px] font-bold border transition ${
+                        activeRisk === rid
+                          ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm shadow-emerald-500/30'
+                          : 'bg-surface/90 text-slate-300 border-slate-700 hover:border-slate-500'
+                      }">${rlabel}</button>`
+                    )
+                    .join('')}
+                </div>`
+              : ''
+          }
         </div>
-        <div class="flex flex-wrap items-center gap-2 shrink-0">
-          <button type="button" id="feat-export-b365" class="px-4 py-2 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365</button>
-          <button type="button" id="feat-load-slip" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-white">🧾 Add to Slip</button>
-          <button type="button" id="feat-open-suggest" class="px-3.5 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-xs font-semibold text-cyan-200">🔄 All 4 Suggestions</button>
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div class="space-y-1 min-w-0">
+            <div class="text-base md:text-lg font-extrabold text-white truncate">
+              ${
+                fs.legs.length === 1
+                  ? `${esc(fs.legs[0].selection_label)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds || fs.legs[0].odds)}</span> <span class="text-xs font-medium text-slate-300 ml-1">(${esc(fs.legs[0].home_team)} vs ${esc(fs.legs[0].away_team)})</span>`
+                  : `${esc(fs.title)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds)}</span> <span class="text-xs font-semibold text-cyan-300 ml-1">• £${Number(fs.stake).toFixed(0)} → ${fmtGbp(fs.eval?.potential_return)}</span>`
+              }
+            </div>
+            <div class="text-xs text-slate-300 truncate">
+              ${
+                fs.legs.length === 1
+                  ? esc((fs.reasons && fs.reasons[0]) || fs.subtitle)
+                  : fs.legs.map((l) => `${l.selection_label} (${fmtOdds(l.odds)})`).join(' • ')
+              }
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 shrink-0">
+            <button type="button" id="feat-export-b365" class="px-4 py-2 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365</button>
+            <button type="button" id="feat-load-slip" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-white">🧾 Add to Slip</button>
+            <button type="button" id="feat-open-suggest" class="px-3.5 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-xs font-semibold text-cyan-200">🎛️ Customize Risk &amp; Picks</button>
+          </div>
         </div>
       </div>`
       : '';
@@ -1508,15 +1606,15 @@ async function renderFixturesTab() {
               <div class="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
                 <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: "1X2_H", selection_label: `${f.home_team} Win`, odds: f.b365h, model_prob: f.prob_home }))}' class="${oddsBtnCls(inH)}">
                   <div class="text-[10px] ${inH ? 'text-emerald-300 font-semibold' : 'text-slate-400'}">${inH ? '✓ Home' : 'Home'}</div>
-                  <div class="font-bold font-mono text-white">${f.b365h ? Number(f.b365h).toFixed(2) : '—'}</div>
+                  <div class="font-bold font-mono text-white">${f.b365h ? fmtOdds(f.b365h) : '—'}</div>
                 </button>
                 <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: "1X2_D", selection_label: "Draw", odds: f.b365d, model_prob: f.prob_draw }))}' class="${oddsBtnCls(inD)}">
                   <div class="text-[10px] ${inD ? 'text-emerald-300 font-semibold' : 'text-slate-400'}">${inD ? '✓ Draw' : 'Draw'}</div>
-                  <div class="font-bold font-mono text-white">${f.b365d ? Number(f.b365d).toFixed(2) : '—'}</div>
+                  <div class="font-bold font-mono text-white">${f.b365d ? fmtOdds(f.b365d) : '—'}</div>
                 </button>
                 <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: "1X2_A", selection_label: `${f.away_team} Win`, odds: f.b365a, model_prob: f.prob_away }))}' class="${oddsBtnCls(inA)}">
                   <div class="text-[10px] ${inA ? 'text-emerald-300 font-semibold' : 'text-slate-400'}">${inA ? '✓ Away' : 'Away'}</div>
-                  <div class="font-bold font-mono text-white">${f.b365a ? Number(f.b365a).toFixed(2) : '—'}</div>
+                  <div class="font-bold font-mono text-white">${f.b365a ? fmtOdds(f.b365a) : '—'}</div>
                 </button>
               </div>
             </div>
@@ -1535,6 +1633,14 @@ async function renderFixturesTab() {
     </div>
   `;
 
+  document.querySelectorAll('[data-spot-risk]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      state.activeRiskLevel = btn.dataset.spotRisk;
+      localStorage.setItem('accalab_risk_level', state.activeRiskLevel);
+      renderFixturesTab();
+    })
+  );
+
   if (fs && fs.legs?.length) {
     document.getElementById('feat-export-b365')?.addEventListener('click', () =>
       exportToBet365(fs.legs, fs.stake, fs.title)
@@ -1548,7 +1654,7 @@ async function renderFixturesTab() {
       document.getElementById('slip-drawer').classList.remove('hidden');
       showToast('Suggested bet added to your Bet Slip!');
     });
-    document.getElementById('feat-open-suggest')?.addEventListener('click', () => openSuggestModal('top_single'));
+    document.getElementById('feat-open-suggest')?.addEventListener('click', () => openSuggestModal(activeRisk));
   }
 
   document.getElementById('for-you-view-all')?.addEventListener('click', () => {
@@ -1693,8 +1799,8 @@ async function openMatchPreview(fixtureId) {
               <tr class="border-b border-slate-800/60">
                 <td class="py-2 pr-2 font-medium text-white">${esc(m.label)}</td>
                 <td class="py-2 px-2 text-right">${m.model_prob_pct}%</td>
-                <td class="py-2 px-2 text-right font-mono">${m.fair_odds.toFixed(2)}</td>
-                <td class="py-2 px-2 text-right font-mono font-bold text-white">${m.b365_odds ? m.b365_odds.toFixed(2) : '—'}</td>
+                <td class="py-2 px-2 text-right font-mono">${fmtOdds(m.fair_odds)}</td>
+                <td class="py-2 px-2 text-right font-mono font-bold text-white">${m.b365_odds ? fmtOdds(m.b365_odds) : '—'}</td>
                 <td class="py-2 px-2 text-right ${edgeCls}">${m.edge_pct >= 0 ? '+' : ''}${m.edge_pct}%</td>
                 <td class="py-2 px-2 text-right text-slate-300">${m.suggested_stake > 0 ? fmtGbp(m.suggested_stake) : '—'}</td>
                 <td class="py-2 pl-2 text-right">
@@ -1759,14 +1865,14 @@ async function openMatchPreview(fixtureId) {
     <!-- Update Bet365 Live Odds Manually + Matched News + Table -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div class="p-4 rounded-xl bg-card border border-slate-800 space-y-3">
-        <h4 class="font-bold text-white text-sm">Update Live Bet365 Odds</h4>
+        <h4 class="font-bold text-white text-sm">Update Live Bet365 Odds (Fractional e.g. 6/4 or Decimal)</h4>
         <div class="grid grid-cols-3 gap-2 text-xs">
-          <label>Home <input id="edit-b365h" type="number" step="0.01" value="${f.b365h || ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white"/></label>
-          <label>Draw <input id="edit-b365d" type="number" step="0.01" value="${f.b365d || ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white"/></label>
-          <label>Away <input id="edit-b365a" type="number" step="0.01" value="${f.b365a || ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white"/></label>
-          <label>O2.5 <input id="edit-b365o25" type="number" step="0.01" value="${f.b365_over25 || ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white"/></label>
-          <label>U2.5 <input id="edit-b365u25" type="number" step="0.01" value="${f.b365_under25 || ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white"/></label>
-          <label>BTTS Y <input id="edit-b365by" type="number" step="0.01" value="${f.b365_btts_yes || ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white"/></label>
+          <label>Home <input id="edit-b365h" type="text" placeholder="e.g. 6/4" value="${f.b365h ? fmtOdds(f.b365h) : ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono"/></label>
+          <label>Draw <input id="edit-b365d" type="text" placeholder="e.g. 9/4" value="${f.b365d ? fmtOdds(f.b365d) : ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono"/></label>
+          <label>Away <input id="edit-b365a" type="text" placeholder="e.g. 5/2" value="${f.b365a ? fmtOdds(f.b365a) : ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono"/></label>
+          <label>O2.5 <input id="edit-b365o25" type="text" placeholder="e.g. 4/5" value="${f.b365_over25 ? fmtOdds(f.b365_over25) : ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono"/></label>
+          <label>U2.5 <input id="edit-b365u25" type="text" placeholder="e.g. 1/1" value="${f.b365_under25 ? fmtOdds(f.b365_under25) : ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono"/></label>
+          <label>BTTS Y <input id="edit-b365by" type="text" placeholder="e.g. 4/6" value="${f.b365_btts_yes ? fmtOdds(f.b365_btts_yes) : ''}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono"/></label>
         </div>
         <button id="save-odds-btn" class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold">Save Bet365 Odds &amp; Recalculate Edge</button>
 
@@ -1919,8 +2025,8 @@ async function renderValueTab() {
                   <div class="text-[11px] text-slate-400">${esc(o.league_name)} • ${esc(o.match_date)}</div>
                 </td>
                 <td class="p-3 font-medium text-emerald-300">${esc(o.selection_label)}</td>
-                <td class="p-3 text-right font-mono font-bold text-white">${o.odds.toFixed(2)}</td>
-                <td class="p-3 text-right">${o.model_prob_pct}% <span class="text-slate-400">(${o.fair_odds.toFixed(2)})</span></td>
+                <td class="p-3 text-right font-mono font-bold text-white">${fmtOdds(o.odds)}</td>
+                <td class="p-3 text-right">${o.model_prob_pct}% <span class="text-slate-400 font-mono">(${fmtOdds(o.fair_odds)})</span></td>
                 <td class="p-3 text-right font-bold text-emerald-400">+${o.edge_pct}%</td>
                 <td class="p-3 text-right font-semibold text-white">${fmtGbp(o.suggested_stake)} <span class="text-slate-400">(${o.kelly_pct}%)</span></td>
                 <td class="p-3 space-y-1">
@@ -1988,7 +2094,7 @@ async function renderAccaTab() {
                     <div class="font-semibold text-white">${esc(l.selection_label)}</div>
                   </div>
                   <div class="text-right font-mono">
-                    <div class="text-emerald-400 font-bold">${l.odds.toFixed(2)}</div>
+                    <div class="text-emerald-400 font-bold">${fmtOdds(l.odds)}</div>
                     <div class="text-[10px] text-slate-400">${(l.model_prob * 100).toFixed(0)}%</div>
                   </div>
                 </div>`
@@ -1998,7 +2104,7 @@ async function renderAccaTab() {
           </div>
           <div class="pt-3 border-t border-slate-800 space-y-2 text-xs">
             <div class="flex justify-between">
-              <span class="text-slate-400">Combined Odds: <b class="text-white font-mono">${p.combined_odds.toFixed(2)}</b></span>
+              <span class="text-slate-400">Combined Odds: <b class="text-white font-mono">${fmtOdds(p.combined_odds)}</b></span>
               <span class="text-slate-400">Hit Prob: <b class="text-white font-mono">${p.combined_model_prob_pct}%</b></span>
             </div>
             <div class="flex gap-2">
@@ -2029,11 +2135,11 @@ async function renderAccaTab() {
                       <span class="font-bold text-white truncate">${esc(a.name)}</span>
                       <span class="px-2 py-0.5 rounded-full font-bold ${a.ev_pct >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">${a.ev_pct >= 0 ? '+' : ''}${Number(a.ev_pct).toFixed(1)}% EV</span>
                     </div>
-                    <div class="text-[11px] text-slate-400 mt-1">${(a.legs || []).length} legs • Combined <b class="text-emerald-400 font-mono">${Number(a.combined_odds).toFixed(2)}</b> • Stake ${fmtGbp(a.stake)} • Saved ${esc((a.created_at || '').slice(0, 10))}</div>
+                    <div class="text-[11px] text-slate-400 mt-1">${(a.legs || []).length} legs • Combined <b class="text-emerald-400 font-mono">${fmtOdds(a.combined_odds)}</b> • Stake ${fmtGbp(a.stake)} • Saved ${esc((a.created_at || '').slice(0, 10))}</div>
                     <div class="mt-2 space-y-1">
                       ${(a.legs || [])
                         .map(
-                          (l) => `<div class="text-[11px] text-slate-300 flex justify-between gap-2"><span class="truncate">${esc(l.selection_label)} (${esc(l.home_team)} vs ${esc(l.away_team)})</span><span class="font-mono text-slate-400">@ ${Number(l.odds || 0).toFixed(2)}</span></div>`
+                          (l) => `<div class="text-[11px] text-slate-300 flex justify-between gap-2"><span class="truncate">${esc(l.selection_label)} (${esc(l.home_team)} vs ${esc(l.away_team)})</span><span class="font-mono text-slate-400">@ ${fmtOdds(l.odds)}</span></div>`
                         )
                         .join('')}
                     </div>
@@ -2058,8 +2164,8 @@ async function renderAccaTab() {
           ? `
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs mb-3">
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Legs</div><div class="text-lg font-bold text-white">${slipEval.leg_count}</div></div>
-          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-lg font-bold text-emerald-400">${slipEval.combined_odds.toFixed(2)}</div></div>
-          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Model Fair Odds</div><div class="text-lg font-bold text-white">${slipEval.fair_combined_odds.toFixed(2)}</div></div>
+          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-lg font-bold font-mono text-emerald-400">${fmtOdds(slipEval.combined_odds)}</div></div>
+          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Model Fair Odds</div><div class="text-lg font-bold font-mono text-white">${fmtOdds(slipEval.fair_combined_odds)}</div></div>
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Compounded Margin</div><div class="text-lg font-bold text-amber-300">${slipEval.compounded_margin_pct}%</div></div>
         </div>
         <button id="open-slip-inline" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Open Slip to Place Bet</button>
@@ -2194,7 +2300,7 @@ async function renderTrackerTab() {
                   <span class="uppercase text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 mr-1">${esc(b.bet_type)}</span>
                   ${b.legs.map((l) => `<span class="text-white">${esc(l.home_team)} v ${esc(l.away_team)} (${esc(l.selection_label)})</span>`).join('<br/>')}
                 </td>
-                <td class="p-3 text-right font-mono">${b.combined_odds.toFixed(2)}</td>
+                <td class="p-3 text-right font-mono">${fmtOdds(b.combined_odds)}</td>
                 <td class="p-3 text-right">${fmtGbp(b.stake)}</td>
                 <td class="p-3 text-right ${b.clv_pct >= 0 ? 'text-emerald-400' : 'text-slate-400'}">${b.clv_pct !== null ? `${b.clv_pct >= 0 ? '+' : ''}${b.clv_pct}%` : '—'}</td>
                 <td class="p-3 text-right font-bold ${stCls}">${b.status.toUpperCase()} (${b.pnl >= 0 ? '+' : ''}${fmtGbp(b.pnl)})</td>
@@ -3012,7 +3118,7 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
 
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
       <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Stake</div><div class="text-base font-bold font-mono text-white">${fmtGbp(exp.stake)}</div></div>
-      <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-base font-bold font-mono text-emerald-400">${Number(ev.combined_odds || 1).toFixed(2)}</div></div>
+      <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-base font-bold font-mono text-emerald-400">${fmtOdds(ev.combined_odds)}</div></div>
       <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Potential Return</div><div class="text-base font-bold font-mono text-white">${fmtGbp(ev.potential_return || 0)}</div></div>
       <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Model EV</div><div class="text-base font-bold font-mono ${Number(ev.expected_value_pct) >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${Number(ev.expected_value_pct) >= 0 ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
     </div>
@@ -3024,7 +3130,7 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
           (l, idx) => `
         <div class="p-3 rounded-xl bg-card border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div class="min-w-0">
-            <div class="font-bold text-white">${idx + 1}. ${esc(l.selection_label)} <span class="text-emerald-400 font-mono">@ ${Number(l.odds).toFixed(2)}</span></div>
+            <div class="font-bold text-white">${idx + 1}. ${esc(l.selection_label)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(l.odds)}</span></div>
             <div class="text-[11px] text-cyan-300 mt-0.5 truncate">${esc(l.b365_path)}</div>
           </div>
           <a href="${esc(l.b365_search_url)}" target="_blank" rel="noopener" class="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold text-center">Open Match ↗</a>
@@ -3062,7 +3168,7 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
     showToast('Copied formatted slip to clipboard!');
   });
 
-  document.getElementById('b365-back-suggest-btn').addEventListener('click', () => openSuggestModal('top_single'));
+  document.getElementById('b365-back-suggest-btn').addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
 
   document.getElementById('b365-log-bet-btn').addEventListener('click', async () => {
     try {
@@ -3113,7 +3219,7 @@ async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Su
   }
 }
 
-async function openSuggestModal(initialKey = 'top_single') {
+async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'high') {
   const modal = document.getElementById('suggest-modal');
   const titleEl = document.getElementById('suggest-modal-title');
   const subEl = document.getElementById('suggest-modal-subtitle');
@@ -3121,40 +3227,108 @@ async function openSuggestModal(initialKey = 'top_single') {
   if (!modal || !body) return;
 
   titleEl.textContent = '✨ Smart Bet Assistant & Bet365 Export';
-  subEl.textContent = 'Data-backed selections built from Dixon-Coles, Elo, shots, Bet365 odds & team news';
+  subEl.textContent = 'Pick your risk appetite — from steady 1/1–2/1 builders to small-stake 40/1+ longshots';
   modal.classList.remove('hidden');
   body.innerHTML = '<div class="text-sm text-slate-400 py-8 text-center">Analyzing upcoming fixtures, Bet365 odds &amp; team news...</div>';
 
   try {
     const res = await api('/api/suggest-bet');
     const suggestions = res.suggestions || [];
-    if (!suggestions.length) {
+    const riskLevels = res.risk_levels || [];
+    const byRisk = res.by_risk || {};
+    if (!suggestions.length && !riskLevels.length) {
       body.innerHTML = '<div class="text-sm text-slate-400 py-6 text-center">No scheduled fixtures available yet — click Sync Live Data first.</div>';
       return;
     }
 
-    let activeKey = res.by_id?.[initialKey] ? initialKey : suggestions[0].id;
+    let activeRisk = state.activeRiskLevel || 'high';
+    let activeKey = null;
+
+    if (byRisk[initialRiskOrKey]) {
+      activeRisk = initialRiskOrKey;
+      activeKey = byRisk[activeRisk]?.primary?.id || byRisk[activeRisk]?.options?.[0]?.id;
+    } else if (res.by_id?.[initialRiskOrKey]) {
+      const matched = res.by_id[initialRiskOrKey];
+      activeKey = matched.id;
+      activeRisk = matched.risk_level || activeRisk;
+    }
+
+    if (!byRisk[activeRisk] && riskLevels.length) {
+      activeRisk = riskLevels[0].id;
+    }
+    if (!activeKey || !res.by_id?.[activeKey]) {
+      activeKey = byRisk[activeRisk]?.primary?.id || byRisk[activeRisk]?.options?.[0]?.id || suggestions[0]?.id;
+    }
+
+    const getPkgStake = (pkg, tier) => Number(pkg?.stake || tier?.default_stake || state.slipStake || 5);
+    let currentStake = getPkgStake(res.by_id?.[activeKey], byRisk[activeRisk]);
+
+    const persistRisk = (riskId) => {
+      state.activeRiskLevel = riskId;
+      try {
+        localStorage.setItem('accalab_risk_level', riskId);
+      } catch (_) {}
+      if (state.activeTab === 'fixtures') renderFixturesTab();
+    };
 
     const renderPkg = () => {
-      const s = res.by_id?.[activeKey] || suggestions[0];
+      const tier = byRisk[activeRisk] || riskLevels[0] || {};
+      const tierOptions = tier.options || suggestions;
+      const s = res.by_id?.[activeKey] || tier.primary || tierOptions[0] || suggestions[0];
       const ev = s.eval || {};
       const evPos = Number(ev.expected_value_pct || 0) >= 0;
+      const combinedDec = Number(ev.combined_odds || 1);
+      const stakeNum = Math.max(0.5, Number(currentStake || getPkgStake(s, tier)));
+      const tunedReturn = Math.round(stakeNum * combinedDec * 100) / 100;
+      const tunedProfit = Math.round((tunedReturn - stakeNum) * 100) / 100;
+      const quickStakes = [1, 2, 5, 10, 20];
 
       body.innerHTML = `
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          ${suggestions
-            .map(
-              (item) => `
-            <button type="button" data-sug-tab="${esc(item.id)}" class="px-3 py-2 rounded-xl text-left border transition ${
-                item.id === s.id
-                  ? 'bg-emerald-500/20 border-emerald-400 text-white'
-                  : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
-              }">
-              <div class="text-[10px] font-bold uppercase tracking-wider ${item.id === s.id ? 'text-emerald-300' : 'text-slate-400'}">${esc(item.badge)}</div>
-              <div class="text-xs font-bold truncate mt-0.5">${esc(item.title)}</div>
-            </button>`
-            )
-            .join('')}
+        <div class="space-y-1.5">
+          <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">1. Choose Your Risk Level</div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            ${riskLevels
+              .map((rl) => {
+                const isActive = rl.id === activeRisk;
+                const pOdds = rl.primary?.eval?.combined_odds;
+                return `
+              <button type="button" data-risk-tier="${esc(rl.id)}" class="p-2.5 rounded-xl text-left border transition ${
+                  isActive
+                    ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm shadow-emerald-500/20'
+                    : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
+                }">
+                <div class="flex items-center justify-between gap-1">
+                  <span class="text-xs font-extrabold">${esc(rl.emoji || '')} ${esc(rl.short_label || rl.label)}</span>
+                  ${pOdds ? `<span class="text-[11px] font-mono font-bold ${isActive ? 'text-emerald-300' : 'text-emerald-400'}">${esc(fmtOdds(pOdds))}</span>` : ''}
+                </div>
+                <div class="text-[10px] font-semibold mt-0.5 ${isActive ? 'text-emerald-200' : 'text-slate-400'}">${esc(rl.target_odds_label || '')}</div>
+                <div class="text-[10px] text-slate-400 truncate mt-0.5">Default £${Number(rl.default_stake || 5).toFixed(0)} stake</div>
+              </button>`;
+              })
+              .join('')}
+          </div>
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">2. Pick Angle Within ${esc(tier.short_label || activeRisk)}</div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            ${tierOptions
+              .map(
+                (item) => `
+              <button type="button" data-sug-tab="${esc(item.id)}" class="px-3 py-2 rounded-xl text-left border transition ${
+                  item.id === s.id
+                    ? 'bg-indigo-500/20 border-indigo-400 text-white'
+                    : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
+                }">
+                <div class="flex items-center justify-between gap-1">
+                  <span class="text-[10px] font-bold uppercase tracking-wider ${item.id === s.id ? 'text-indigo-300' : 'text-slate-400'}">${esc(item.badge)}</span>
+                  <span class="text-[11px] font-mono font-bold text-emerald-400">${esc(fmtOdds(item.eval?.combined_odds || 1))}</span>
+                </div>
+                <div class="text-xs font-bold truncate mt-0.5">${esc(item.title)}</div>
+              </button>`
+              )
+              .join('')}
+          </div>
         </div>
 
         <div class="p-4 rounded-2xl bg-card border border-slate-800 space-y-3">
@@ -3169,10 +3343,34 @@ async function openSuggestModal(initialKey = 'top_single') {
           </div>
 
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-            <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-sm font-bold font-mono text-emerald-400">${Number(ev.combined_odds || 1).toFixed(2)}</div></div>
+            <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-sm font-bold font-mono text-emerald-400">${esc(fmtOdds(combinedDec))}</div></div>
             <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Model Hit Prob</div><div class="text-sm font-bold font-mono text-white">${Number(ev.combined_model_prob_pct || 0).toFixed(1)}%</div></div>
             <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Expected Value</div><div class="text-sm font-bold font-mono ${evPos ? 'text-emerald-400' : 'text-amber-300'}">${evPos ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
-            <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Suggested Return</div><div class="text-sm font-bold font-mono text-white">${fmtGbp(ev.potential_return || 0)} <span class="text-[10px] text-slate-400">(£${Number(s.stake).toFixed(0)})</span></div></div>
+            <div class="p-2.5 rounded-xl bg-panel border border-slate-800">
+              <div class="text-slate-400">Potential Return</div>
+              <div id="sug-return-val" class="text-sm font-bold font-mono text-white">${fmtGbp(tunedReturn)}</div>
+              <div id="sug-profit-val" class="text-[10px] font-mono text-emerald-400">+${fmtGbp(tunedProfit)} profit</div>
+            </div>
+          </div>
+
+          <div class="p-3 rounded-xl bg-panel border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+            <div class="text-xs font-semibold text-slate-300">Stake Tuner</div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              ${quickStakes
+                .map(
+                  (amt) => `
+                <button type="button" data-sug-stake="${amt}" class="px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${
+                    Math.abs(stakeNum - amt) < 0.01
+                      ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                      : 'bg-surface border-slate-700 text-slate-300 hover:border-slate-500'
+                  }">£${amt}</button>`
+                )
+                .join('')}
+              <div class="flex items-center gap-1 ml-1">
+                <span class="text-xs text-slate-400">£</span>
+                <input id="sug-stake-input" type="number" min="0.5" step="0.5" value="${stakeNum}" class="w-16 px-2 py-1 rounded-lg bg-surface border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-emerald-400" />
+              </div>
+            </div>
           </div>
 
           <div class="space-y-2">
@@ -3186,7 +3384,7 @@ async function openSuggestModal(initialKey = 'top_single') {
                   <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
                 </div>
                 <div class="text-right font-mono shrink-0">
-                  <div class="text-sm font-extrabold text-emerald-400">@ ${Number(l.odds).toFixed(2)}</div>
+                  <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
                   <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
                 </div>
               </div>`
@@ -3202,37 +3400,83 @@ async function openSuggestModal(initialKey = 'top_single') {
           </div>
 
           <div class="flex flex-wrap gap-2 pt-1">
-            <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365</button>
+            <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365 (£${stakeNum % 1 === 0 ? stakeNum.toFixed(0) : stakeNum.toFixed(2)})</button>
             <button id="sug-load-slip-btn" type="button" class="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Load to Slip</button>
             <button id="sug-save-draft-btn" type="button" class="px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save Draft</button>
           </div>
         </div>
       `;
 
-      body.querySelectorAll('[data-sug-tab]').forEach((btn) =>
+      body.querySelectorAll('[data-risk-tier]').forEach((btn) =>
         btn.addEventListener('click', () => {
-          activeKey = btn.dataset.sugTab;
+          activeRisk = btn.dataset.riskTier;
+          const nextTier = byRisk[activeRisk];
+          const nextPkg = nextTier?.primary || nextTier?.options?.[0];
+          if (nextPkg) activeKey = nextPkg.id;
+          currentStake = getPkgStake(res.by_id?.[activeKey], nextTier);
+          persistRisk(activeRisk);
           renderPkg();
         })
       );
+
+      body.querySelectorAll('[data-sug-tab]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          activeKey = btn.dataset.sugTab;
+          currentStake = getPkgStake(res.by_id?.[activeKey], byRisk[activeRisk]);
+          renderPkg();
+        })
+      );
+
+      body.querySelectorAll('[data-sug-stake]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          currentStake = Number(btn.dataset.sugStake);
+          renderPkg();
+        })
+      );
+
+      const stakeInput = document.getElementById('sug-stake-input');
+      if (stakeInput) {
+        stakeInput.addEventListener('input', () => {
+          const parsed = Number(stakeInput.value);
+          if (!Number.isFinite(parsed) || parsed <= 0) return;
+          currentStake = parsed;
+          const nextRet = Math.round(currentStake * combinedDec * 100) / 100;
+          const nextProf = Math.round((nextRet - currentStake) * 100) / 100;
+          const retEl = document.getElementById('sug-return-val');
+          const profEl = document.getElementById('sug-profit-val');
+          const expBtn = document.getElementById('sug-export-b365-btn');
+          if (retEl) retEl.textContent = fmtGbp(nextRet);
+          if (profEl) profEl.textContent = `+${fmtGbp(nextProf)} profit`;
+          if (expBtn) expBtn.textContent = `🚀 1-Touch Export to Bet365 (£${currentStake % 1 === 0 ? currentStake.toFixed(0) : currentStake.toFixed(2)})`;
+          body.querySelectorAll('[data-sug-stake]').forEach((b) => {
+            const match = Math.abs(Number(b.dataset.sugStake) - currentStake) < 0.01;
+            b.className = `px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${
+              match
+                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                : 'bg-surface border-slate-700 text-slate-300 hover:border-slate-500'
+            }`;
+          });
+        });
+      }
+
       document.getElementById('sug-export-b365-btn').addEventListener('click', () =>
-        exportToBet365(s.legs, s.stake, s.title)
+        exportToBet365(s.legs, currentStake, s.title)
       );
       document.getElementById('sug-load-slip-btn').addEventListener('click', () => {
         state.slip = s.legs.map((l) => ({ ...l }));
-        state.slipStake = Number(s.stake || state.slipStake || 10);
+        state.slipStake = Number(currentStake || state.slipStake || 10);
         saveSlip();
         renderSlip();
         modal.classList.add('hidden');
         document.getElementById('slip-drawer').classList.remove('hidden');
         if (state.activeTab === 'fixtures') renderFixturesTab();
-        showToast(`Loaded "${s.title}" into your Bet Slip!`);
+        showToast(`Loaded "${s.title}" (£${state.slipStake}) into your Bet Slip!`);
       });
       document.getElementById('sug-save-draft-btn').addEventListener('click', async () => {
         try {
           const saved = await api('/api/user/saved-accas', {
             method: 'POST',
-            body: JSON.stringify({ name: s.title, stake: s.stake, legs: s.legs }),
+            body: JSON.stringify({ name: s.title, stake: currentStake, legs: s.legs }),
           });
           await loadDashboard(false);
           if (state.activeTab === 'acca') renderAccaTab();
@@ -3292,8 +3536,8 @@ function bindGlobalEvents() {
     authTabReg.addEventListener('click', () => renderAuthModalBody('register'));
   }
 
-  document.getElementById('open-suggest-btn')?.addEventListener('click', () => openSuggestModal('top_single'));
-  document.getElementById('open-suggest-sidebar-btn')?.addEventListener('click', () => openSuggestModal('top_single'));
+  document.getElementById('open-suggest-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
+  document.getElementById('open-suggest-sidebar-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
   document.getElementById('close-suggest-modal')?.addEventListener('click', () =>
     document.getElementById('suggest-modal').classList.add('hidden')
   );

@@ -43,6 +43,7 @@ from accalab.value_engine import (
     evaluate_acca,
     find_value_opportunities,
     kelly_stake_amount,
+    parse_odds_value,
     send_telegram_message,
     settle_bets,
 )
@@ -294,7 +295,8 @@ def create_app() -> Flask:
                 "telegram_configured": bool(TELEGRAM_BOT_TOKEN and (user.get("telegram_chat_id") or TELEGRAM_DEFAULT_CHAT_ID)),
             }
             quota = get_api_quota_summary(conn)
-            featured_suggestion = build_bet_suggestions(conn, user).get("top_single")
+            suggestions_data = build_bet_suggestions(conn, user)
+            featured_suggestion = suggestions_data.get("top_single")
             return jsonify(
                 {
                     "authenticated": bool(session.get("user_id")),
@@ -309,6 +311,7 @@ def create_app() -> Flask:
                     "user_summary": user_summary,
                     "top_value_bets": opps[:6],
                     "featured_suggestion": featured_suggestion,
+                    "featured_by_risk": suggestions_data.get("by_risk", {}),
                     "quota": quota,
                     "integrations": integrations,
                     "leagues": LEAGUES,
@@ -524,15 +527,8 @@ def create_app() -> Flask:
             if not fix:
                 return jsonify({"error": "Fixture not found"}), 404
 
-            def _opt_float(key: str, default: float | None) -> float | None:
-                val = data.get(key)
-                if val in (None, ""):
-                    return default
-                try:
-                    f = float(val)
-                    return f if f > 1.01 else default
-                except (TypeError, ValueError):
-                    return default
+            def _opt_odds(key: str, default: float | None) -> float | None:
+                return parse_odds_value(data.get(key), default)
 
             conn.execute(
                 """
@@ -545,13 +541,13 @@ def create_app() -> Flask:
                 WHERE id = ?
                 """,
                 (
-                    _opt_float("b365h", fix["b365h"]),
-                    _opt_float("b365d", fix["b365d"]),
-                    _opt_float("b365a", fix["b365a"]),
-                    _opt_float("b365_over25", fix["b365_over25"]),
-                    _opt_float("b365_under25", fix["b365_under25"]),
-                    _opt_float("b365_btts_yes", fix["b365_btts_yes"]),
-                    _opt_float("b365_btts_no", fix["b365_btts_no"]),
+                    _opt_odds("b365h", fix["b365h"]),
+                    _opt_odds("b365d", fix["b365d"]),
+                    _opt_odds("b365a", fix["b365a"]),
+                    _opt_odds("b365_over25", fix["b365_over25"]),
+                    _opt_odds("b365_under25", fix["b365_under25"]),
+                    _opt_odds("b365_btts_yes", fix["b365_btts_yes"]),
+                    _opt_odds("b365_btts_no", fix["b365_btts_no"]),
                     now,
                     fixture_id,
                 ),
