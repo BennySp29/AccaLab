@@ -15,6 +15,9 @@ const state = {
   slip: JSON.parse(localStorage.getItem('accalab_slip') || '[]'),
   slipStake: Number(localStorage.getItem('accalab_slip_stake') || 10),
   activeRiskLevel: localStorage.getItem('accalab_risk_level') || 'high',
+  kickoffFilter: 'ALL',
+  liveScoresByMatch: {},
+  liveScoresUpdatedAt: null,
   charts: {},
 };
 
@@ -229,6 +232,267 @@ function isFixtureUpcomingClient(fix, nowDate = new Date()) {
   const ko = String(fix.kickoff_time || '').trim();
   if (!ko) return true;
   return ko > nowHhmm;
+}
+
+const KICKOFF_FILTER_OPTIONS = [
+  ['ALL', 'All Dates'],
+  ['TODAY', '⚡ Today'],
+  ['SAT_3PM', '🕒 Sat 3pm'],
+  ['WEEKEND', '📅 Weekend'],
+  ['MIDWEEK', '🌙 Midweek'],
+];
+
+function matchesKickoffFilter(item, mode = state.kickoffFilter, nowDate = new Date()) {
+  if (!mode || mode === 'ALL') return true;
+  const mdate = String(item?.match_date || '').trim();
+  if (!mdate) return true;
+  const todayIso = nowDate.toISOString().slice(0, 10);
+  if (mode === 'TODAY') return mdate === todayIso;
+  const dt = new Date(`${mdate}T12:00:00Z`);
+  if (Number.isNaN(dt.getTime())) return true;
+  const dow = dt.getUTCDay(); // 0=Sun .. 6=Sat
+  const ktime = String(item?.kickoff_time || '').trim();
+  if (mode === 'SAT_3PM') {
+    return dow === 6 && (!ktime || (ktime >= '14:45' && ktime <= '15:15'));
+  }
+  if (mode === 'WEEKEND') {
+    return dow === 6 || dow === 0 || (dow === 5 && (!ktime || ktime >= '18:00'));
+  }
+  if (mode === 'MIDWEEK') {
+    return dow >= 1 && dow <= 4;
+  }
+  return true;
+}
+
+function marketFamily(market) {
+  const m = String(market || '');
+  if (m.startsWith('1X2_')) return '1X2';
+  if (m.startsWith('OU_')) return 'OU';
+  if (m.startsWith('BTTS_')) return 'BTTS';
+  return m;
+}
+
+const ESPN_TEAM_ALIASES_CLIENT = {
+  'man utd': 'Man United',
+  'manchester utd': 'Man United',
+  'manchester united': 'Man United',
+  'man city': 'Man City',
+  'manchester city': 'Man City',
+  spurs: 'Tottenham',
+  'tottenham hotspur': 'Tottenham',
+  'nottingham forest': "Nott'm Forest",
+  'nottm forest': "Nott'm Forest",
+  'newcastle united': 'Newcastle',
+  'leeds united': 'Leeds',
+  'brighton & hove albion': 'Brighton',
+  'brighton and hove albion': 'Brighton',
+  'afc bournemouth': 'Bournemouth',
+  'coventry city': 'Coventry',
+  'ipswich town': 'Ipswich',
+  'sunderland afc': 'Sunderland',
+  'birmingham city': 'Birmingham',
+  'blackburn rovers': 'Blackburn',
+  'bolton wanderers': 'Bolton',
+  'cardiff city': 'Cardiff',
+  'charlton athletic': 'Charlton',
+  'derby county': 'Derby',
+  'lincoln city': 'Lincoln',
+  'norwich city': 'Norwich',
+  'preston north end': 'Preston',
+  'queens park rangers': 'QPR',
+  'stoke city': 'Stoke',
+  'swansea city': 'Swansea',
+  'west bromwich albion': 'West Brom',
+  'west ham united': 'West Ham',
+  'wolverhampton wanderers': 'Wolves',
+  wolverhampton: 'Wolves',
+  'hull city': 'Hull',
+  'sheffield utd': 'Sheffield United',
+  'bradford city': 'Bradford',
+  'burton albion': 'Burton',
+  'cambridge united': 'Cambridge',
+  'doncaster rovers': 'Doncaster',
+  'huddersfield town': 'Huddersfield',
+  'leicester city': 'Leicester',
+  'luton town': 'Luton',
+  'mansfield town': 'Mansfield',
+  'mk dons': 'Milton Keynes Dons',
+  'oxford united': 'Oxford',
+  'peterborough united': 'Peterboro',
+  peterborough: 'Peterboro',
+  'plymouth argyle': 'Plymouth',
+  'sheffield wednesday': 'Sheffield Weds',
+  'sheffield weds': 'Sheffield Weds',
+  'stockport county': 'Stockport',
+  'wigan athletic': 'Wigan',
+  'wycombe wanderers': 'Wycombe',
+  'accrington stanley': 'Accrington',
+  'bristol rovers': 'Bristol Rvs',
+  'cheltenham town': 'Cheltenham',
+  'colchester united': 'Colchester',
+  'crewe alexandra': 'Crewe',
+  'exeter city': 'Exeter',
+  'grimsby town': 'Grimsby',
+  'northampton town': 'Northampton',
+  'oldham athletic': 'Oldham',
+  'rotherham united': 'Rotherham',
+  'salford city': 'Salford',
+  'shrewsbury town': 'Shrewsbury',
+  'swindon town': 'Swindon',
+  'tranmere rovers': 'Tranmere',
+  'york city': 'York',
+  'harrogate town': 'Harrogate',
+  'carlisle united': 'Carlisle',
+  'forest green rovers': 'Forest Green',
+};
+
+function normalizeEspnTeamClient(name) {
+  const cleaned = String(name || '').replace(/\s+/g, ' ').trim();
+  const key = cleaned.toLowerCase();
+  return ESPN_TEAM_ALIASES_CLIENT[key] || cleaned;
+}
+
+async function fetchLiveScoresForDates(dateList = []) {
+  const dates = [...new Set(
+    [
+      new Date().toISOString().slice(0, 10),
+      ...dateList.map((d) => String(d || '').slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+    ]
+  )].slice(0, 6);
+  const slugs = ['eng.1', 'eng.2', 'eng.3', 'eng.4'];
+  let loaded = 0;
+
+  await Promise.all(
+    dates.flatMap((dStr) => {
+      const yyyymmdd = dStr.replaceAll('-', '');
+      return slugs.map(async (slug) => {
+        try {
+          const resp = await fetch(
+            `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${yyyymmdd}`
+          );
+          if (!resp.ok) return;
+          const data = await resp.json();
+          for (const ev of data.events || []) {
+            const comp = (ev.competitions || [{}])[0];
+            let homeName = '';
+            let awayName = '';
+            let homeScore = null;
+            let awayScore = null;
+            for (const tm of comp.competitors || []) {
+              const nm = normalizeEspnTeamClient(tm.team?.displayName || '');
+              const sc = tm.score !== undefined && tm.score !== '' ? Number(tm.score) : null;
+              if (tm.homeAway === 'home') {
+                homeName = nm;
+                homeScore = sc;
+              } else if (tm.homeAway === 'away') {
+                awayName = nm;
+                awayScore = sc;
+              }
+            }
+            if (!homeName || !awayName) continue;
+            const st = comp.status?.type || {};
+            const stateCode = st.state || 'pre'; // 'pre' | 'in' | 'post'
+            const detail = st.shortDetail || st.description || '';
+            const evDate = String(ev.date || '').slice(0, 10) || dStr;
+            const entry = { homeName, awayName, homeGoals: homeScore, awayGoals: awayScore, state: stateCode, detail, date: evDate };
+            state.liveScoresByMatch[`${evDate}:${homeName}:${awayName}`] = entry;
+            state.liveScoresByMatch[`${dStr}:${homeName}:${awayName}`] = entry;
+            state.liveScoresByMatch[`*:${homeName}:${awayName}`] = entry;
+            loaded += 1;
+          }
+        } catch (_) { }
+      });
+    })
+  );
+  state.liveScoresUpdatedAt = new Date().toISOString();
+  return loaded;
+}
+
+function evaluateLegLiveStatus(leg) {
+  if (!leg) return null;
+  const d = String(leg.match_date || '').slice(0, 10);
+  const live =
+    state.liveScoresByMatch[`${d}:${leg.home_team}:${leg.away_team}`] ||
+    state.liveScoresByMatch[`*:${leg.home_team}:${leg.away_team}`];
+  if (!live) return null;
+  if (live.state === 'pre') {
+    return {
+      status: 'pre',
+      html: `<span class="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-mono">🕒 ${esc(live.detail || leg.kickoff_time || 'Pre-match')}</span>`,
+    };
+  }
+  const h = Number(live.homeGoals ?? 0);
+  const a = Number(live.awayGoals ?? 0);
+  const m = String(leg.market || '');
+  let winning = null;
+  if (m === '1X2_H') winning = h > a;
+  else if (m === '1X2_D') winning = h === a;
+  else if (m === '1X2_A') winning = a > h;
+  else if (m === 'OU_O25') winning = h + a >= 3;
+  else if (m === 'OU_U25') winning = h + a <= 2;
+  else if (m === 'BTTS_Y') winning = h >= 1 && a >= 1;
+  else if (m === 'BTTS_N') winning = !(h >= 1 && a >= 1);
+  else if (m === 'COMBO_H_BTTS') winning = h > a && h >= 1 && a >= 1;
+  else if (m === 'COMBO_H_O25') winning = h > a && h + a >= 3;
+  else if (m === 'COMBO_O25_BTTS') winning = h + a >= 3 && h >= 1 && a >= 1;
+  else if (m === 'COMBO_A_BTTS') winning = a > h && h >= 1 && a >= 1;
+  else if (m === 'COMBO_A_O25') winning = a > h && h + a >= 3;
+  else if (m === 'COMBO_H_WIN_NIL') winning = h > a && a === 0;
+  else if (m === 'COMBO_A_WIN_NIL') winning = a > h && h === 0;
+
+  const isFinal = live.state === 'post';
+  const scoreTxt = `${h}-${a}${isFinal ? ' FT' : live.detail ? ` (${live.detail})` : ' Live'}`;
+  if (winning === null) {
+    return {
+      status: live.state,
+      html: `<span class="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[10px] font-mono">⚽ ${esc(scoreTxt)}</span>`,
+    };
+  }
+  if (isFinal) {
+    return {
+      status: winning ? 'won' : 'lost',
+      html: winning
+        ? `<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-[10px] font-bold">✅ Won • ${esc(scoreTxt)}</span>`
+        : `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-400/50 text-rose-300 text-[10px] font-bold">❌ Lost • ${esc(scoreTxt)}</span>`,
+    };
+  }
+  return {
+    status: winning ? 'winning' : 'losing',
+    html: winning
+      ? `<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-[10px] font-bold">🟢 Winning • ${esc(scoreTxt)}</span>`
+      : `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-amber-200 text-[10px] font-bold">🔴 Behind • ${esc(scoreTxt)}</span>`,
+  };
+}
+
+async function shareAccaSummary(legs = [], title = 'AccaLab Tips') {
+  if (!legs || !legs.length) {
+    showToast('Add at least one leg to share!', true);
+    return;
+  }
+  const ev = evaluateAccaClient(legs, 10);
+  const lines = [
+    `⚽ ${title} (${legs.length}-Fold @ ${fmtOdds(ev.combined_odds)})`,
+    `📊 Model Win Chance: ${ev.combined_model_prob_pct}% (${ev.expected_value_pct >= 0 ? '+' : ''}${ev.expected_value_pct}% Value)`,
+    '',
+    ...legs.map((l, i) => `${i + 1}. ${l.home_team} vs ${l.away_team} — ${l.selection_label} @ ${fmtOdds(l.odds)}`),
+    '',
+    'Built with AccaLab',
+  ];
+  const text = lines.join('\n');
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, text });
+      return;
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+    }
+  }
+  try {
+    await navigator.clipboard?.writeText(text);
+    showToast('📋 Copied tips — ready to paste into WhatsApp or group chat!');
+  } catch (_) {
+    showToast('Could not copy to clipboard', true);
+  }
 }
 
 function encodeSlipTokenClient(payload) {
@@ -1826,6 +2090,23 @@ function addLegToSlip(leg) {
     showToast(`Removed ${leg.selection_label} from Bet Slip`);
     return false;
   }
+
+  const fam = marketFamily(leg.market);
+  const conflictIdx = fam
+    ? state.slip.findIndex((l) => Number(l.fixture_id) === Number(leg.fixture_id) && marketFamily(l.market) === fam)
+    : -1;
+  if (conflictIdx !== -1) {
+    state.slip[conflictIdx] = leg;
+    saveSlip();
+    renderSlip();
+    syncModalSlipButtons();
+    if (state.activeTab === 'fixtures') renderFixturesTab();
+    else if (state.activeTab === 'value') renderValueTab();
+    else if (state.activeTab === 'acca') renderAccaTab();
+    showToast(`Swapped to ${leg.selection_label} @ ${fmtOdds(leg.odds)}`);
+    return true;
+  }
+
   state.slip.push(leg);
   saveSlip();
   renderSlip();
@@ -1860,17 +2141,20 @@ async function renderSlip() {
   });
 
   body.innerHTML = state.slip
-    .map(
-      (leg, idx) => `
+    .map((leg, idx) => {
+      const liveSt = evaluateLegLiveStatus(leg);
+      const koMeta = leg.match_date ? `<span class="text-[10px] text-slate-500 font-mono">${esc(leg.match_date)}${leg.kickoff_time ? ` ${esc(leg.kickoff_time)}` : ''}</span>` : '';
+      return `
       <div class="p-3 rounded-xl bg-card border border-slate-700/80 flex items-start justify-between gap-2">
-        <div>
-          <div class="text-xs text-slate-400">${esc(leg.home_team)} vs ${esc(leg.away_team)}</div>
+        <div class="min-w-0">
+          <div class="text-xs text-slate-400 truncate">${esc(leg.home_team)} vs ${esc(leg.away_team)}</div>
           <div class="text-sm font-semibold text-white mt-0.5">${esc(leg.selection_label)}</div>
           <div class="text-xs text-emerald-400 mt-0.5">Odds: <b class="font-mono">${fmtOdds(leg.odds)}</b> • Model ${(Number(leg.model_prob) * (leg.model_prob > 1 ? 1 : 100)).toFixed(1)}%</div>
+          <div class="mt-1 flex flex-wrap items-center gap-1.5">${liveSt ? liveSt.html : koMeta}</div>
         </div>
-        <button data-rm-leg="${idx}" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-rose-600/30 text-slate-300">✕</button>
-      </div>`
-    )
+        <button data-rm-leg="${idx}" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-rose-600/30 text-slate-300 shrink-0">✕</button>
+      </div>`;
+    })
     .join('') +
     (evalData.warnings?.length
       ? evalData.warnings
@@ -1894,9 +2178,11 @@ async function renderSlip() {
       <div class="text-slate-400 text-right">Legs: <b class="text-white">${state.slip.length}</b></div>
     </div>
     <input id="slip-notes-input" type="text" placeholder="Optional acca name (e.g. Saturday acca)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white" />
-    <div class="flex gap-2">
-      <button id="slip-clear-btn" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300">Clear</button>
-      <button id="slip-save-draft-btn" class="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">💾 Save Acca</button>
+    <div class="flex gap-1.5">
+      <button id="slip-clear-btn" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300">Clear</button>
+      <button id="slip-live-btn" type="button" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold">📡 Live Scores</button>
+      <button id="slip-share-btn" type="button" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold">📤 Share</button>
+      <button id="slip-save-draft-btn" class="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">💾 Save</button>
     </div>
     <button id="slip-export-b365-btn" class="w-full py-2.5 rounded-xl btn-bet365 text-xs font-extrabold tracking-wide flex items-center justify-center gap-2">
       <span>🚀 1-Touch Export to Bet365</span>
@@ -1911,6 +2197,16 @@ async function renderSlip() {
     if (state.activeTab === 'fixtures') renderFixturesTab();
     else if (state.activeTab === 'value') renderValueTab();
     else if (state.activeTab === 'acca') renderAccaTab();
+  });
+  document.getElementById('slip-live-btn').addEventListener('click', async () => {
+    showToast('Checking live matchday scores...');
+    await fetchLiveScoresForDates(state.slip.map((l) => l.match_date));
+    renderSlip();
+    if (state.activeTab === 'acca') renderAccaTab();
+  });
+  document.getElementById('slip-share-btn').addEventListener('click', () => {
+    const customName = document.getElementById('slip-notes-input').value.trim();
+    shareAccaSummary(state.slip, customName || 'AccaLab Tip Slip');
   });
   document.getElementById('slip-export-b365-btn').addEventListener('click', () => {
     const customName = document.getElementById('slip-notes-input').value.trim();
@@ -2189,12 +2485,25 @@ async function renderFixturesTab() {
       .join('')}
     </div>
 
+    <div class="flex flex-wrap items-center gap-1.5">
+      <span class="text-[11px] font-semibold text-slate-400 mr-1">Kickoff:</span>
+      ${KICKOFF_FILTER_OPTIONS.map(
+        ([kCode, kLabel]) => `
+        <button type="button" data-ko-filter="${kCode}" class="px-2.5 py-1 rounded-full text-[11px] font-semibold border transition ${state.kickoffFilter === kCode
+            ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/60'
+            : 'bg-panel text-slate-400 border-slate-800 hover:text-white'
+          }">${kLabel}</button>`
+      ).join('')}
+    </div>
+
     ${featuredHtml}
     ${forYouHtml}
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      ${data.fixtures.length
-      ? data.fixtures
+      ${(() => {
+        const filteredFixtures = (data.fixtures || []).filter((f) => matchesKickoffFilter(f, state.kickoffFilter));
+        return filteredFixtures.length
+          ? filteredFixtures
         .map((f) => {
           const best = f.best_edge || {};
           const hasEdge = best.edge_pct >= 3.0;
@@ -2280,8 +2589,8 @@ async function renderFixturesTab() {
           </div>`;
         })
         .join('')
-      : `<div class="col-span-2 text-center py-12 text-slate-400">No fixtures match your filter.</div>`
-    }
+      : `<div class="col-span-2 text-center py-12 text-slate-400 space-y-2"><div>No fixtures match your filter.</div>${state.kickoffFilter !== 'ALL' ? `<button id="reset-ko-filter-btn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-cyan-300 font-semibold">Show All Kickoff Dates</button>` : ''}</div>`;
+      })()}
     </div>
   `;
 
@@ -2319,6 +2628,16 @@ async function renderFixturesTab() {
       renderFixturesTab();
     })
   );
+  document.querySelectorAll('[data-ko-filter]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      state.kickoffFilter = btn.dataset.koFilter;
+      renderFixturesTab();
+    })
+  );
+  document.getElementById('reset-ko-filter-btn')?.addEventListener('click', () => {
+    state.kickoffFilter = 'ALL';
+    renderFixturesTab();
+  });
   document.getElementById('fixture-search').addEventListener('input', (e) => {
     state.search = e.target.value;
     clearTimeout(window._searchTimer);
@@ -2892,7 +3211,7 @@ async function renderValueTab() {
   if (div) q.set('div', div);
   const data = await api(`/api/value-bets?${q.toString()}`);
 
-  const opps = state.valMyPrefsOnly
+  const baseOpps = state.valMyPrefsOnly
     ? (data.opportunities || []).filter(
       (o) =>
         state.preferredLeagues.includes(o.div) ||
@@ -2900,6 +3219,7 @@ async function renderValueTab() {
         state.favouriteTeams.includes(o.away_team)
     )
     : data.opportunities || [];
+  const opps = baseOpps.filter((o) => matchesKickoffFilter(o, state.kickoffFilter));
 
   main.innerHTML = `
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -2914,6 +3234,9 @@ async function renderValueTab() {
           <option value="E1" ${div === 'E1' ? 'selected' : ''}>Championship</option>
           <option value="E2" ${div === 'E2' ? 'selected' : ''}>League One</option>
           <option value="E3" ${div === 'E3' ? 'selected' : ''}>League Two</option>
+        </select>
+        <select id="val-ko-filter" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
+          ${KICKOFF_FILTER_OPTIONS.map(([kCode, kLabel]) => `<option value="${kCode}" ${state.kickoffFilter === kCode ? 'selected' : ''}>${kLabel}</option>`).join('')}
         </select>
         <select id="val-min-edge" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
           <option value="2" ${minEdge === '2' ? 'selected' : ''}>All Value Tips (+2%+)</option>
@@ -2988,6 +3311,10 @@ async function renderValueTab() {
   ['val-div-filter', 'val-min-edge', 'val-official-only'].forEach((id) =>
     document.getElementById(id).addEventListener('change', renderValueTab)
   );
+  document.getElementById('val-ko-filter')?.addEventListener('change', (e) => {
+    state.kickoffFilter = e.target.value;
+    renderValueTab();
+  });
   document.getElementById('val-my-prefs').addEventListener('change', (e) => {
     state.valMyPrefsOnly = e.target.checked;
     renderValueTab();
@@ -3048,6 +3375,7 @@ async function renderAccaTab() {
             </div>
             <div class="flex gap-2">
               <button data-load-preset='${esc(JSON.stringify(p.legs))}' class="load-preset-btn flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold">Load Slip</button>
+              <button type="button" data-share-acca='${esc(JSON.stringify({ legs: p.legs, title: p.title }))}' class="share-acca-btn px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold" title="Share tips">📤</button>
               <button data-export-preset='${esc(JSON.stringify({ legs: p.legs, title: p.title }))}' class="export-preset-btn px-3 py-2 rounded-xl btn-bet365 font-extrabold">🚀 Bet365</button>
             </div>
           </div>
@@ -3058,9 +3386,12 @@ async function renderAccaTab() {
 
     <!-- Saved Draft Accas -->
     <div class="bg-panel border border-slate-800 rounded-2xl p-5 space-y-3">
-      <div class="flex items-center justify-between gap-2">
-        <h3 class="font-bold text-white text-base">💾 Saved Draft Accas (${savedAccas.length})</h3>
-        <span class="text-xs text-slate-400">Saved to your account across devices</span>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 class="font-bold text-white text-base">💾 Saved Draft Accas (${savedAccas.length})</h3>
+          <span class="text-xs text-slate-400">Saved to your account across devices</span>
+        </div>
+        ${savedAccas.length ? `<button id="acca-live-scores-btn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold">📡 Check Live Scores</button>` : ''}
       </div>
       ${savedAccas.length
       ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3074,16 +3405,20 @@ async function renderAccaTab() {
                       <span class="px-2 py-0.5 rounded-full font-bold ${a.ev_pct >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">${a.ev_pct >= 0 ? '+' : ''}${Number(a.ev_pct).toFixed(1)}% EV</span>
                     </div>
                     <div class="text-[11px] text-slate-400 mt-1">${(a.legs || []).length} legs • Combined <b class="text-emerald-400 font-mono">${fmtOdds(a.combined_odds)}</b> • Saved ${esc((a.created_at || '').slice(0, 10))}</div>
-                    <div class="mt-2 space-y-1">
+                    <div class="mt-2 space-y-1.5">
                       ${(a.legs || [])
               .map(
-                (l) => `<div class="text-[11px] text-slate-300 flex justify-between gap-2"><span class="truncate">${esc(l.selection_label)} (${esc(l.home_team)} vs ${esc(l.away_team)})</span><span class="font-mono text-slate-400">@ ${fmtOdds(l.odds)}</span></div>`
+                (l) => {
+                  const lst = evaluateLegLiveStatus(l);
+                  return `<div class="text-[11px] text-slate-300 flex items-center justify-between gap-2"><span class="truncate">${esc(l.selection_label)} (${esc(l.home_team)} vs ${esc(l.away_team)})</span><span class="flex items-center gap-1.5 shrink-0">${lst ? lst.html : ''}<span class="font-mono text-slate-400">@ ${fmtOdds(l.odds)}</span></span></div>`;
+                }
               )
               .join('')}
                     </div>
                   </div>
                   <div class="flex gap-2 pt-2 border-t border-slate-800">
                     <button type="button" data-load-saved='${esc(JSON.stringify({ legs: a.legs, stake: a.stake }))}' class="flex-1 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold">Load</button>
+                    <button type="button" data-share-acca='${esc(JSON.stringify({ legs: a.legs, title: a.name }))}' class="share-acca-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold" title="Share tips">📤</button>
                     <button type="button" data-export-saved='${esc(JSON.stringify({ legs: a.legs, stake: a.stake, title: a.name }))}' class="px-3 py-1.5 rounded-lg btn-bet365 font-extrabold">🚀 Bet365</button>
                     <button type="button" data-del-saved="${a.id}" class="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 font-semibold">Delete</button>
                   </div>
@@ -3162,6 +3497,19 @@ async function renderAccaTab() {
   document.getElementById('open-slip-inline')?.addEventListener('click', () => {
     renderSlip();
     document.getElementById('slip-drawer').classList.remove('hidden');
+  });
+  document.querySelectorAll('.share-acca-btn').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const payload = JSON.parse(btn.dataset.shareAcca || '{}');
+      shareAccaSummary(payload.legs || [], payload.title || 'AccaLab Tips');
+    })
+  );
+  document.getElementById('acca-live-scores-btn')?.addEventListener('click', async () => {
+    const dates = savedAccas.flatMap((a) => (a.legs || []).map((l) => l.match_date));
+    showToast('Checking live matchday scores...');
+    await fetchLiveScoresForDates(dates);
+    renderAccaTab();
+    renderSlip();
   });
 }
 
@@ -4300,10 +4648,33 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
   body.innerHTML = '<div class="text-sm text-slate-400 py-8 text-center">Analyzing upcoming fixtures, Bet365 odds &amp; team news...</div>';
 
   try {
-    const res = await api('/api/suggest-bet');
+    const [res, valRes] = await Promise.all([
+      api('/api/suggest-bet'),
+      api('/api/value-bets?min_edge=1').catch(() => ({ opportunities: [] })),
+    ]);
     const suggestions = res.suggestions || [];
     const riskLevels = res.risk_levels || [];
     const byRisk = res.by_risk || {};
+    const candidatePool = (valRes.opportunities || []).map((o) => ({
+      fixture_id: o.fixture_id,
+      div: o.div,
+      league_name: o.league_name,
+      match_date: o.match_date,
+      kickoff_time: o.kickoff_time || '',
+      home_team: o.home_team,
+      away_team: o.away_team,
+      market: o.market,
+      selection_label: o.selection_label,
+      odds: Number(o.odds),
+      odds_fractional: fmtOdds(o.odds),
+      model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
+      edge_pct: Number(o.edge_pct || 0),
+      odds_source: o.odds_source,
+    }));
+    const lockedKeys = new Set();
+    const skippedSwapKeys = new Set();
+    const legKey = (l) => `${Number(l.fixture_id)}:${l.market}`;
+
     if (!suggestions.length && !riskLevels.length) {
       body.innerHTML = '<div class="text-sm text-slate-400 py-6 text-center">No scheduled fixtures available yet — click Sync Live Data first.</div>';
       return;
@@ -4337,6 +4708,36 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
         localStorage.setItem('accalab_risk_level', riskId);
       } catch (_) { }
       if (state.activeTab === 'fixtures') renderFixturesTab();
+    };
+
+    const swapLegAt = (pkg, swapIdx) => {
+      if (!pkg?.legs?.[swapIdx]) return false;
+      const oldLeg = pkg.legs[swapIdx];
+      skippedSwapKeys.add(legKey(oldLeg));
+      const usedFixtures = new Set(pkg.legs.map((l, idx) => (idx === swapIdx ? null : Number(l.fixture_id))));
+      const findBest = (allowSkipped) =>
+        candidatePool
+          .filter((c) => {
+            if (usedFixtures.has(Number(c.fixture_id))) return false;
+            if (legKey(c) === legKey(oldLeg)) return false;
+            if (!allowSkipped && skippedSwapKeys.has(legKey(c))) return false;
+            return c.odds >= 1.2 && c.odds <= 8.0;
+          })
+          .sort((a, b) => {
+            const distA = Math.abs(Math.log(Math.max(a.odds, 1.05) / Math.max(oldLeg.odds, 1.05))) - Math.min(a.edge_pct, 25) * 0.015;
+            const distB = Math.abs(Math.log(Math.max(b.odds, 1.05) / Math.max(oldLeg.odds, 1.05))) - Math.min(b.edge_pct, 25) * 0.015;
+            return distA - distB;
+          })[0];
+
+      let replacement = findBest(false);
+      if (!replacement) {
+        skippedSwapKeys.clear();
+        replacement = findBest(true);
+      }
+      if (!replacement) return false;
+      pkg.legs[swapIdx] = { ...replacement };
+      pkg.eval = evaluateAccaClient(pkg.legs, currentStake);
+      return true;
     };
 
     const renderPkg = () => {
@@ -4399,8 +4800,11 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
               <h3 class="text-base font-extrabold text-white">${esc(s.title)}</h3>
               <p class="text-xs text-slate-400 mt-0.5">${esc(s.subtitle)}</p>
             </div>
-            <div class="px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold font-mono">
-              ${s.confidence_score}% Confidence
+            <div class="flex items-center gap-1.5">
+              ${(s.legs || []).length > 1 ? `<button id="sug-reroll-btn" type="button" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-xs font-bold transition">🔄 Re-Roll Unlocked</button>` : ''}
+              <div class="px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold font-mono">
+                ${s.confidence_score}% Confidence
+              </div>
             </div>
           </div>
 
@@ -4413,18 +4817,27 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           <div class="space-y-2">
             ${(s.legs || [])
           .map(
-            (l, i) => `
-              <div class="p-3 rounded-xl bg-surface/80 border border-slate-700/80 flex items-center justify-between gap-2 text-xs">
+            (l, i) => {
+              const isLocked = lockedKeys.has(legKey(l));
+              return `
+              <div class="p-3 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} flex items-center justify-between gap-2 text-xs">
                 <div class="min-w-0">
                   <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}</div>
                   <div class="font-bold text-white truncate mt-0.5">${i + 1}. ${esc(l.selection_label)}</div>
                   <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
                 </div>
-                <div class="text-right font-mono shrink-0">
-                  <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
-                  <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <div class="text-right font-mono">
+                    <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
+                    <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
+                  </div>
+                  <div class="flex flex-col gap-1">
+                    <button type="button" data-lock-leg="${i}" title="${isLocked ? 'Unlock leg' : 'Lock leg'}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
+                    <button type="button" data-swap-leg="${i}" title="Swap this leg" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
+                  </div>
                 </div>
-              </div>`
+              </div>`;
+            }
           )
           .join('')}
           </div>
@@ -4438,8 +4851,9 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
 
           <div class="flex flex-wrap gap-2 pt-1">
             <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365</button>
-            <button id="sug-load-slip-btn" type="button" class="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Load to Slip</button>
-            <button id="sug-save-draft-btn" type="button" class="px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save Acca</button>
+            <button id="sug-load-slip-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Load to Slip</button>
+            <button id="sug-share-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold">📤 Share</button>
+            <button id="sug-save-draft-btn" type="button" class="px-3 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save</button>
           </div>
         </div>
       `;
@@ -4462,6 +4876,52 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           currentStake = getPkgStake(res.by_id?.[activeKey], byRisk[activeRisk]);
           renderPkg();
         })
+      );
+
+      body.querySelectorAll('[data-lock-leg]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.dataset.lockLeg);
+          const leg = s.legs?.[idx];
+          if (!leg) return;
+          const k = legKey(leg);
+          if (lockedKeys.has(k)) lockedKeys.delete(k);
+          else lockedKeys.add(k);
+          renderPkg();
+        })
+      );
+
+      body.querySelectorAll('[data-swap-leg]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.dataset.swapLeg);
+          const leg = s.legs?.[idx];
+          if (!leg) return;
+          lockedKeys.delete(legKey(leg));
+          if (swapLegAt(s, idx)) {
+            renderPkg();
+            showToast(`Swapped leg ${idx + 1} to ${s.legs[idx].selection_label}`);
+          } else {
+            showToast('No alternative matches available for swap right now', true);
+          }
+        })
+      );
+
+      document.getElementById('sug-reroll-btn')?.addEventListener('click', () => {
+        let changed = 0;
+        for (let i = 0; i < (s.legs || []).length; i += 1) {
+          if (!lockedKeys.has(legKey(s.legs[i]))) {
+            if (swapLegAt(s, i)) changed += 1;
+          }
+        }
+        if (changed > 0) {
+          renderPkg();
+          showToast(`Re-rolled ${changed} unlocked ${changed === 1 ? 'leg' : 'legs'}!`);
+        } else {
+          showToast('Unlock at least one leg to re-roll', true);
+        }
+      });
+
+      document.getElementById('sug-share-btn')?.addEventListener('click', () =>
+        shareAccaSummary(s.legs, s.title)
       );
 
       document.getElementById('sug-export-b365-btn').addEventListener('click', () =>
