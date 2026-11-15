@@ -16,6 +16,10 @@ const state = {
   slipStake: Number(localStorage.getItem('accalab_slip_stake') || 10),
   activeRiskLevel: localStorage.getItem('accalab_risk_level') || 'high',
   kickoffFilter: 'ALL',
+  valDiv: '',
+  valMinEdge: null,
+  valOfficialOnly: false,
+  b365ChecklistSource: 'suggest',
   liveScoresByMatch: {},
   liveScoresUpdatedAt: null,
   charts: {},
@@ -2118,6 +2122,7 @@ function addLegToSlip(leg) {
   syncModalSlipButtons();
   if (state.activeTab === 'fixtures') renderFixturesTab();
   else if (state.activeTab === 'value') renderValueTab();
+  else if (state.activeTab === 'acca') renderAccaTab();
   showToast(`Added ${leg.selection_label} @ ${fmtOdds(leg.odds)}`);
   return true;
 }
@@ -2215,7 +2220,7 @@ async function renderSlip() {
   });
   document.getElementById('slip-export-b365-btn').addEventListener('click', () => {
     const customName = document.getElementById('slip-notes-input').value.trim();
-    exportToBet365(state.slip, state.slipStake, customName || 'AccaLab Custom Slip');
+    exportToBet365(state.slip, state.slipStake, customName || 'AccaLab Custom Slip', '', 'slip');
   });
   document.getElementById('slip-save-draft-btn').addEventListener('click', async () => {
     if (!state.activeUserId || Number(state.activeUserId) === 0) {
@@ -2364,6 +2369,12 @@ async function loadDashboard(syncSlipFromServer = true) {
 
 // 1. MATCH PREVIEWS TAB
 async function renderFixturesTab() {
+  const activeEl = document.activeElement;
+  const preserveSearchFocus = activeEl?.id === 'fixture-search' || Boolean(window._restoreSearchFocus);
+  const searchSelStart = activeEl?.id === 'fixture-search' ? activeEl.selectionStart : null;
+  const searchSelEnd = activeEl?.id === 'fixture-search' ? activeEl.selectionEnd : null;
+  window._restoreSearchFocus = false;
+
   const main = document.getElementById('main-content');
   const q = new URLSearchParams();
   if (state.activeDiv !== 'ALL') q.set('div', state.activeDiv);
@@ -2609,7 +2620,7 @@ async function renderFixturesTab() {
 
   if (fs && fs.legs?.length) {
     document.getElementById('feat-export-b365')?.addEventListener('click', () =>
-      exportToBet365(fs.legs, fs.stake, fs.title)
+      exportToBet365(fs.legs, fs.stake, fs.title, '', 'fixtures')
     );
     document.getElementById('feat-load-slip')?.addEventListener('click', () => {
       state.slip = fs.legs.map((l) => ({ ...l }));
@@ -2617,6 +2628,7 @@ async function renderFixturesTab() {
       saveSlip();
       renderSlip();
       renderFixturesTab();
+      closeAllOverlays('slip-drawer');
       document.getElementById('slip-drawer').classList.remove('hidden');
       showToast('Suggested bet added to your Bet Slip!');
     });
@@ -2643,11 +2655,22 @@ async function renderFixturesTab() {
     state.kickoffFilter = 'ALL';
     renderFixturesTab();
   });
-  document.getElementById('fixture-search').addEventListener('input', (e) => {
+  const searchInpEl = document.getElementById('fixture-search');
+  searchInpEl?.addEventListener('input', (e) => {
     state.search = e.target.value;
     clearTimeout(window._searchTimer);
-    window._searchTimer = setTimeout(renderFixturesTab, 250);
+    window._searchTimer = setTimeout(() => {
+      window._restoreSearchFocus = document.activeElement?.id === 'fixture-search';
+      renderFixturesTab();
+    }, 250);
   });
+  if (preserveSearchFocus && searchInpEl) {
+    searchInpEl.focus();
+    const pos = searchSelStart !== null ? searchSelStart : searchInpEl.value.length;
+    try {
+      searchInpEl.setSelectionRange(pos, searchSelEnd !== null ? searchSelEnd : pos);
+    } catch (_) { }
+  }
   document.querySelectorAll('[data-watch-fid]').forEach((btn) =>
     btn.addEventListener('click', () => toggleWatchFixture(Number(btn.dataset.watchFid)))
   );
@@ -2818,6 +2841,7 @@ function computeMatchComboMarkets(f) {
 }
 
 async function openMatchPreview(fixtureId) {
+  closeAllOverlays('preview-modal');
   const modal = document.getElementById('preview-modal');
   const body = document.getElementById('preview-modal-body');
   modal.classList.remove('hidden');
@@ -2941,7 +2965,7 @@ async function openMatchPreview(fixtureId) {
                   ${m.b365_odds
             ? (() => {
                 const active = isInSlip(f.id, m.market);
-                return `<button data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: m.market, selection_label: m.label, odds: m.b365_odds, model_prob: m.model_prob_pct / 100 }))}' class="modal-add-leg px-2.5 py-1 rounded font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600/80 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
+                return `<button data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, league_name: f.league_name, match_date: f.match_date, kickoff_time: f.kickoff_time || '', home_team: f.home_team, away_team: f.away_team, market: m.market, selection_label: m.label, odds: m.b365_odds, model_prob: m.model_prob_pct / 100 }))}' class="modal-add-leg px-2.5 py-1 rounded font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600/80 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
               })()
             : ''
           }
@@ -2982,7 +3006,7 @@ async function openMatchPreview(fixtureId) {
               <div class="text-slate-300">Chance <b class="text-white">${c.prob_pct}%</b> • Min Boost <b class="font-mono text-amber-300">${fmtOdds(c.fair_odds)}</b></div>
               <div class="flex items-center gap-1.5 shrink-0">
                 <button type="button" data-pick-boost="${esc(c.market)}" class="boost-prefill-btn px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold">Check</button>
-                <button type="button" data-compact="1" data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: c.market, selection_label: c.label, odds: c.fair_odds, model_prob: c.prob }))}' class="modal-add-leg px-2 py-1 rounded font-semibold transition ${isInSlip(f.id, c.market) ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600/80 hover:bg-emerald-500 text-white'}">${isInSlip(f.id, c.market) ? '✓ In Slip' : '+ Slip'}</button>
+                <button type="button" data-compact="1" data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, league_name: f.league_name, match_date: f.match_date, kickoff_time: f.kickoff_time || '', home_team: f.home_team, away_team: f.away_team, market: c.market, selection_label: c.label, odds: c.fair_odds, model_prob: c.prob }))}' class="modal-add-leg px-2 py-1 rounded font-semibold transition ${isInSlip(f.id, c.market) ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600/80 hover:bg-emerald-500 text-white'}">${isInSlip(f.id, c.market) ? '✓ In Slip' : '+ Slip'}</button>
               </div>
             </div>
           </div>`;
@@ -3095,11 +3119,19 @@ async function openMatchPreview(fixtureId) {
   `;
 
   document.getElementById('modal-watch-btn').addEventListener('click', async () => {
+    if (!state.activeUserId || Number(state.activeUserId) === 0) {
+      await toggleWatchFixture(fixtureId);
+      return;
+    }
     await toggleWatchFixture(fixtureId);
     openMatchPreview(fixtureId);
   });
   body.querySelectorAll('[data-modal-fav]').forEach((btn) =>
     btn.addEventListener('click', async () => {
+      if (!state.activeUserId || Number(state.activeUserId) === 0) {
+        await toggleFavouriteTeam(btn.dataset.modalFav);
+        return;
+      }
       await toggleFavouriteTeam(btn.dataset.modalFav);
       openMatchPreview(fixtureId);
     })
@@ -3161,7 +3193,9 @@ async function openMatchPreview(fixtureId) {
     addLegToSlip({
       fixture_id: f.id,
       div: f.div,
+      league_name: f.league_name,
       match_date: f.match_date,
+      kickoff_time: f.kickoff_time || '',
       home_team: f.home_team,
       away_team: f.away_team,
       market: item.market,
@@ -3208,9 +3242,11 @@ async function openMatchPreview(fixtureId) {
 // 2. VALUE FINDER TAB
 async function renderValueTab() {
   const main = document.getElementById('main-content');
-  const minEdge = document.getElementById('val-min-edge')?.value || '3';
-  const officialOnly = document.getElementById('val-official-only')?.checked ? '1' : '0';
-  const div = document.getElementById('val-div-filter')?.value || '';
+  const rawUserEdge = Math.round(Number(state.dashboard?.active_user?.min_edge_pct || 3));
+  const defaultEdge = rawUserEdge >= 8 ? '8' : rawUserEdge >= 5 ? '5' : rawUserEdge <= 2 ? '2' : '3';
+  const minEdge = state.valMinEdge || defaultEdge;
+  const officialOnly = state.valOfficialOnly ? '1' : '0';
+  const div = state.valDiv || '';
 
   const q = new URLSearchParams({ min_edge: minEdge, official_only: officialOnly });
   if (div) q.set('div', div);
@@ -3283,11 +3319,11 @@ async function renderValueTab() {
           return `
               <tr class="border-b border-slate-800/70 hover:bg-slate-800/30 ${isFav ? 'bg-amber-500/5' : ''}">
                 <td class="p-3">
-                  <div class="font-semibold text-white flex items-center gap-1.5">
+                  <button type="button" data-open-preview="${o.fixture_id}" class="font-semibold text-white hover:text-emerald-300 text-left flex items-center gap-1.5 transition">
                     ${isFav ? '<span class="text-amber-300" title="Followed club">★</span>' : ''}
                     <span>${esc(o.home_team)} vs ${esc(o.away_team)}</span>
-                  </div>
-                  <div class="text-[11px] text-slate-400">${esc(o.league_name)} • ${esc(o.match_date)}</div>
+                  </button>
+                  <div class="text-[11px] text-slate-400">${esc(o.league_name)} • ${esc(o.match_date)}${o.kickoff_time ? ` ${esc(o.kickoff_time)}` : ''}</div>
                 </td>
                 <td class="p-3 font-medium text-emerald-300">${esc(o.selection_label)}</td>
                 <td class="p-3 text-right font-mono font-bold text-white">${fmtOdds(o.odds)}</td>
@@ -3300,7 +3336,7 @@ async function renderValueTab() {
                 <td class="p-3 text-right">
                   ${(() => {
                     const active = isInSlip(o.fixture_id, o.market);
-                    return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, match_date: o.match_date, home_team: o.home_team, away_team: o.away_team, market: o.market, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
+                    return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, league_name: o.league_name, match_date: o.match_date, kickoff_time: o.kickoff_time || '', home_team: o.home_team, away_team: o.away_team, market: o.market, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
                   })()}
                 </td>
               </tr>`;
@@ -3313,17 +3349,29 @@ async function renderValueTab() {
     </div>
   `;
 
-  ['val-div-filter', 'val-min-edge', 'val-official-only'].forEach((id) =>
-    document.getElementById(id).addEventListener('change', renderValueTab)
-  );
+  document.getElementById('val-div-filter')?.addEventListener('change', (e) => {
+    state.valDiv = e.target.value;
+    renderValueTab();
+  });
+  document.getElementById('val-min-edge')?.addEventListener('change', (e) => {
+    state.valMinEdge = e.target.value;
+    renderValueTab();
+  });
+  document.getElementById('val-official-only')?.addEventListener('change', (e) => {
+    state.valOfficialOnly = Boolean(e.target.checked);
+    renderValueTab();
+  });
   document.getElementById('val-ko-filter')?.addEventListener('change', (e) => {
     state.kickoffFilter = e.target.value;
     renderValueTab();
   });
-  document.getElementById('val-my-prefs').addEventListener('change', (e) => {
+  document.getElementById('val-my-prefs')?.addEventListener('change', (e) => {
     state.valMyPrefsOnly = e.target.checked;
     renderValueTab();
   });
+  document.querySelectorAll('[data-open-preview]').forEach((btn) =>
+    btn.addEventListener('click', () => openMatchPreview(Number(btn.dataset.openPreview)))
+  );
   document.querySelectorAll('.val-add-leg').forEach((btn) =>
     btn.addEventListener('click', () => addLegToSlip(JSON.parse(btn.dataset.valLeg)))
   );
@@ -3465,7 +3513,7 @@ async function renderAccaTab() {
   document.querySelectorAll('.export-preset-btn').forEach((btn) =>
     btn.addEventListener('click', () => {
       const payload = JSON.parse(btn.dataset.exportPreset);
-      exportToBet365(payload.legs || [], state.slipStake, payload.title || 'AccaLab Preset');
+      exportToBet365(payload.legs || [], state.slipStake, payload.title || 'AccaLab Preset', '', 'acca');
     })
   );
   document.querySelectorAll('[data-load-saved]').forEach((btn) =>
@@ -3476,6 +3524,7 @@ async function renderAccaTab() {
       saveSlip();
       renderSlip();
       renderAccaTab();
+      closeAllOverlays('slip-drawer');
       document.getElementById('slip-drawer').classList.remove('hidden');
       showToast('Loaded saved draft into Bet Slip!');
     })
@@ -3483,7 +3532,7 @@ async function renderAccaTab() {
   document.querySelectorAll('[data-export-saved]').forEach((btn) =>
     btn.addEventListener('click', () => {
       const payload = JSON.parse(btn.dataset.exportSaved);
-      exportToBet365(payload.legs || [], Number(payload.stake || state.slipStake || 10), payload.title || 'Saved Acca');
+      exportToBet365(payload.legs || [], Number(payload.stake || state.slipStake || 10), payload.title || 'Saved Acca', '', 'acca');
     })
   );
   document.querySelectorAll('[data-del-saved]').forEach((btn) =>
@@ -3500,6 +3549,7 @@ async function renderAccaTab() {
     })
   );
   document.getElementById('open-slip-inline')?.addEventListener('click', () => {
+    closeAllOverlays('slip-drawer');
     renderSlip();
     document.getElementById('slip-drawer').classList.remove('hidden');
   });
@@ -4063,6 +4113,7 @@ async function renderSettingsTab() {
           telegram_chat_id: document.getElementById('set-tg-chat').value,
         }),
       });
+      state.valMinEdge = String(document.getElementById('set-min-edge').value);
       await loadDashboard(false);
       renderSettingsTab();
       showToast('Settings saved!');
@@ -4413,6 +4464,7 @@ function renderAuthModalBody(mode = 'login') {
 }
 
 function openAuthModal(initialMode) {
+  closeAllOverlays('auth-modal');
   const users = state.dashboard?.users || [];
   const resolvedMode = initialMode || (users.length ? 'login' : 'register');
   renderAuthModalBody(resolvedMode);
@@ -4661,7 +4713,13 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
       </div>
 
       <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
-        <button id="b365-back-suggest-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold">← Back to Suggestions</button>
+        <button id="b365-back-suggest-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold">${
+          state.b365ChecklistSource === 'suggest'
+            ? '← Back to Suggestions'
+            : state.b365ChecklistSource === 'slip'
+              ? '← Back to Bet Slip'
+              : '✕ Close Checklist'
+        }</button>
         <button id="b365-share-btn" type="button" class="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📤 Share Slip</button>
         ${doneCount > 0 ? '<button id="b365-reset-ticks-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 font-semibold">✓ Reset Ticks</button>' : ''}
       </div>
@@ -4726,18 +4784,30 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
       renderHandoff();
     });
 
-    document.getElementById('b365-back-suggest-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
+    document.getElementById('b365-back-suggest-btn')?.addEventListener('click', () => {
+      if (state.b365ChecklistSource === 'suggest') {
+        openSuggestModal(state.activeRiskLevel || 'high');
+      } else if (state.b365ChecklistSource === 'slip') {
+        modal.classList.add('hidden');
+        closeAllOverlays('slip-drawer');
+        renderSlip();
+        document.getElementById('slip-drawer')?.classList.remove('hidden');
+      } else {
+        modal.classList.add('hidden');
+      }
+    });
   };
 
   renderHandoff();
   modal.classList.remove('hidden');
 }
 
-async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Suggested Bet', optionsOverride = '') {
+async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Suggested Bet', optionsOverride = '', source = 'slip') {
   if (!legs || !legs.length) {
     showToast('Add at least one selection first', true);
     return;
   }
+  state.b365ChecklistSource = source || 'slip';
   try {
     const exp = await api('/api/bet365/export', {
       method: 'POST',
@@ -4748,7 +4818,7 @@ async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Su
     saveSlip();
     renderSlip();
     if (state.activeTab === 'fixtures') renderFixturesTab();
-    document.getElementById('slip-drawer')?.classList.add('hidden');
+    closeAllOverlays('suggest-modal');
     if (exp.mode === 'direct_prefill') {
       openInBet365Tab(exp.launch_url);
     }
@@ -4764,6 +4834,7 @@ async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Su
 }
 
 async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'high') {
+  closeAllOverlays('suggest-modal');
   const modal = document.getElementById('suggest-modal');
   const titleEl = document.getElementById('suggest-modal-title');
   const subEl = document.getElementById('suggest-modal-subtitle');
@@ -5053,14 +5124,14 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
       );
 
       document.getElementById('sug-export-b365-btn').addEventListener('click', () =>
-        exportToBet365(s.legs, currentStake, s.title)
+        exportToBet365(s.legs, currentStake, s.title, '', 'suggest')
       );
       document.getElementById('sug-load-slip-btn').addEventListener('click', () => {
         state.slip = s.legs.map((l) => ({ ...l }));
         state.slipStake = Number(currentStake || state.slipStake || 10);
         saveSlip();
         renderSlip();
-        modal.classList.add('hidden');
+        closeAllOverlays('slip-drawer');
         document.getElementById('slip-drawer').classList.remove('hidden');
         if (state.activeTab === 'fixtures') renderFixturesTab();
         showToast(`Loaded "${s.title}" into your Tip Slip!`);
@@ -5091,9 +5162,18 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
   }
 }
 
+function closeAllOverlays(exceptId = '') {
+  for (const id of ['preview-modal', 'suggest-modal', 'slip-drawer', 'auth-modal']) {
+    if (id !== exceptId) {
+      document.getElementById(id)?.classList.add('hidden');
+    }
+  }
+}
+
 function bindGlobalEvents() {
   document.querySelectorAll('[data-tab]').forEach((btn) =>
     btn.addEventListener('click', () => {
+      closeAllOverlays();
       state.activeTab = btn.dataset.tab;
       renderActiveTab();
     })
@@ -5146,12 +5226,27 @@ function bindGlobalEvents() {
     document.getElementById('preview-modal').classList.add('hidden')
   );
   document.getElementById('open-slip-btn').addEventListener('click', () => {
+    closeAllOverlays('slip-drawer');
     renderSlip();
     document.getElementById('slip-drawer').classList.remove('hidden');
   });
   document.getElementById('close-slip-btn').addEventListener('click', () =>
     document.getElementById('slip-drawer').classList.add('hidden')
   );
+
+  for (const modalId of ['preview-modal', 'suggest-modal', 'auth-modal']) {
+    const modalEl = document.getElementById(modalId);
+    modalEl?.addEventListener('click', (e) => {
+      if (e.target === modalEl) {
+        modalEl.classList.add('hidden');
+      }
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeAllOverlays();
+    }
+  });
 }
 
 function initPwaAutoUpdater() {
