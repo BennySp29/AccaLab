@@ -522,19 +522,13 @@ def generate_grounded_summary(
             else f"Draw ({probs['prob_draw']*100:.1f}%)"
         )
     )
-    odds_str = (
-        f"{fixture['b365h']:.2f} / {fixture['b365d']:.2f} / {fixture['b365a']:.2f}"
-        if fixture.get("b365h") and fixture.get("b365d") and fixture.get("b365a")
-        else "pending"
-    )
-    source_tag = "Bet365" if fixture.get("odds_source") in ("bet365_official", "api_football_b365", "user_manual") else "Est. Market"
     parts = [
-        f"Dixon-Coles + Elo rates {fav_label} as the likeliest outcome in this {league_name} clash, projecting {lam:.2f} expected goals for {h_name} (Elo {h_elo:.0f}, form {h_form}) against {mu:.2f} for {a_name} (Elo {a_elo:.0f}, form {a_form}), with {top_score} the top exact scoreline.",
-        f"{h_name} average {home_row.get('sot_for_pg', 0):.1f} shots on target for vs {home_row.get('sot_against_pg', 0):.1f} conceded, compared with {away_row.get('sot_for_pg', 0):.1f} / {away_row.get('sot_against_pg', 0):.1f} for {a_name}; Over 2.5 sits at {probs['prob_over25']*100:.1f}% and BTTS Yes at {probs['prob_btts_yes']*100:.1f}%.",
-        f"Current {source_tag} 1X2 prices are {odds_str}. H2H context: {h2h_text}",
+        f"Model lean: {fav_label} in this {league_name} fixture, projecting {lam:.2f}–{mu:.2f} xG with {top_score} as the likeliest score.",
+        f"Goals outlook: Over 2.5 at {probs['prob_over25']*100:.1f}% and BTTS Yes at {probs['prob_btts_yes']*100:.1f}% ({h_name} {home_row.get('sot_for_pg', 0):.1f} vs {a_name} {away_row.get('sot_for_pg', 0):.1f} shots on target/game).",
+        f"Recent form: {h_name} {h_form} vs {a_name} {a_form}. H2H: {h2h_text}",
     ]
     if news_rows:
-        parts.append(f"Latest media context: {news_text}")
+        parts.append(f"Team news: {news_text}")
     return " ".join(parts), "analyst_engine"
 
 

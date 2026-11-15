@@ -2348,6 +2348,82 @@ async function renderFixturesTab() {
   );
 }
 
+function buildMatchInsightsHtml(f, d, customSummary = '', customSource = '') {
+  const outcomes = [
+    { label: `${f.home_team} win`, prob: Number(f.prob_home || 0) },
+    { label: 'Draw', prob: Number(f.prob_draw || 0) },
+    { label: `${f.away_team} win`, prob: Number(f.prob_away || 0) },
+  ].sort((a, b) => b.prob - a.prob);
+  const topOutcome = outcomes[0];
+
+  let topScore = '1–1';
+  let topScorePct = 0;
+  if (Array.isArray(d.score_heatmap)) {
+    d.score_heatmap.forEach((row, hg) => {
+      if (!Array.isArray(row)) return;
+      row.forEach((val, ag) => {
+        if (Number(val) > topScorePct) {
+          topScorePct = Number(val);
+          topScore = `${hg}–${ag}`;
+        }
+      });
+    });
+  }
+
+  const pricedMarkets = (d.markets || [])
+    .filter((m) => m.b365_odds && Number(m.b365_odds) > 1.01)
+    .slice()
+    .sort((a, b) => Number(b.edge_pct || 0) - Number(a.edge_pct || 0));
+  const bestMarket = pricedMarkets[0];
+  const bestAngleText = bestMarket
+    ? bestMarket.edge_pct >= 1
+      ? `<b class="text-emerald-300">${esc(bestMarket.label)}</b> at <span class="font-mono text-white">${fmtOdds(bestMarket.b365_odds)}</span> (<span class="text-emerald-300">+${Number(bestMarket.edge_pct).toFixed(1)}% edge</span> vs ${Number(bestMarket.model_prob_pct).toFixed(0)}% win chance)`
+      : `No strong value edge — closest line is <b class="text-white">${esc(bestMarket.label)}</b> at <span class="font-mono text-white">${fmtOdds(bestMarket.b365_odds)}</span>`
+    : 'Awaiting bookmaker odds for edge comparison';
+
+  const lam = Number(f.lambda_home || 0);
+  const mu = Number(f.mu_away || 0);
+  const totalXg = lam + mu;
+  const o25Pct = Math.round(Number(f.prob_over25 || 0) * 100);
+  const bttsPct = Math.round(Number(f.prob_btts_yes || 0) * 100);
+
+  const hs = d.home_split || { w: 0, d: 0, l: 0 };
+  const as = d.away_split || { w: 0, d: 0, l: 0 };
+  const lastH2h = Array.isArray(d.h2h) && d.h2h.length ? d.h2h[0] : null;
+  const h2hSummary = lastH2h
+    ? ` • Last H2H: ${esc(lastH2h.home_team)} ${lastH2h.fthg}–${lastH2h.ftag} ${esc(lastH2h.away_team)}`
+    : '';
+
+  const aiSource = customSource || f.ai_summary_source || '';
+  const aiText = (customSummary || (aiSource === 'gemini_flash' ? f.ai_summary : '') || '').trim();
+  const extraBlock =
+    aiSource === 'gemini_flash' && aiText
+      ? `<p class="mt-2 pt-2 border-t border-slate-800/80 text-xs text-slate-300 leading-relaxed">${esc(aiText)}</p>`
+      : '';
+
+  return `
+    <ul class="space-y-2 text-sm text-slate-200 leading-relaxed">
+      <li class="flex items-start gap-2.5">
+        <span class="shrink-0">🎯</span>
+        <span><b class="text-white">Lean:</b> ${esc(topOutcome.label)} (${Math.round(topOutcome.prob * 100)}% chance) • Most likely score <span class="font-mono text-emerald-300">${topScore}</span>${topScorePct ? ` (${topScorePct.toFixed(1)}%)` : ''}</span>
+      </li>
+      <li class="flex items-start gap-2.5">
+        <span class="shrink-0">💎</span>
+        <span><b class="text-white">Best Angle:</b> ${bestAngleText}</span>
+      </li>
+      <li class="flex items-start gap-2.5">
+        <span class="shrink-0">⚽</span>
+        <span><b class="text-white">Goals &amp; Tempo:</b> Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG (${totalXg.toFixed(1)} total) • Over 2.5 <b class="text-white">${o25Pct}%</b> • BTTS Yes <b class="text-white">${bttsPct}%</b></span>
+      </li>
+      <li class="flex items-start gap-2.5">
+        <span class="shrink-0">📈</span>
+        <span><b class="text-white">Form &amp; History:</b> ${esc(f.home_team)} home ${hs.w}W-${hs.d}D-${hs.l}L vs ${esc(f.away_team)} away ${as.w}W-${as.d}D-${as.l}L${h2hSummary}</span>
+      </li>
+    </ul>
+    ${extraBlock}
+  `;
+}
+
 async function openMatchPreview(fixtureId) {
   const modal = document.getElementById('preview-modal');
   const body = document.getElementById('preview-modal-body');
@@ -2411,13 +2487,13 @@ async function openMatchPreview(fixtureId) {
     }">${awayFav ? '★ Following' : '☆ Follow'} ${esc(f.away_team)}</button>
     </div>
 
-    <!-- AI & Analyst Summary -->
-    <div class="p-4 rounded-xl bg-card border border-emerald-500/30 space-y-2">
+    <!-- Match Insights -->
+    <div class="p-4 rounded-xl bg-card border border-emerald-500/30 space-y-3">
       <div class="flex items-center justify-between gap-2">
-        <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">✨ Grounded Match Summary (${esc(f.ai_summary_source)})</span>
-        <button id="regen-summary-btn" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200">↻ Refresh AI Summary</button>
+        <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">✨ Match Insights</span>
+        <button id="regen-summary-btn" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200">↻ Refresh</button>
       </div>
-      <p id="ai-summary-text" class="text-sm text-slate-200 leading-relaxed">${esc(f.ai_summary)}</p>
+      <div id="ai-summary-text">${buildMatchInsightsHtml(f, d)}</div>
       <div class="flex flex-wrap gap-2 pt-1">
         ${(f.tipster_consensus?.signals || [])
       .map(
@@ -2573,8 +2649,8 @@ async function openMatchPreview(fixtureId) {
 
   document.getElementById('regen-summary-btn').addEventListener('click', async () => {
     const res = await api(`/api/fixture/${fixtureId}/ai-summary`, { method: 'POST', body: '{}' });
-    document.getElementById('ai-summary-text').textContent = res.ai_summary;
-    showToast(`Summary refreshed (${res.ai_summary_source})`);
+    document.getElementById('ai-summary-text').innerHTML = buildMatchInsightsHtml(f, d, res.ai_summary, res.ai_summary_source);
+    showToast('Match insights refreshed');
   });
 
   document.getElementById('save-odds-btn').addEventListener('click', async () => {
