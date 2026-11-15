@@ -95,25 +95,25 @@
 
     <nav id="desktop-nav" class="flex-1 p-3 space-y-1 overflow-y-auto">
       <button data-tab="fixtures" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium bg-emerald-500/15 text-emerald-400">
-        <span>⚽</span><span>Match Previews</span>
+        <span>⚽</span><span>Matches &amp; Previews</span>
       </button>
       <button data-tab="value" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>💎</span><span>Value Finder</span>
+        <span>💎</span><span>Top Value Picks</span>
       </button>
       <button data-tab="acca" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
         <span>🧮</span><span>Acca Builder</span>
       </button>
       <button data-tab="tracker" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>📈</span><span>Bet Tracker &amp; CLV</span>
+        <span>📈</span><span>My Bets &amp; P&amp;L</span>
       </button>
       <button data-tab="backtest" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>🔬</span><span>Model &amp; Backtest</span>
+        <span>🔬</span><span>Model Track Record</span>
       </button>
       <button data-tab="leaderboard" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>🏆</span><span>Friends Leaderboard</span>
+        <span>🏆</span><span>Leaderboard</span>
       </button>
       <button data-tab="settings" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span class="flex items-center gap-3"><span>🔔</span><span>Alerts &amp; Settings</span></span>
+        <span class="flex items-center gap-3"><span>🔔</span><span>Clubs &amp; Settings</span></span>
         <span id="sidebar-alert-badge" class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
       </button>
     </nav>
@@ -174,23 +174,22 @@
   </div>
 
   <!-- Mobile Bottom Navigation -->
-  <nav id="mobile-nav" class="lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 flex items-center justify-around px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30">
-    <button data-tab="fixtures" class="nav-btn-mob flex flex-col items-center py-1 px-2 text-[11px] text-emerald-400">
+  <nav id="mobile-nav" class="lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 grid grid-cols-5 items-center px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30">
+    <button data-tab="fixtures" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-emerald-400">
       <span class="text-base leading-none">⚽</span><span class="mt-0.5">Matches</span>
     </button>
-    <button data-tab="value" class="nav-btn-mob flex flex-col items-center py-1 px-2 text-[11px] text-slate-400">
-      <span class="text-base leading-none">💎</span><span class="mt-0.5">Value</span>
+    <button data-tab="value" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
+      <span class="text-base leading-none">💎</span><span class="mt-0.5">Picks</span>
     </button>
-    <button id="open-suggest-mobile-btn" type="button" class="flex flex-col items-center justify-center -mt-3 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
-      <span class="text-base leading-none">✨</span><span class="mt-0.5">Suggest</span>
-    </button>
-    <button data-tab="acca" class="nav-btn-mob flex flex-col items-center py-1 px-2 text-[11px] text-slate-400">
+    <div class="flex justify-center">
+      <button id="open-suggest-mobile-btn" type="button" class="flex flex-col items-center justify-center -mt-3.5 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
+        <span class="text-base leading-none">✨</span><span class="mt-0.5">Suggest</span>
+      </button>
+    </div>
+    <button data-tab="acca" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
       <span class="text-base leading-none">🧮</span><span class="mt-0.5">Acca</span>
     </button>
-    <button data-tab="tracker" class="nav-btn-mob flex flex-col items-center py-1 px-2 text-[11px] text-slate-400">
-      <span class="text-base leading-none">📈</span><span class="mt-0.5">Tracker</span>
-    </button>
-    <button data-tab="settings" class="nav-btn-mob flex flex-col items-center py-1 px-2 text-[11px] text-slate-400">
+    <button data-tab="settings" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
       <span class="text-base leading-none">⚙️</span><span class="mt-0.5">More</span>
     </button>
   </nav>
@@ -225,7 +224,7 @@
       <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between gap-3 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10">
         <div>
           <h2 id="suggest-modal-title" class="text-lg font-extrabold text-white">✨ Smart Bet Assistant &amp; Bet365 Export</h2>
-          <p id="suggest-modal-subtitle" class="text-xs text-slate-300">Data-backed selections built from Dixon-Coles, Elo, shots, Bet365 odds &amp; team news</p>
+          <p id="suggest-modal-subtitle" class="text-xs text-slate-300">Smart single &amp; accumulator picks tailored to your risk level</p>
         </div>
         <button id="close-suggest-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs shrink-0">✕ Close</button>
       </div>

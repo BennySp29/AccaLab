@@ -1858,8 +1858,8 @@ async function renderSlip() {
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div class="text-slate-400">Combined Odds: <b class="text-white font-mono">${fmtOdds(evalData.combined_odds)}</b></div>
       <div class="text-slate-400 text-right">Win Prob: <b class="text-white">${evalData.combined_model_prob_pct}%</b></div>
-      <div class="text-slate-400">Expected Value: <b class="${evCls}">${evalData.expected_value_pct >= 0 ? '+' : ''}${evalData.expected_value_pct}%</b></div>
-      <div class="text-slate-400 text-right">Est. House Margin: <b class="text-amber-300">${evalData.compounded_margin_pct}%</b></div>
+      <div class="text-slate-400">Value Rating: <b class="${evCls}">${evalData.expected_value_pct >= 0 ? '+' : ''}${evalData.expected_value_pct}%</b></div>
+      <div class="text-slate-400 text-right">Legs: <b class="text-white">${state.slip.length}</b></div>
     </div>
     <div class="flex items-center gap-2">
       <label class="text-xs text-slate-400">Stake (£)</label>
@@ -2052,17 +2052,10 @@ async function loadDashboard(syncSlipFromServer = true) {
   }
 
   const pnlColor = d.user_summary.total_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400';
-  const q = d.quota || {};
-  const cacheLabel = q.cache_active ? `Cached (${q.cache_ttl_minutes || 30}m)` : 'Live Sync';
-  const afBudgetPill = d.integrations?.api_football_configured
-    ? `<span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">API Odds: <b class="text-cyan-300 font-mono">${q.api_football?.remaining ?? 100}/100</b></span>`
-    : `<span class="px-2.5 py-1 rounded-full bg-card border border-emerald-500/30 text-emerald-300" title="Core feeds are unlimited with a 30-minute smart cache">${cacheLabel} • Unlimited Feeds</span>`;
   document.getElementById('kpi-strip').innerHTML = `
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">Matches DB: <b class="text-white font-mono">${d.counts.historical_matches.toLocaleString()}</b></span>
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">Upcoming: <b class="text-white font-mono">${d.counts.upcoming_fixtures}</b> (${d.counts.official_b365_fixtures} Bet365)</span>
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">Value Picks: <b class="text-emerald-400 font-mono">${d.top_value_bets.length}+</b></span>
-    ${afBudgetPill}
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">Your P&amp;L: <b class="font-mono ${pnlColor}">${d.user_summary.total_pnl >= 0 ? '+' : ''}${fmtGbp(d.user_summary.total_pnl)}</b></span>
+    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">⚽ Upcoming: <b class="text-white font-mono">${d.counts.upcoming_fixtures}</b></span>
+    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">💎 Smart Picks: <b class="text-emerald-400 font-mono">${d.top_value_bets.length}</b></span>
+    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">📈 Profit/Loss: <b class="font-mono ${pnlColor}">${d.user_summary.total_pnl >= 0 ? '+' : ''}${fmtGbp(d.user_summary.total_pnl)}</b></span>
   `;
 }
 
@@ -2103,7 +2096,7 @@ async function renderFixturesTab() {
               <div class="min-w-0">
                 <div class="text-[10px] text-emerald-400 font-semibold">${esc(f.league_name)} • ${esc(f.match_date)}</div>
                 <div class="text-xs font-bold text-white truncate mt-0.5">${esc(f.home_team)} vs ${esc(f.away_team)}</div>
-                <div class="text-[11px] text-slate-400 mt-0.5">${best.edge_pct >= 3 ? `💎 ${esc(best.label)} (+${best.edge_pct}%)` : `P(H/D/A) ${(f.prob_home * 100).toFixed(0)}% / ${(f.prob_draw * 100).toFixed(0)}% / ${(f.prob_away * 100).toFixed(0)}%`}</div>
+                <div class="text-[11px] text-slate-400 mt-0.5">${best.edge_pct >= 3 ? `💎 ${esc(best.label)} (+${best.edge_pct}%)` : `Home ${(f.prob_home * 100).toFixed(0)}% • Draw ${(f.prob_draw * 100).toFixed(0)}% • Away ${(f.prob_away * 100).toFixed(0)}%`}</div>
               </div>
               <button data-open-preview="${f.id}" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600 text-[11px] font-semibold text-white">Open</button>
             </div>`;
@@ -2131,7 +2124,7 @@ async function renderFixturesTab() {
           <div class="flex flex-wrap items-center gap-2">
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-500 text-slate-950">✨ Today&apos;s Suggested Bet</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-emerald-500/40 text-emerald-300">${fs.confidence_score}% Confidence</span>
-            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-slate-700 text-amber-300">${fs.eval?.expected_value_pct >= 0 ? '+' : ''}${fs.eval?.expected_value_pct ?? 0}% EV</span>
+            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-slate-700 text-amber-300">${fs.eval?.expected_value_pct >= 0 ? '+' : ''}${fs.eval?.expected_value_pct ?? 0}% Value</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-cyan-500/40 text-cyan-300">${fs.legs.length} ${fs.legs.length === 1 ? 'Leg' : 'Legs'}</span>
           </div>
           ${Object.keys(riskMap).length
@@ -2177,7 +2170,7 @@ async function renderFixturesTab() {
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
       <div>
         <h2 class="text-xl font-extrabold tracking-tight text-white">Upcoming English Match Previews</h2>
-        <p class="text-xs text-slate-400 mt-0.5">Dixon-Coles Poisson + Elo probabilities vs Bet365 &amp; market prices across EPL–League Two</p>
+        <p class="text-xs text-slate-400 mt-0.5">Win probabilities, score predictions &amp; smart picks across the Premier League to League Two</p>
       </div>
       <input id="fixture-search" type="search" value="${esc(state.search)}" placeholder="Search club..." class="w-full md:w-64 bg-panel border border-slate-700/80 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
     </div>
@@ -2232,14 +2225,12 @@ async function renderFixturesTab() {
                   <div class="font-bold text-white truncate flex items-center gap-1">
                     <button data-fav-team="${esc(f.home_team)}" title="Follow ${esc(f.home_team)}" class="text-xs leading-none ${homeFav ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'}">${homeFav ? '★' : '☆'}</button>
                     <span class="truncate">${esc(f.home_team)}</span>
-                    <span class="text-xs font-normal font-mono text-slate-400">(${Math.round(f.home_elo || 1500)})</span>
                   </div>
                   <div class="mt-1">${formBadges(f.home_form)}</div>
                 </div>
                 <div class="text-xs font-bold text-slate-500 px-2">vs</div>
                 <div class="min-w-0 text-right">
                   <div class="font-bold text-white truncate flex items-center justify-end gap-1">
-                    <span class="text-xs font-normal font-mono text-slate-400">(${Math.round(f.away_elo || 1500)})</span>
                     <span class="truncate">${esc(f.away_team)}</span>
                     <button data-fav-team="${esc(f.away_team)}" title="Follow ${esc(f.away_team)}" class="text-xs leading-none ${awayFav ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'}">${awayFav ? '★' : '☆'}</button>
                   </div>
@@ -2280,7 +2271,7 @@ async function renderFixturesTab() {
 
             <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2 text-xs">
               <div class="${hasEdge ? 'text-emerald-400 font-semibold' : 'text-slate-400'}">
-                ${hasEdge ? `💎 Best Edge: ${esc(best.label)} (+${best.edge_pct}%)` : `xG ${f.lambda_home.toFixed(2)} – ${f.mu_away.toFixed(2)} • O2.5 ${(f.prob_over25 * 100).toFixed(0)}%`}
+                ${hasEdge ? `💎 Top Pick: ${esc(best.label)} (+${best.edge_pct}% value)` : `Expected Goals ${f.lambda_home.toFixed(1)}–${f.mu_away.toFixed(1)} • Over 2.5: ${(f.prob_over25 * 100).toFixed(0)}%`}
               </div>
               <button data-open-preview="${f.id}" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600 text-white font-medium transition">Preview →</button>
             </div>
@@ -2507,19 +2498,18 @@ async function openMatchPreview(fixtureId) {
     <!-- Model vs Bet365 Markets -->
     <div>
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-bold text-white">Model vs Bet365 / Market Prices ${oddsBadge(f.odds_source)}</h3>
-        <span class="text-xs text-slate-400">Overround: 1X2 ${d.overround_1x2_pct}% | O/U ${d.overround_ou25_pct}%</span>
+        <h3 class="text-sm font-bold text-white">Win Chances vs Bookmaker Odds ${oddsBadge(f.odds_source)}</h3>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-xs text-left">
           <thead class="text-slate-400 border-b border-slate-800">
             <tr>
-              <th class="py-2 pr-2">Selection</th>
-              <th class="py-2 px-2 text-right">Model %</th>
+              <th class="py-2 pr-2">Market</th>
+              <th class="py-2 px-2 text-right">Win Chance</th>
               <th class="py-2 px-2 text-right">Fair Odds</th>
-              <th class="py-2 px-2 text-right">Bet365</th>
-              <th class="py-2 px-2 text-right">Edge %</th>
-              <th class="py-2 px-2 text-right">¼ Kelly</th>
+              <th class="py-2 px-2 text-right">Bookie Odds</th>
+              <th class="py-2 px-2 text-right">Value</th>
+              <th class="py-2 px-2 text-right">Rec. Stake</th>
               <th class="py-2 pl-2 text-right">Action</th>
             </tr>
           </thead>
@@ -2582,7 +2572,7 @@ async function openMatchPreview(fixtureId) {
       </div>
 
       <div class="p-4 rounded-xl bg-card border border-slate-800">
-        <h4 class="font-bold text-white text-sm mb-2">Dixon-Coles Scoreline Matrix (Home rows × Away cols)</h4>
+        <h4 class="font-bold text-white text-sm mb-2">Most Likely Scorelines (Home goals ↓ vs Away goals →)</h4>
         <table class="w-full">
           <thead>
             <tr class="text-[11px] text-slate-400"><th></th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th></tr>
@@ -2694,8 +2684,8 @@ async function renderValueTab() {
   main.innerHTML = `
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
       <div>
-        <h2 class="text-xl font-bold text-white">💎 Value Bet Finder</h2>
-        <p class="text-xs text-slate-400">Edge = (Model Prob × Bet365 Odds) − 1 • Staked with your ¼ Kelly rule (Bankroll ${fmtGbp(data.bankroll)})</p>
+        <h2 class="text-xl font-bold text-white">💎 Top Value Picks</h2>
+        <p class="text-xs text-slate-400">Picks where our match model gives a higher win chance than the bookmaker&apos;s odds imply</p>
       </div>
       <div class="flex flex-wrap items-center gap-2 text-xs">
         <select id="val-div-filter" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
@@ -2706,10 +2696,10 @@ async function renderValueTab() {
           <option value="E3" ${div === 'E3' ? 'selected' : ''}>League Two</option>
         </select>
         <select id="val-min-edge" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
-          <option value="2" ${minEdge === '2' ? 'selected' : ''}>Min Edge +2%</option>
-          <option value="3" ${minEdge === '3' ? 'selected' : ''}>Min Edge +3%</option>
-          <option value="5" ${minEdge === '5' ? 'selected' : ''}>Min Edge +5%</option>
-          <option value="8" ${minEdge === '8' ? 'selected' : ''}>Min Edge +8%</option>
+          <option value="2" ${minEdge === '2' ? 'selected' : ''}>All Value Picks (+2%+)</option>
+          <option value="3" ${minEdge === '3' ? 'selected' : ''}>Good Value (+3%+)</option>
+          <option value="5" ${minEdge === '5' ? 'selected' : ''}>Strong Value (+5%+)</option>
+          <option value="8" ${minEdge === '8' ? 'selected' : ''}>Best Value Only (+8%+)</option>
         </select>
         <label class="flex items-center gap-1.5 bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 cursor-pointer">
           <input id="val-official-only" type="checkbox" ${officialOnly === '1' ? 'checked' : ''} class="accent-emerald-500" />
@@ -2726,13 +2716,13 @@ async function renderValueTab() {
       <table class="w-full text-xs text-left">
         <thead class="text-slate-400 border-b border-slate-800 bg-slate-900/60">
           <tr>
-            <th class="p-3">Fixture</th>
-            <th class="p-3">Selection</th>
-            <th class="p-3 text-right">Bet365</th>
-            <th class="p-3 text-right">Model % (Fair)</th>
-            <th class="p-3 text-right">Edge</th>
-            <th class="p-3 text-right">Suggested Stake</th>
-            <th class="p-3">Source / Trust</th>
+            <th class="p-3">Match</th>
+            <th class="p-3">Pick</th>
+            <th class="p-3 text-right">Odds</th>
+            <th class="p-3 text-right">Win Chance (Fair)</th>
+            <th class="p-3 text-right">Value</th>
+            <th class="p-3 text-right">Rec. Stake</th>
+            <th class="p-3">Confidence</th>
             <th class="p-3 text-right">Action</th>
           </tr>
         </thead>
@@ -2756,7 +2746,7 @@ async function renderValueTab() {
                 <td class="p-3 text-right font-mono font-bold text-white">${fmtOdds(o.odds)}</td>
                 <td class="p-3 text-right">${o.model_prob_pct}% <span class="text-slate-400 font-mono">(${fmtOdds(o.fair_odds)})</span></td>
                 <td class="p-3 text-right font-bold text-emerald-400">+${o.edge_pct}%</td>
-                <td class="p-3 text-right font-semibold text-white">${fmtGbp(o.suggested_stake)} <span class="text-slate-400">(${o.kelly_pct}%)</span></td>
+                <td class="p-3 text-right font-semibold text-white">${fmtGbp(o.suggested_stake)}</td>
                 <td class="p-3 space-y-1">
                   <div>${oddsBadge(o.odds_source)}</div>
                   <div class="text-[10px] text-slate-400">${esc(o.trust_badge)}${o.backtest_roi_pct !== null ? ` (${o.backtest_roi_pct > 0 ? '+' : ''}${o.backtest_roi_pct}% ROI)` : ''}</div>
@@ -2767,7 +2757,7 @@ async function renderValueTab() {
               </tr>`;
         })
         .join('')
-      : `<tr><td colspan="8" class="p-8 text-center text-slate-400">No selections exceed +${minEdge}% edge under the current filter.</td></tr>`
+      : `<tr><td colspan="8" class="p-8 text-center text-slate-400">No picks match this filter right now — try switching to &ldquo;All Value Picks (+2%+)&rdquo;.</td></tr>`
     }
         </tbody>
       </table>
@@ -2798,7 +2788,7 @@ async function renderAccaTab() {
   main.innerHTML = `
     <div>
       <h2 class="text-xl font-bold text-white">🧮 Smart Acca Builder</h2>
-      <p class="text-xs text-slate-400">Builds uncorrelated accumulators and warns when legs compound bookmaker margin or share a fixture.</p>
+      <p class="text-xs text-slate-400">Ready-made accumulators built from separate matches with strong win chances.</p>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -2885,18 +2875,18 @@ async function renderAccaTab() {
     </div>
 
     <div class="bg-panel border border-slate-800 rounded-2xl p-5">
-      <h3 class="font-bold text-white text-base mb-2">Current Custom Slip Diagnostics</h3>
+      <h3 class="font-bold text-white text-base mb-2">Your Current Slip Summary</h3>
       ${slipEval
       ? `
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs mb-3">
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Legs</div><div class="text-lg font-bold text-white">${slipEval.leg_count}</div></div>
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-lg font-bold font-mono text-emerald-400">${fmtOdds(slipEval.combined_odds)}</div></div>
-          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Model Fair Odds</div><div class="text-lg font-bold font-mono text-white">${fmtOdds(slipEval.fair_combined_odds)}</div></div>
-          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Compounded Margin</div><div class="text-lg font-bold text-amber-300">${slipEval.compounded_margin_pct}%</div></div>
+          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Fair Odds</div><div class="text-lg font-bold font-mono text-white">${fmtOdds(slipEval.fair_combined_odds)}</div></div>
+          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Potential Return</div><div class="text-lg font-bold text-emerald-300">${fmtGbp(slipEval.potential_return)}</div></div>
         </div>
         <button id="open-slip-inline" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Open Slip to Place Bet</button>
       `
-      : '<p class="text-xs text-slate-400">Load any preset above or add legs from Match Previews / Value Finder.</p>'
+      : '<p class="text-xs text-slate-400">Load any preset above or add legs from Matches &amp; Previews / Top Value Picks.</p>'
     }
     </div>
   `;
@@ -2975,10 +2965,11 @@ async function renderTrackerTab() {
     : '';
 
   main.innerHTML = `
+    ${renderMobileMoreSubnav()}
     ${protectedBannerHtml}
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h2 class="text-xl font-bold text-white">📈 Bet Tracker &amp; Closing-Line Value (CLV)</h2>
+        <h2 class="text-xl font-bold text-white">📈 My Bets &amp; Profit/Loss</h2>
         <p class="text-xs text-slate-400">Profile: <b>${esc(data.user.display_name)}</b> • Monthly Limit: ${fmtGbp(st.month_staked)} / ${fmtGbp(data.user.monthly_stake_limit)}</p>
       </div>
       <button id="settle-bets-btn" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-white font-semibold">↻ Check Results &amp; Settle</button>
@@ -2987,7 +2978,7 @@ async function renderTrackerTab() {
     <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
       <div class="p-3.5 rounded-2xl bg-panel border border-slate-800"><div class="text-slate-400">Total P&amp;L</div><div class="text-xl font-bold ${st.total_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${st.total_pnl >= 0 ? '+' : ''}${fmtGbp(st.total_pnl)}</div></div>
       <div class="p-3.5 rounded-2xl bg-panel border border-slate-800"><div class="text-slate-400">ROI</div><div class="text-xl font-bold ${st.roi_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${st.roi_pct >= 0 ? '+' : ''}${st.roi_pct}%</div></div>
-      <div class="p-3.5 rounded-2xl bg-panel border border-slate-800"><div class="text-slate-400">Avg CLV vs Close</div><div class="text-xl font-bold ${st.avg_clv_pct >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${st.avg_clv_pct >= 0 ? '+' : ''}${st.avg_clv_pct}%</div></div>
+      <div class="p-3.5 rounded-2xl bg-panel border border-slate-800"><div class="text-slate-400">Beat Closing Odds</div><div class="text-xl font-bold ${st.avg_clv_pct >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${st.avg_clv_pct >= 0 ? '+' : ''}${st.avg_clv_pct}%</div></div>
       <div class="p-3.5 rounded-2xl bg-panel border border-slate-800"><div class="text-slate-400">Strike Rate</div><div class="text-xl font-bold text-white">${st.win_rate_pct}%</div></div>
       <div class="p-3.5 rounded-2xl bg-panel border border-slate-800"><div class="text-slate-400">Settled / Pending</div><div class="text-xl font-bold text-white">${st.settled_count} / ${st.pending_count}</div></div>
     </div>
@@ -3020,7 +3011,7 @@ async function renderTrackerTab() {
       <table class="w-full text-xs text-left">
         <thead class="text-slate-400 border-b border-slate-800 bg-slate-900/60">
           <tr>
-            <th class="p-3">Date</th><th class="p-3">Type / Legs</th><th class="p-3 text-right">Odds</th><th class="p-3 text-right">Stake</th><th class="p-3 text-right">CLV</th><th class="p-3 text-right">Status / P&amp;L</th>
+            <th class="p-3">Date</th><th class="p-3">Type / Legs</th><th class="p-3 text-right">Odds</th><th class="p-3 text-right">Stake</th><th class="p-3 text-right">vs Closing Odds</th><th class="p-3 text-right">Status / P&amp;L</th>
           </tr>
         </thead>
         <tbody>
@@ -3054,6 +3045,7 @@ async function renderTrackerTab() {
     </div>
   `;
 
+  bindMobileMoreSubnav();
   document.getElementById('tracker-signin-btn')?.addEventListener('click', () => openAuthModal('login'));
   document.getElementById('tracker-signup-btn')?.addEventListener('click', () => openAuthModal('register'));
 
@@ -3087,9 +3079,10 @@ async function renderTrackerTab() {
 
 function renderMobileMoreSubnav() {
   const items = [
-    ['settings', '⚙️ Alerts & Settings'],
+    ['tracker', '📈 My Bets & P&L'],
     ['leaderboard', '🏆 Leaderboard'],
-    ['backtest', '🔬 Model & Backtest'],
+    ['settings', '⚙️ Clubs & Settings'],
+    ['backtest', '🔬 Model Stats'],
   ];
   return `
     <div class="lg:hidden flex flex-wrap gap-1.5 pb-1">
@@ -3364,8 +3357,20 @@ async function renderSettingsTab() {
           <label>Display Name<input id="set-display-name" type="text" value="${esc(u.display_name)}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
           <label>Default Slip Stake (£)<input id="set-default-stake" type="number" step="1" min="1" value="${u.default_stake || 10}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
           <label>Bankroll (£)<input id="set-bankroll" type="number" step="5" value="${u.bankroll}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
-          <label>Kelly Fraction<input id="set-kelly" type="number" step="0.05" min="0.05" max="1" value="${u.kelly_fraction}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
-          <label>Min Value Edge (%)<input id="set-min-edge" type="number" step="0.5" value="${u.min_edge_pct}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
+          <label>Staking Style
+            <select id="set-kelly" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
+              <option value="0.125" ${Number(u.kelly_fraction) <= 0.15 ? 'selected' : ''}>Cautious (Smaller stakes)</option>
+              <option value="0.25" ${Number(u.kelly_fraction) > 0.15 && Number(u.kelly_fraction) < 0.4 ? 'selected' : ''}>Balanced (Standard stakes)</option>
+              <option value="0.5" ${Number(u.kelly_fraction) >= 0.4 ? 'selected' : ''}>Confident (Larger stakes)</option>
+            </select>
+          </label>
+          <label>Pick Filter
+            <select id="set-min-edge" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
+              <option value="2" ${Number(u.min_edge_pct) <= 2 ? 'selected' : ''}>More Picks (+2% value)</option>
+              <option value="3" ${Number(u.min_edge_pct) > 2 && Number(u.min_edge_pct) < 5 ? 'selected' : ''}>Balanced (+3% value)</option>
+              <option value="5" ${Number(u.min_edge_pct) >= 5 ? 'selected' : ''}>Strict — Best Only (+5% value)</option>
+            </select>
+          </label>
           <label>Monthly Stake Limit (£)<input id="set-limit" type="number" step="10" value="${u.monthly_stake_limit}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
           <label class="col-span-2">Telegram Chat ID (optional)<input id="set-tg-chat" type="text" value="${esc(u.telegram_chat_id || '')}" placeholder="e.g. 123456789" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
         </div>
@@ -3374,17 +3379,20 @@ async function renderSettingsTab() {
           <button id="test-tg-btn" class="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold">Send Test Telegram Alert</button>
         </div>
 
-        <div class="pt-3 border-t border-slate-800 space-y-2 text-xs">
-          <div class="font-bold text-cyan-300 uppercase tracking-wide text-[11px]">🛡️ API Quota Protection &amp; Smart Cache Health</div>
-          <div class="flex justify-between"><span class="text-slate-400">Core Football &amp; News Feeds:</span><b class="text-emerald-400">Unlimited (Football-Data + RSS)</b></div>
-          <div class="flex justify-between"><span class="text-slate-400">30-Min Sync Cache:</span><b class="${d.quota?.cache_active ? 'text-emerald-400' : 'text-slate-300'}">${d.quota?.cache_active ? 'Active (zero wasted calls)' : 'Ready for refresh'}</b></div>
-          <div class="flex justify-between"><span class="text-slate-400">API-Football Budget (6h Cache):</span><b class="font-mono text-white">${d.quota?.api_football?.used_today ?? d.counts.api_football_calls_today} / ${d.quota?.api_football?.daily_limit ?? 100} used (${d.quota?.api_football?.remaining ?? 100} left)</b></div>
-          <div class="flex justify-between"><span class="text-slate-400">Gemini AI Summary Guard:</span><b class="font-mono text-white">${d.quota?.gemini_ai?.used_today ?? 0} / ${d.quota?.gemini_ai?.daily_limit ?? 60} (${d.integrations.gemini_configured ? 'Active' : 'Built-in Engine'})</b></div>
-          <div class="pt-1 flex justify-between items-center gap-2">
-            <span class="text-[11px] text-slate-500">Last sync: ${esc(d.quota?.last_sync_at || 'Startup / manual')}</span>
-            <button id="force-full-sync-btn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-semibold text-cyan-300">⚡ Force Refresh</button>
+        <details class="pt-2 border-t border-slate-800 text-xs">
+          <summary class="cursor-pointer text-slate-400 hover:text-white font-semibold">Advanced Data Feed &amp; Sync Status</summary>
+          <div class="pt-3 space-y-2">
+            <div class="font-bold text-cyan-300 uppercase tracking-wide text-[11px]">🛡️ API Quota Protection &amp; Smart Cache Health</div>
+            <div class="flex justify-between"><span class="text-slate-400">Core Football &amp; News Feeds:</span><b class="text-emerald-400">Unlimited (Football-Data + RSS)</b></div>
+            <div class="flex justify-between"><span class="text-slate-400">30-Min Sync Cache:</span><b class="${d.quota?.cache_active ? 'text-emerald-400' : 'text-slate-300'}">${d.quota?.cache_active ? 'Active (zero wasted calls)' : 'Ready for refresh'}</b></div>
+            <div class="flex justify-between"><span class="text-slate-400">API-Football Budget (6h Cache):</span><b class="font-mono text-white">${d.quota?.api_football?.used_today ?? d.counts.api_football_calls_today} / ${d.quota?.api_football?.daily_limit ?? 100} used (${d.quota?.api_football?.remaining ?? 100} left)</b></div>
+            <div class="flex justify-between"><span class="text-slate-400">Gemini AI Summary Guard:</span><b class="font-mono text-white">${d.quota?.gemini_ai?.used_today ?? 0} / ${d.quota?.gemini_ai?.daily_limit ?? 60} (${d.integrations.gemini_configured ? 'Active' : 'Built-in Engine'})</b></div>
+            <div class="pt-1 flex justify-between items-center gap-2">
+              <span class="text-[11px] text-slate-500">Last sync: ${esc(d.quota?.last_sync_at || 'Startup / manual')}</span>
+              <button id="force-full-sync-btn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-semibold text-cyan-300">⚡ Force Refresh</button>
+            </div>
           </div>
-        </div>
+        </details>
       </div>
 
       <!-- Alerts Feed -->
@@ -3570,10 +3578,10 @@ async function renderActiveTab() {
     btn.className = `nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${active ? 'bg-emerald-500/15 text-emerald-400' : 'text-slate-300 hover:bg-slate-800/70'
       }`;
   });
-  const isMoreGroup = ['settings', 'leaderboard', 'backtest'].includes(state.activeTab);
+  const isMoreGroup = ['tracker', 'settings', 'leaderboard', 'backtest'].includes(state.activeTab);
   document.querySelectorAll('.nav-btn-mob').forEach((btn) => {
     const active = btn.dataset.tab === state.activeTab || (btn.dataset.tab === 'settings' && isMoreGroup);
-    btn.className = `nav-btn-mob flex flex-col items-center py-1 px-2 text-[11px] ${active ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`;
+    btn.className = `nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] ${active ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`;
   });
 
   if (state.activeTab === 'fixtures') return renderFixturesTab();
@@ -3749,35 +3757,44 @@ function renderAuthModalBody(mode = 'login') {
           <input id="reg-password" type="password" required minlength="6" placeholder="Min 6 chars" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
         <div>
-          <label class="block text-xs text-slate-400 mb-1">Starting Bankroll (£)</label>
+          <label class="block text-xs text-slate-400 mb-1">Starting Budget / Bankroll (£)</label>
           <input id="reg-bankroll" type="number" min="10" step="10" value="250" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
         <div>
-          <label class="block text-xs text-slate-400 mb-1">Default Stake (£)</label>
+          <label class="block text-xs text-slate-400 mb-1">Typical Stake (£)</label>
           <input id="reg-default-stake" type="number" min="1" step="1" value="10" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
-        <div>
-          <label class="block text-xs text-slate-400 mb-1">Risk Profile (Kelly)</label>
-          <select id="reg-kelly" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white">
-            <option value="0.125">Conservative (1/8 Kelly)</option>
-            <option value="0.25" selected>Balanced (1/4 Kelly)</option>
-            <option value="0.5">Aggressive (1/2 Kelly)</option>
-          </select>
-        </div>
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <label class="block text-xs text-slate-400 mb-1">Min Edge %</label>
-            <input id="reg-min-edge" type="number" step="0.5" min="0" value="3.0" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
+        <details class="sm:col-span-2 text-xs text-slate-400 rounded-xl bg-surface/60 border border-slate-800 p-3">
+          <summary class="cursor-pointer hover:text-white font-semibold">Optional: Group Invite Code &amp; Staking Preferences</summary>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-3">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Staking Style</label>
+              <select id="reg-kelly" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white">
+                <option value="0.125">Cautious (Smaller stakes)</option>
+                <option value="0.25" selected>Balanced (Standard stakes)</option>
+                <option value="0.5">Confident (Larger stakes)</option>
+              </select>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Pick Filter</label>
+                <select id="reg-min-edge" class="w-full px-2.5 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white">
+                  <option value="2">More Picks (+2%)</option>
+                  <option value="3" selected>Balanced (+3%)</option>
+                  <option value="5">Strict (+5%)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Avatar Colour</label>
+                <input id="reg-color" type="color" value="#10b981" class="w-full h-[34px] rounded-lg bg-surface border border-slate-700 p-0.5 cursor-pointer" />
+              </div>
+            </div>
+            <div class="sm:col-span-2">
+              <label class="block text-xs text-slate-400 mb-1">Group Invite Code (optional)</label>
+              <input id="reg-invite" type="text" value="ACCALAB2026" placeholder="ACCALAB2026" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
+            </div>
           </div>
-          <div>
-            <label class="block text-xs text-slate-400 mb-1">Avatar Colour</label>
-            <input id="reg-color" type="color" value="#10b981" class="w-full h-[34px] rounded-lg bg-surface border border-slate-700 p-0.5 cursor-pointer" />
-          </div>
-        </div>
-        <div class="sm:col-span-2">
-          <label class="block text-xs text-slate-400 mb-1">Group Invite Code (optional)</label>
-          <input id="reg-invite" type="text" value="ACCALAB2026" placeholder="ACCALAB2026" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
-        </div>
+        </details>
       </div>
 
       <div>
