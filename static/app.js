@@ -555,12 +555,18 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
   const exportedLegs = [];
   const legOptionTokens = [];
   const compactLegs = [];
+  const fixById = new Map(
+    ((typeof _staticSnapshot !== 'undefined' && _staticSnapshot?.fixtures) || []).map((f) => [Number(f.id), f])
+  );
 
   for (const leg of legs) {
-    const div = String(leg.div || '');
-    const leagueName = leaguesMeta[div]?.name || leg.league_name || div || 'English Football';
-    const home = String(leg.home_team || '').trim();
-    const away = String(leg.away_team || '').trim();
+    const fx = fixById.get(Number(leg.fixture_id));
+    const div = String(leg.div || fx?.div || '');
+    const leagueName = leaguesMeta[div]?.name || leg.league_name || fx?.league_name || (div ? getLeagueName(div, leaguesMeta) : '') || 'English Football';
+    const matchDate = leg.match_date || fx?.match_date || '';
+    const kickoffTime = leg.kickoff_time || fx?.kickoff_time || '';
+    const home = String(leg.home_team || fx?.home_team || '').trim();
+    const away = String(leg.away_team || fx?.away_team || '').trim();
     const b365Home = b365SearchTeam(home);
     const b365Away = b365SearchTeam(away);
     const mkt = String(leg.market || '1X2_H');
@@ -589,10 +595,12 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
       fixture_id: leg.fixture_id,
       div,
       league_name: leagueName,
-      match_date: leg.match_date || '',
-      kickoff_time: leg.kickoff_time || '',
+      match_date: matchDate,
+      kickoff_time: kickoffTime,
       home_team: home,
       away_team: away,
+      b365_home: b365Home,
+      b365_away: b365Away,
       market: mkt,
       selection_label: leg.selection_label || b365Selection,
       odds: oddsVal,
@@ -2185,7 +2193,7 @@ async function renderSlip() {
       <button id="slip-save-draft-btn" class="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">💾 Save</button>
     </div>
     <button id="slip-export-b365-btn" class="w-full py-2.5 rounded-xl btn-bet365 text-xs font-extrabold tracking-wide flex items-center justify-center gap-2">
-      <span>🚀 1-Touch Export to Bet365</span>
+      <span>📋 Build on Bet365 (Quick Checklist)</span>
     </button>
   `;
 
@@ -2456,7 +2464,7 @@ async function renderFixturesTab() {
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-2 shrink-0">
-            <button type="button" id="feat-export-b365" class="px-4 py-2 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365</button>
+            <button type="button" id="feat-export-b365" class="px-4 py-2 rounded-xl btn-bet365 text-xs font-extrabold">📋 Build on Bet365</button>
             <button type="button" id="feat-load-slip" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-white">🧾 Add to Slip</button>
             <button type="button" id="feat-open-suggest" class="px-3.5 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-xs font-semibold text-cyan-200">🎛️ Customize Risk &amp; Picks</button>
           </div>
@@ -2565,15 +2573,15 @@ async function renderFixturesTab() {
 
               <!-- Quick Bet365 / Market Buttons -->
               <div class="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
-                <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: "1X2_H", selection_label: `${f.home_team} Win`, odds: f.b365h, model_prob: f.prob_home }))}' class="${oddsBtnCls(inH)}">
+                <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, league_name: f.league_name, match_date: f.match_date, kickoff_time: f.kickoff_time || '', home_team: f.home_team, away_team: f.away_team, market: "1X2_H", selection_label: `${f.home_team} Win`, odds: f.b365h, model_prob: f.prob_home }))}' class="${oddsBtnCls(inH)}">
                   <div class="text-[10px] ${inH ? 'text-emerald-300 font-semibold' : 'text-slate-400'}">${inH ? '✓ Home' : 'Home'}</div>
                   <div class="font-bold font-mono text-white">${f.b365h ? fmtOdds(f.b365h) : '—'}</div>
                 </button>
-                <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: "1X2_D", selection_label: "Draw", odds: f.b365d, model_prob: f.prob_draw }))}' class="${oddsBtnCls(inD)}">
+                <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, league_name: f.league_name, match_date: f.match_date, kickoff_time: f.kickoff_time || '', home_team: f.home_team, away_team: f.away_team, market: "1X2_D", selection_label: "Draw", odds: f.b365d, model_prob: f.prob_draw }))}' class="${oddsBtnCls(inD)}">
                   <div class="text-[10px] ${inD ? 'text-emerald-300 font-semibold' : 'text-slate-400'}">${inD ? '✓ Draw' : 'Draw'}</div>
                   <div class="font-bold font-mono text-white">${f.b365d ? fmtOdds(f.b365d) : '—'}</div>
                 </button>
-                <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: "1X2_A", selection_label: `${f.away_team} Win`, odds: f.b365a, model_prob: f.prob_away }))}' class="${oddsBtnCls(inA)}">
+                <button data-add-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, league_name: f.league_name, match_date: f.match_date, kickoff_time: f.kickoff_time || '', home_team: f.home_team, away_team: f.away_team, market: "1X2_A", selection_label: `${f.away_team} Win`, odds: f.b365a, model_prob: f.prob_away }))}' class="${oddsBtnCls(inA)}">
                   <div class="text-[10px] ${inA ? 'text-emerald-300 font-semibold' : 'text-slate-400'}">${inA ? '✓ Away' : 'Away'}</div>
                   <div class="font-bold font-mono text-white">${f.b365a ? fmtOdds(f.b365a) : '—'}</div>
                 </button>
@@ -4419,6 +4427,107 @@ function buildBet365Bookmarklet(slipToken = '') {
   return `javascript:${encodeURIComponent(fnSrc)}`;
 }
 
+function sortBet365ChecklistLegs(expLegs = [], sortMode = 'coupon') {
+  const indexed = expLegs.map((leg, origIdx) => ({ leg, origIdx }));
+  if (sortMode === 'slip' || expLegs.length <= 1) {
+    return indexed.map((item) => ({ ...item, groupKey: '', groupLabel: '' }));
+  }
+
+  const mktRank = { '1X2': 0, OU: 1, BTTS: 2 };
+  const mktNames = {
+    '1X2': 'Full Time Result',
+    OU: 'Goals Over/Under',
+    BTTS: 'Both Teams to Score',
+  };
+  const divRank = { E0: 0, E1: 1, E2: 2, E3: 3 };
+
+  return indexed
+    .map((item) => {
+      const fam = marketFamily(item.leg.market);
+      const mRank = mktRank[fam] ?? 3;
+      const mLabel = mktNames[fam] || 'Bet Builder / Boosts';
+      const divCode = String(item.leg.div || '');
+      const lRank = divRank[divCode] ?? 4;
+      const leagueLabel = item.leg.league_name || (divCode ? getLeagueName(divCode) : 'English Football');
+      return {
+        ...item,
+        mRank,
+        lRank,
+        dateKey: String(item.leg.match_date || '9999-99-99'),
+        timeKey: String(item.leg.kickoff_time || '99:99'),
+        homeKey: String(item.leg.home_team || ''),
+        groupKey: `${mRank}|${divCode || leagueLabel}`,
+        groupLabel: `⚽ ${mLabel} • ${leagueLabel}`,
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.mRank - b.mRank ||
+        a.lRank - b.lRank ||
+        a.dateKey.localeCompare(b.dateKey) ||
+        a.timeKey.localeCompare(b.timeKey) ||
+        a.homeKey.localeCompare(b.homeKey) ||
+        a.origIdx - b.origIdx
+    );
+}
+
+function renderB365CouponBox(leg) {
+  const mkt = String(leg?.market || '');
+  const oddsTxt = fmtOdds(leg?.odds);
+  const marketName = leg?.b365_market_name || B365_MARKET_NAMES[mkt] || (mkt.startsWith('COMBO_') ? 'Bet Builder / Bet Boost' : 'Full Time Result');
+  const activeCls = 'bg-emerald-500 text-slate-950 font-extrabold ring-2 ring-amber-300 shadow-sm';
+  const mutedCls = 'bg-slate-900/90 text-slate-500 border border-slate-800/80';
+
+  const cell = (title, sub, active) => `
+    <div class="p-2 rounded-lg text-center transition ${active ? activeCls : mutedCls}">
+      <div class="flex items-center justify-center gap-1 text-[10px] uppercase tracking-wider">
+        <span class="truncate font-bold">${esc(title)}</span>
+        ${active ? '<span class="px-1 py-0.2 rounded bg-amber-300 text-slate-950 text-[9px] font-black leading-tight">TAP</span>' : ''}
+      </div>
+      <div class="text-xs font-mono mt-0.5 truncate">${active ? `@ ${esc(oddsTxt)}` : esc(sub || '—')}</div>
+    </div>`;
+
+  let gridHtml = '';
+  if (mkt === '1X2_H' || mkt === '1X2_D' || mkt === '1X2_A') {
+    gridHtml = `
+      <div class="grid grid-cols-3 gap-1.5">
+        ${cell(`1: ${leg.home_team || 'Home'}`, 'Home', mkt === '1X2_H')}
+        ${cell('X: Draw', 'Draw', mkt === '1X2_D')}
+        ${cell(`2: ${leg.away_team || 'Away'}`, 'Away', mkt === '1X2_A')}
+      </div>`;
+  } else if (mkt === 'OU_O25' || mkt === 'OU_U25') {
+    gridHtml = `
+      <div class="grid grid-cols-2 gap-1.5">
+        ${cell('Over 2.5', '3+ Goals', mkt === 'OU_O25')}
+        ${cell('Under 2.5', '0–2 Goals', mkt === 'OU_U25')}
+      </div>`;
+  } else if (mkt === 'BTTS_Y' || mkt === 'BTTS_N') {
+    gridHtml = `
+      <div class="grid grid-cols-2 gap-1.5">
+        ${cell('Yes', 'Both score', mkt === 'BTTS_Y')}
+        ${cell('No', 'Clean sheet', mkt === 'BTTS_N')}
+      </div>`;
+  } else {
+    gridHtml = `
+      <div class="p-2.5 rounded-lg flex items-center justify-between gap-2 ${activeCls}">
+        <div class="flex items-center gap-1.5 min-w-0 text-xs">
+          <span class="px-1.5 py-0.5 rounded bg-amber-300 text-slate-950 text-[9px] font-black uppercase shrink-0">TAP</span>
+          <span class="truncate">${esc(leg?.b365_selection_name || leg?.selection_label || mkt)}</span>
+        </div>
+        <span class="text-xs font-mono shrink-0">@ ${esc(oddsTxt)}</span>
+      </div>`;
+  }
+
+  return `
+    <div class="p-2.5 rounded-xl bg-slatebg/90 border border-slate-800 space-y-1.5">
+      <div class="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-slate-400 font-bold">
+        <span>Bet365 Tab: <span class="text-cyan-300">${esc(marketName)}</span></span>
+        <span class="font-mono text-emerald-400">Tap highlighted box</span>
+      </div>
+      ${gridHtml}
+    </div>`;
+}
+
 function renderBet365HandoffModal(exp, legs, stake, title) {
   const modal = document.getElementById('suggest-modal');
   const titleEl = document.getElementById('suggest-modal-title');
@@ -4429,145 +4538,177 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
   const expLegs = exp.legs || [];
   let activeLegIdx = 0;
   const completedLegs = new Set();
+  let sortMode = expLegs.length > 1 ? 'coupon' : 'slip';
 
-  titleEl.textContent = '🚀 Bet365 Slip Builder Handoff';
+  titleEl.textContent = '📋 Bet365 Quick-Build Checklist';
   subEl.textContent =
-    exp.mode === 'direct_prefill'
-      ? 'Direct Bet365 betslip deep-link launched — review or log once placed'
-      : 'Same-tab Bet365 builder: step through each leg below so Bet365 keeps adding to your slip';
+    expLegs.length > 1
+      ? 'Sorted by Bet365 coupon & league so you can tap every leg quickly'
+      : 'Tap this selection on Bet365 and enter your stake';
 
   const ev = exp.eval || {};
 
   const renderHandoff = () => {
-    const curLeg = expLegs[activeLegIdx] || {};
-    const hasNext = activeLegIdx < expLegs.length - 1;
-    const isMulti = expLegs.length > 1;
+    const doneCount = completedLegs.size;
+    const totalCount = expLegs.length;
+    const pctDone = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
+    const allDone = totalCount > 0 && doneCount === totalCount;
+    const orderedEntries = sortBet365ChecklistLegs(expLegs, sortMode);
 
-    body.innerHTML = `
-      <div class="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 space-y-2.5 text-xs">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <div class="font-bold text-emerald-300">
-              ${exp.mode === 'direct_prefill' ? 'Direct Slip Deep-Link Active' : `Step ${activeLegIdx + 1} of ${expLegs.length} Opened in Bet365 Tab`}
-            </div>
-            <div class="text-slate-300 mt-0.5">${esc(exp.title)} (${exp.bet_type === 'combo' ? `${expLegs.length}-Fold Acca` : 'Single'})</div>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <button id="b365-reopen-cur-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold">
-              ${isMulti ? `Open Leg ${activeLegIdx + 1} ↗` : 'Open Match in Bet365 ↗'}
-            </button>
-            ${hasNext
-        ? `<button id="b365-next-leg-btn" type="button" class="px-3.5 py-2 rounded-xl btn-bet365 text-xs font-extrabold">
-                    ✓ Added — Next: Send Leg ${activeLegIdx + 2} to Same Tab →
-                  </button>`
-        : ''
-      }
-          </div>
-        </div>
+    let lastGroupKey = '';
+    const cardsHtml = orderedEntries
+      .map((entry) => {
+        const l = entry.leg;
+        const origIdx = entry.origIdx;
+        const isDone = completedLegs.has(origIdx);
+        const isCur = !isDone && origIdx === activeLegIdx;
+        const copyTeam = l.b365_home || b365SearchTeam(l.home_team) || l.home_team || '';
+        const dateTime = [l.match_date, l.kickoff_time].filter(Boolean).join(' • ');
 
-        ${expLegs.length
-        ? `<div class="p-2.5 rounded-lg bg-slatebg/80 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-2">
-                <div class="min-w-0">
-                  <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">What to tap on Bet365 right now</div>
-                  <div class="text-white font-bold mt-0.5">${esc(curLeg.home_team)} v ${esc(curLeg.away_team)} → <span class="text-cyan-300">${esc(curLeg.b365_market_name)}</span>: <span class="text-emerald-300">${esc(curLeg.b365_selection_name || curLeg.selection_label)} @ ${fmtOdds(curLeg.odds)}</span></div>
+        let groupHeader = '';
+        if (sortMode === 'coupon' && entry.groupKey && entry.groupKey !== lastGroupKey) {
+          lastGroupKey = entry.groupKey;
+          groupHeader = `<div class="pt-1.5 pb-0.5 text-[11px] font-bold uppercase tracking-wider text-cyan-300">${esc(entry.groupLabel)}</div>`;
+        }
+
+        const cardCls = isDone
+          ? 'bg-card/50 border-emerald-500/30 opacity-65'
+          : isCur
+            ? 'bg-emerald-500/10 border-emerald-400/70 shadow-sm shadow-emerald-950/30'
+            : 'bg-card border-slate-800';
+
+        return `
+          ${groupHeader}
+          <div class="p-3.5 rounded-2xl border space-y-2.5 text-xs transition ${cardCls}">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="text-sm font-extrabold text-white truncate">${esc(l.home_team)} v ${esc(l.away_team)}</div>
+                <div class="flex flex-wrap items-center gap-1.5 mt-0.5 text-[11px] text-slate-400">
+                  <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 font-semibold">${esc(l.league_name || 'English Football')}</span>
+                  ${dateTime ? `<span class="font-mono">${esc(dateTime)}</span>` : ''}
                 </div>
-                <span class="text-[10px] font-mono text-amber-300 shrink-0">Bet365 keeps your slip across legs</span>
-              </div>`
-        : ''
-      }
-      </div>
-
-      <div class="grid grid-cols-3 gap-2.5 text-xs">
-        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Legs</div><div class="text-base font-bold font-mono text-white">${expLegs.length}</div></div>
-        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-base font-bold font-mono text-emerald-400">${fmtOdds(ev.combined_odds)}</div></div>
-        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Value Rating</div><div class="text-base font-bold font-mono ${Number(ev.expected_value_pct) >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${Number(ev.expected_value_pct) >= 0 ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
-      </div>
-
-      <div class="space-y-2">
-        <div class="flex items-center justify-between text-xs">
-          <span class="font-bold uppercase tracking-wider text-slate-400">Same-Tab Match Queue (${completedLegs.size}/${expLegs.length} Added)</span>
-          <span class="text-[11px] text-slate-400">Uses <code class="text-cyan-300">Home v Away</code> search</span>
-        </div>
-        ${expLegs
-        .map((l, idx) => {
-          const isCur = idx === activeLegIdx;
-          const isDone = completedLegs.has(idx);
-          return `
-          <div class="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs transition ${isCur
-              ? 'bg-emerald-500/10 border-emerald-400/70'
-              : isDone
-                ? 'bg-card/60 border-slate-800 opacity-80'
-                : 'bg-card border-slate-800'
-            }">
-            <div class="min-w-0">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <span class="font-bold text-white">${idx + 1}. ${esc(l.selection_label)}</span>
-                <span class="text-emerald-400 font-mono font-bold">@ ${fmtOdds(l.odds)}</span>
-                ${isDone
-              ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">Done ✓</span>'
-              : isCur
-                ? '<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">Active in Bet365</span>'
-                : '<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">Queued</span>'
-            }
               </div>
-              <div class="text-[11px] text-cyan-300 mt-0.5 truncate">${esc(l.b365_path)}</div>
-            </div>
-            <div class="flex items-center gap-1.5 shrink-0">
-              <button type="button" data-b365-done-idx="${idx}" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold">
-                ${isDone ? 'Undo' : '✓ Done'}
+              <button type="button" data-b365-done-idx="${origIdx}" class="px-3 py-1.5 rounded-xl font-bold border transition shrink-0 ${
+                isDone
+                  ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                  : 'bg-slate-800 hover:bg-emerald-600/30 border-slate-600 text-white'
+              }">
+                ${isDone ? '✅ Added on Bet365' : '⬜ Tap when added'}
               </button>
-              <button type="button" data-b365-open-idx="${idx}" class="px-3 py-1.5 rounded-lg bg-emerald-600/85 hover:bg-emerald-500 text-white font-semibold">
+            </div>
+
+            ${renderB365CouponBox(l)}
+
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+              <button type="button" data-b365-copy-team="${esc(copyTeam)}" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold">
+                🔍 Copy &ldquo;${esc(copyTeam)}&rdquo;
+              </button>
+              <button type="button" data-b365-open-idx="${origIdx}" class="px-3 py-1.5 rounded-lg bg-emerald-600/85 hover:bg-emerald-500 text-white font-semibold">
                 Open Match ↗
               </button>
             </div>
           </div>`;
-        })
-        .join('')}
-      </div>
+      })
+      .join('');
 
-      <div class="p-3 rounded-xl bg-surface border border-slate-800 space-y-2 text-xs">
+    body.innerHTML = `
+      <div class="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 space-y-2.5 text-xs">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="font-semibold text-emerald-300">⚡ Bet365 In-Page Slip Companion (No Tab Switching)</div>
-          <div class="flex flex-wrap gap-1.5">
-            <a href="./static/accalab-bet365.user.js" target="_blank" rel="noopener" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold">
-              Install Companion Userscript ↗
-            </a>
-            <button id="b365-copy-bookmarklet-btn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[11px] font-bold">
-              📋 Copy Overlay Bookmarklet
+          <div>
+            <div class="font-extrabold ${allDone ? 'text-emerald-300' : 'text-white'}">
+              ${allDone ? '🎉 All legs added! Check your Bet365 betslip &amp; enter your stake' : `${doneCount} / ${totalCount} Ticked on Bet365`}
+            </div>
+            <div class="text-[11px] text-slate-300 mt-0.5">${esc(exp.title || title)}</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button id="b365-open-main-btn" type="button" class="px-3 py-1.5 rounded-xl btn-bet365 text-xs font-extrabold">
+              Open Bet365 ↗
+            </button>
+            <button id="b365-copy-btn" type="button" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">
+              📋 Copy Slip Text
             </button>
           </div>
         </div>
-        <p class="text-[11px] text-slate-400">
-          Why Bet365 doesn’t auto-fill multi-legs from a plain link alone: Bet365 locks betslip URL parameters behind internal partner IDs. Installing the Companion Userscript (Tampermonkey / iOS Userscripts) or running the Bookmarklet inside Bet365 floats this exact slip bar + Next Leg button right on top of Bet365 and highlights every match and selection on screen.
-        </p>
+        <div class="h-2 rounded-full bg-slate-900 overflow-hidden">
+          <div class="h-full bg-emerald-400 transition-all duration-300" style="width:${pctDone}%"></div>
+        </div>
       </div>
 
-      <div class="p-3 rounded-xl bg-surface border border-slate-800 space-y-2 text-xs">
-        <div class="font-semibold text-slate-200">Optional: Bet365 Direct Betslip Options ID</div>
-        <div class="flex gap-2">
-          <input id="b365-options-input" type="text" placeholder="e.g. 9047433-399573237-1189243230" class="flex-1 px-3 py-1.5 rounded-lg bg-slatebg border border-slate-700 text-xs font-mono text-white" />
-          <button id="b365-apply-options-btn" type="button" class="px-3 py-1.5 rounded-lg btn-bet365 text-xs font-bold">Launch Prefill ↗</button>
-        </div>
+      <div class="grid grid-cols-3 gap-2.5 text-xs">
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Legs</div><div class="text-base font-bold font-mono text-white">${totalCount}</div></div>
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-base font-bold font-mono text-emerald-400">${fmtOdds(ev.combined_odds)}</div></div>
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Win Chance</div><div class="text-base font-bold font-mono text-white">${Number(ev.combined_model_prob_pct || 0).toFixed(1)}%</div></div>
+      </div>
+
+      ${totalCount > 1
+        ? `<div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Checklist Order</span>
+            <div class="flex gap-1.5">
+              <button type="button" data-b365-sort="coupon" class="px-2.5 py-1 rounded-full font-semibold border transition ${
+                sortMode === 'coupon'
+                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                  : 'bg-panel border-slate-700 text-slate-400 hover:text-white'
+              }">🗂️ Bet365 Coupon Order</button>
+              <button type="button" data-b365-sort="slip" class="px-2.5 py-1 rounded-full font-semibold border transition ${
+                sortMode === 'slip'
+                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                  : 'bg-panel border-slate-700 text-slate-400 hover:text-white'
+              }">🔢 Original Order</button>
+            </div>
+          </div>`
+        : ''
+      }
+
+      <div class="space-y-2.5">
+        ${cardsHtml}
       </div>
 
       <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
         <button id="b365-back-suggest-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold">← Back to Suggestions</button>
-        <button id="b365-copy-btn" type="button" class="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📋 Copy Slip Summary</button>
+        <button id="b365-share-btn" type="button" class="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📤 Share Slip</button>
+        ${doneCount > 0 ? '<button id="b365-reset-ticks-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 font-semibold">✓ Reset Ticks</button>' : ''}
       </div>
     `;
 
-    document.getElementById('b365-reopen-cur-btn')?.addEventListener('click', () => {
-      const targetUrl = expLegs[activeLegIdx]?.b365_search_url || exp.launch_url;
-      openInBet365Tab(targetUrl);
+    document.getElementById('b365-open-main-btn')?.addEventListener('click', () => {
+      openInBet365Tab('https://www.bet365.com/#/HO/');
     });
 
-    document.getElementById('b365-next-leg-btn')?.addEventListener('click', () => {
-      completedLegs.add(activeLegIdx);
-      if (activeLegIdx < expLegs.length - 1) activeLegIdx += 1;
-      const nextUrl = expLegs[activeLegIdx]?.b365_search_url || exp.launch_url;
-      openInBet365Tab(nextUrl);
-      renderHandoff();
+    document.getElementById('b365-copy-btn')?.addEventListener('click', () => {
+      navigator.clipboard?.writeText(exp.clipboard_text || '').catch(() => { });
+      showToast('Copied formatted slip to clipboard!');
     });
+
+    body.querySelectorAll('[data-b365-sort]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        sortMode = btn.dataset.b365Sort;
+        renderHandoff();
+      })
+    );
+
+    body.querySelectorAll('[data-b365-done-idx]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.b365DoneIdx);
+        if (completedLegs.has(i)) {
+          completedLegs.delete(i);
+          activeLegIdx = i;
+        } else {
+          completedLegs.add(i);
+          const nextPending = expLegs.findIndex((_, idx) => !completedLegs.has(idx));
+          if (nextPending !== -1) activeLegIdx = nextPending;
+        }
+        renderHandoff();
+      })
+    );
+
+    body.querySelectorAll('[data-b365-copy-team]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const team = btn.dataset.b365CopyTeam || '';
+        if (!team) return;
+        navigator.clipboard?.writeText(team).catch(() => { });
+        showToast(`Copied "${team}" — paste into Bet365 search!`);
+      })
+    );
 
     body.querySelectorAll('[data-b365-open-idx]').forEach((btn) =>
       btn.addEventListener('click', () => {
@@ -4578,30 +4719,14 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
       })
     );
 
-    body.querySelectorAll('[data-b365-done-idx]').forEach((btn) =>
-      btn.addEventListener('click', () => {
-        const i = Number(btn.dataset.b365DoneIdx);
-        if (completedLegs.has(i)) completedLegs.delete(i);
-        else completedLegs.add(i);
-        renderHandoff();
-      })
-    );
-
-    document.getElementById('b365-copy-bookmarklet-btn')?.addEventListener('click', () => {
-      const bm = buildBet365Bookmarklet(exp.slip_token || '');
-      navigator.clipboard?.writeText(bm).catch(() => { });
-      showToast('Copied Bookmarklet! Paste into a browser bookmark URL & tap it on Bet365.');
+    document.getElementById('b365-share-btn')?.addEventListener('click', () => {
+      shareAccaSummary(legs, title || exp.title || 'AccaLab Tips');
     });
 
-    document.getElementById('b365-apply-options-btn')?.addEventListener('click', async () => {
-      const opts = document.getElementById('b365-options-input').value.trim();
-      if (!opts) return showToast('Enter a Bet365 options string first', true);
-      exportToBet365(legs, stake, title, opts);
-    });
-
-    document.getElementById('b365-copy-btn')?.addEventListener('click', () => {
-      navigator.clipboard?.writeText(exp.clipboard_text).catch(() => { });
-      showToast('Copied formatted slip to clipboard!');
+    document.getElementById('b365-reset-ticks-btn')?.addEventListener('click', () => {
+      completedLegs.clear();
+      activeLegIdx = 0;
+      renderHandoff();
     });
 
     document.getElementById('b365-back-suggest-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
@@ -4627,9 +4752,16 @@ async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Su
     saveSlip();
     renderSlip();
     if (state.activeTab === 'fixtures') renderFixturesTab();
-    openInBet365Tab(exp.launch_url);
+    document.getElementById('slip-drawer')?.classList.add('hidden');
+    if (exp.mode === 'direct_prefill') {
+      openInBet365Tab(exp.launch_url);
+    }
     renderBet365HandoffModal(exp, legs, exp.stake, title);
-    showToast(exp.mode === 'direct_prefill' ? 'Launched Bet365 direct betslip!' : 'Opened Leg 1 on Bet365 & loaded slip stepper!');
+    showToast(
+      exp.mode === 'direct_prefill'
+        ? 'Launched Bet365 direct betslip!'
+        : 'Bet365 checklist ready — tap each pick as you add it on Bet365!'
+    );
   } catch (err) {
     showToast(err.message, true);
   }
@@ -4850,7 +4982,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           </div>
 
           <div class="flex flex-wrap gap-2 pt-1">
-            <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365</button>
+            <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">📋 Build on Bet365</button>
             <button id="sug-load-slip-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Load to Slip</button>
             <button id="sug-share-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold">📤 Share</button>
             <button id="sug-save-draft-btn" type="button" class="px-3 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save</button>
