@@ -257,7 +257,7 @@ def create_app() -> Flask:
                 for r in conn.execute(
                     """
                     SELECT f.id, f.div, f.match_date, f.kickoff_time, f.home_team, f.away_team,
-                           f.b365h, f.b365d, f.b365a, f.odds_source,
+                           f.b365h, f.b365d, f.b365a, f.odds_source, f.updated_at,
                            p.prob_home, p.prob_draw, p.prob_away
                     FROM upcoming_fixtures f
                     JOIN predictions p ON p.fixture_id = f.id
@@ -267,6 +267,10 @@ def create_app() -> Flask:
                 ).fetchall()
             ]
             scheduled_upcoming = [r for r in scheduled_all if is_fixture_upcoming(r)] or scheduled_all
+            odds_updated_at = (
+                max((str(r.get("updated_at") or "") for r in scheduled_upcoming), default="")
+                or utc_now_iso()
+            )
             for_you_rows = [
                 r
                 for r in scheduled_upcoming
@@ -336,6 +340,8 @@ def create_app() -> Flask:
                     "quota": quota,
                     "integrations": integrations,
                     "leagues": LEAGUES,
+                    "generated_at": utc_now_iso(),
+                    "odds_updated_at": odds_updated_at,
                 }
             )
 

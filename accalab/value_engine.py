@@ -682,6 +682,7 @@ def build_bet365_export(
                 "selection_label": leg.get("selection_label") or b365_selection,
                 "odds": odds_val,
                 "odds_fractional": odds_frac,
+                "model_prob": float(leg.get("model_prob") or 0.5),
                 "b365_market_name": b365_market,
                 "b365_selection_name": b365_selection,
                 "b365_search_query": search_term,
