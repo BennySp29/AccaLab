@@ -398,7 +398,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
 async function loadStaticSnapshot(forceReload = false) {
   if (_staticSnapshot && !forceReload) return _staticSnapshot;
   const suffix = forceReload ? `?t=${Date.now()}` : '';
-  const res = await fetch(`./static/snapshot.json${suffix}`);
+  const res = await fetch(`./static/snapshot.json${suffix}`, { cache: 'no-cache' });
   if (!res.ok) throw new Error(`Unable to load static snapshot (HTTP ${res.status})`);
   _staticSnapshot = await res.json();
   return _staticSnapshot;
@@ -4389,10 +4389,45 @@ function bindGlobalEvents() {
   );
 }
 
+function initPwaAutoUpdater() {
+  if (!('serviceWorker' in navigator)) return;
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
+  navigator.serviceWorker
+    .register('./sw.js', { updateViaCache: 'none' })
+    .then((reg) => {
+      reg.update().catch(() => { });
+      if (reg.waiting) {
+        reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      }
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            newWorker.postMessage({ type: 'SKIP_WAITING' });
+          }
+        });
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          reg.update().catch(() => { });
+        }
+      });
+      setInterval(() => {
+        reg.update().catch(() => { });
+      }, 15 * 60 * 1000);
+    })
+    .catch(() => { });
+}
+
 async function boot() {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(() => { });
-  }
+  initPwaAutoUpdater();
   bindGlobalEvents();
   await loadDashboard(true);
   saveSlip(false);

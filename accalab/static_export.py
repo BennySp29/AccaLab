@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -78,9 +80,30 @@ def export_static_site() -> dict[str, Any]:
         snap_path.write_text(snapshot_payload, encoding="utf-8")
 
     (BASE_DIR / ".nojekyll").write_text("", encoding="utf-8")
-    shutil.copy2(pkg_templates / "index.html", BASE_DIR / "index.html")
+
+    template_html = (pkg_templates / "index.html").read_text(encoding="utf-8")
+    app_js_text = (pkg_static / "app.js").read_text(encoding="utf-8")
+    build_hash = hashlib.sha256(f"{template_html}\n{app_js_text}".encode("utf-8")).hexdigest()[:8]
+    build_version = f"accalab-v3-{build_hash}"
+
+    sw_text = (pkg_static / "sw.js").read_text(encoding="utf-8")
+    stamped_sw = re.sub(
+        r"const CACHE_NAME = '[^']+';",
+        f"const CACHE_NAME = '{build_version}';",
+        sw_text,
+        count=1,
+    )
+    (pkg_static / "sw.js").write_text(stamped_sw, encoding="utf-8")
+    (BASE_DIR / "sw.js").write_text(stamped_sw, encoding="utf-8")
+
+    stamped_index = re.sub(
+        r'src="\./static/app\.js(?:\?v=[^"]*)?"',
+        f'src="./static/app.js?v={build_hash}"',
+        template_html,
+    )
+    (BASE_DIR / "index.html").write_text(stamped_index, encoding="utf-8")
+
     shutil.copy2(pkg_static / "manifest.json", BASE_DIR / "manifest.json")
-    shutil.copy2(pkg_static / "sw.js", BASE_DIR / "sw.js")
     shutil.copy2(pkg_static / "app.js", root_static / "app.js")
     shutil.copy2(pkg_static / "accalab-bet365.user.js", root_static / "accalab-bet365.user.js")
 
@@ -89,6 +112,7 @@ def export_static_site() -> dict[str, Any]:
 
     return {
         "generated_at": snapshot["generated_at"],
+        "build_version": build_version,
         "snapshot_bytes": len(snapshot_payload.encode("utf-8")),
         "fixtures": len(fixtures),
         "fixture_details": len(fixture_details),
