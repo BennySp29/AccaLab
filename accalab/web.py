@@ -282,7 +282,7 @@ def create_app() -> Flask:
                 "official_b365_fixtures": sum(
                     1
                     for r in scheduled_upcoming
-                    if r.get("odds_source") in ("bet365_official", "api_football_b365", "user_manual")
+                    if r.get("odds_source") in ("bet365_official", "api_football_b365", "live_sportsbook", "user_manual")
                 ),
                 "teams_rated": conn.execute("SELECT COUNT(*) AS c FROM team_ratings").fetchone()["c"],
                 "news_items": conn.execute("SELECT COUNT(*) AS c FROM news_items").fetchone()["c"],

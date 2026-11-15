@@ -300,7 +300,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
     const b365Home = b365SearchTeam(home);
     const b365Away = b365SearchTeam(away);
     const mkt = String(leg.market || '1X2_H');
-    const b365Market = B365_MARKET_NAMES[mkt] || 'Full Time Result';
+    const b365Market = B365_MARKET_NAMES[mkt] || (mkt.startsWith('COMBO_') ? 'Bet Builder / Bet Boost' : 'Full Time Result');
     const b365Selection = b365SelectionNameClient(leg);
     const oddsVal = roundNum(Number(leg.odds || 1.0), 2);
     const oddsFrac = fmtOdds(oddsVal);
@@ -1058,8 +1058,8 @@ async function staticApi(path, opts = {}) {
           if (!(fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(o))) return false;
         }
         if (div && o.div !== div) return false;
-        if (officialOnly && !['bet365_official', 'api_football_b365', 'user_manual'].includes(o.odds_source)) return false;
-        if (officialOnly && o.odds_source === 'bet365_official' && String(o.market).startsWith('BTTS')) return false;
+        if (officialOnly && !['bet365_official', 'api_football_b365', 'live_sportsbook', 'user_manual'].includes(o.odds_source)) return false;
+        if (officialOnly && ['bet365_official', 'live_sportsbook'].includes(o.odds_source) && String(o.market).startsWith('BTTS')) return false;
         return Number(o.edge_pct) >= minEdge;
       })
       .map((o) => {
@@ -1909,6 +1909,9 @@ function oddsBadge(source) {
   if (source === 'bet365_official' || source === 'api_football_b365') {
     return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Bet365 Official</span>`;
   }
+  if (source === 'live_sportsbook') {
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-500/20 text-teal-300 border border-teal-500/30">Live Market</span>`;
+  }
   if (source === 'user_manual') {
     return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/30">Bet365 Manual</span>`;
   }
@@ -2379,6 +2382,82 @@ function buildMatchInsightsHtml(f, d, customSummary = '', customSource = '') {
   `;
 }
 
+function computeMatchComboMarkets(f) {
+  const lam = Math.max(0.25, Number(f.lambda_home || 1.35));
+  const mu = Math.max(0.25, Number(f.mu_away || 1.15));
+  const rho = Number(f.rho ?? -0.04);
+  const maxGoals = 7;
+
+  const poissonVec = (rate) => {
+    const out = [Math.exp(-rate)];
+    let fact = 1;
+    let pow = 1;
+    for (let k = 1; k <= maxGoals; k += 1) {
+      fact *= k;
+      pow *= rate;
+      out.push(Math.exp(-rate) * (pow / fact));
+    }
+    return out;
+  };
+  const tau = (x, y) => {
+    let val = 1.0;
+    if (x === 0 && y === 0) val = 1.0 - lam * mu * rho;
+    else if (x === 0 && y === 1) val = 1.0 + lam * rho;
+    else if (x === 1 && y === 0) val = 1.0 + mu * rho;
+    else if (x === 1 && y === 1) val = 1.0 - rho;
+    return Math.max(val, 0.05);
+  };
+
+  const px = poissonVec(lam);
+  const py = poissonVec(mu);
+  let total = 0;
+  const sums = {
+    COMBO_H_BTTS: 0,
+    COMBO_H_O25: 0,
+    COMBO_O25_BTTS: 0,
+    COMBO_A_BTTS: 0,
+    COMBO_A_O25: 0,
+    COMBO_H_WIN_NIL: 0,
+    COMBO_A_WIN_NIL: 0,
+  };
+
+  for (let x = 0; x <= maxGoals; x += 1) {
+    for (let y = 0; y <= maxGoals; y += 1) {
+      const p = px[x] * py[y] * tau(x, y);
+      total += p;
+      const btts = x >= 1 && y >= 1;
+      const o25 = x + y >= 3;
+      if (x > y && btts) sums.COMBO_H_BTTS += p;
+      if (x > y && o25) sums.COMBO_H_O25 += p;
+      if (o25 && btts) sums.COMBO_O25_BTTS += p;
+      if (y > x && btts) sums.COMBO_A_BTTS += p;
+      if (y > x && o25) sums.COMBO_A_O25 += p;
+      if (x > y && y === 0) sums.COMBO_H_WIN_NIL += p;
+      if (y > x && x === 0) sums.COMBO_A_WIN_NIL += p;
+    }
+  }
+
+  const norm = total > 0 ? total : 1.0;
+  const defs = [
+    ['COMBO_H_O25', `${f.home_team} to Win & Over 2.5 Goals`],
+    ['COMBO_H_BTTS', `${f.home_team} to Win & BTTS Yes`],
+    ['COMBO_O25_BTTS', 'Over 2.5 Goals & BTTS Yes'],
+    ['COMBO_H_WIN_NIL', `${f.home_team} to Win to Nil`],
+    ['COMBO_A_O25', `${f.away_team} to Win & Over 2.5 Goals`],
+    ['COMBO_A_BTTS', `${f.away_team} to Win & BTTS Yes`],
+    ['COMBO_A_WIN_NIL', `${f.away_team} to Win to Nil`],
+  ];
+
+  return defs
+    .map(([market, label]) => {
+      const prob = Math.max(0.005, Math.min(0.95, sums[market] / norm));
+      const prob_pct = roundNum(prob * 100.0, 1);
+      const fair_odds = roundNum(1.0 / prob, 2);
+      return { market, label, prob, prob_pct, fair_odds };
+    })
+    .sort((a, b) => b.prob - a.prob);
+}
+
 async function openMatchPreview(fixtureId) {
   const modal = document.getElementById('preview-modal');
   const body = document.getElementById('preview-modal-body');
@@ -2393,6 +2472,18 @@ async function openMatchPreview(fixtureId) {
   const isWatched = state.watchedIds.includes(f.id);
   const homeFav = state.favouriteTeams.includes(f.home_team);
   const awayFav = state.favouriteTeams.includes(f.away_team);
+  const comboMarkets = computeMatchComboMarkets(f);
+  const boostCandidates = [
+    ...comboMarkets,
+    ...(d.markets || []).map((m) => ({
+      market: m.market,
+      label: m.label,
+      prob: Math.max(0.005, Number(m.model_prob_pct || 0) / 100.0),
+      prob_pct: Number(m.model_prob_pct || 0),
+      fair_odds: Number(m.fair_odds || 2.0),
+    })),
+  ];
+  const boostByMarket = new Map(boostCandidates.map((item) => [item.market, item]));
 
   const heatmapRows = d.score_heatmap
     .map(
@@ -2501,6 +2592,63 @@ async function openMatchPreview(fixtureId) {
       </div>
     </div>
 
+    <!-- Bet365 Bet Boosts & Same-Game Combos -->
+    <div class="p-4 rounded-xl bg-card border border-amber-500/30 space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 class="text-sm font-bold text-white">⚡ Bet365 Bet Boosts &amp; Same-Game Combos</h3>
+          <p class="text-[11px] text-slate-400">Model win chances for popular Bet Builders &amp; instant check to see if a Bet365 Boost is worth backing</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        ${comboMarkets
+          .slice(0, 4)
+          .map((c) => {
+            const recBadge =
+              c.prob_pct >= 30
+                ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">🔥 Strong Combo</span>'
+                : c.prob_pct >= 20
+                  ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">👍 Worth a Look</span>'
+                  : '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-700/60 text-slate-300 border border-slate-600">🎲 Longshot</span>';
+            return `
+          <div class="p-3 rounded-xl bg-panel border border-slate-800 flex flex-col justify-between gap-2">
+            <div class="flex items-start justify-between gap-2">
+              <div class="text-xs font-semibold text-white leading-snug">${esc(c.label)}</div>
+              ${recBadge}
+            </div>
+            <div class="flex items-center justify-between gap-2 text-[11px]">
+              <div class="text-slate-300">Chance <b class="text-white">${c.prob_pct}%</b> • Min Boost <b class="font-mono text-amber-300">${fmtOdds(c.fair_odds)}</b></div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button type="button" data-pick-boost="${esc(c.market)}" class="boost-prefill-btn px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold">Check</button>
+                <button type="button" data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: c.market, selection_label: c.label, odds: c.fair_odds, model_prob: c.prob }))}' class="modal-add-leg px-2 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold">+ Slip</button>
+              </div>
+            </div>
+          </div>`;
+          })
+          .join('')}
+      </div>
+      <div class="p-3 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+        <div class="text-xs font-semibold text-amber-300">Bet Boost Checker — Test any Bet365 Boosted Price</div>
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-2 text-xs">
+          <select id="boost-market-select" class="md:col-span-6 bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
+            <optgroup label="Pre-Made Same-Game Combos">
+              ${comboMarkets
+                .map((c) => `<option value="${esc(c.market)}">${esc(c.label)} (${c.prob_pct}% • Min ${fmtOdds(c.fair_odds)})</option>`)
+                .join('')}
+            </optgroup>
+            <optgroup label="Single Match Markets">
+              ${(d.markets || [])
+                .map((m) => `<option value="${esc(m.market)}">${esc(m.label)} (${m.model_prob_pct}% • Min ${fmtOdds(m.fair_odds)})</option>`)
+                .join('')}
+            </optgroup>
+          </select>
+          <input id="boost-odds-input" type="text" placeholder="Boosted Odds e.g. 3/1 or 4.50" class="md:col-span-3 bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono" />
+          <button id="boost-add-btn" type="button" disabled class="md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition">+ Add Boost to Slip</button>
+        </div>
+        <div id="boost-verdict" class="text-xs text-slate-400"></div>
+      </div>
+    </div>
+
     <!-- Team Splits & Score Matrix -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div class="p-4 rounded-xl bg-card border border-slate-800 space-y-2 text-xs">
@@ -2598,6 +2746,65 @@ async function openMatchPreview(fixtureId) {
   body.querySelectorAll('.modal-add-leg').forEach((btn) =>
     btn.addEventListener('click', () => addLegToSlip(JSON.parse(btn.dataset.modalLeg)))
   );
+
+  const boostSelect = document.getElementById('boost-market-select');
+  const boostInput = document.getElementById('boost-odds-input');
+  const boostAddBtn = document.getElementById('boost-add-btn');
+  const boostVerdict = document.getElementById('boost-verdict');
+  const evaluateBoostChecker = () => {
+    const item = boostByMarket.get(boostSelect?.value || '');
+    if (!item || !boostVerdict || !boostAddBtn) return;
+    const raw = String(boostInput?.value || '').trim();
+    const dec = parseOddsInput(raw);
+    if (!raw) {
+      boostAddBtn.disabled = true;
+      boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition';
+      boostVerdict.innerHTML = `Enter Bet365&apos;s boosted price above — needs <b class="text-white">&gt; ${fmtOdds(item.fair_odds)}</b> (${item.fair_odds.toFixed(2)}) for positive value (<b class="text-white">${item.prob_pct}%</b> win chance).`;
+      return;
+    }
+    if (!dec) {
+      boostAddBtn.disabled = true;
+      boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition';
+      boostVerdict.innerHTML = `<span class="text-amber-300">Enter valid fractional or decimal odds (e.g. 3/1, 7/2, evens, or 4.50).</span>`;
+      return;
+    }
+    const edgePct = (item.prob * dec - 1.0) * 100.0;
+    const impliedPct = (1.0 / dec) * 100.0;
+    boostAddBtn.disabled = false;
+    if (edgePct > 0) {
+      boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition';
+      boostVerdict.innerHTML = `<span class="text-emerald-300 font-bold">🟢 BET ON IT (+${edgePct.toFixed(1)}% Edge — Beats fair odds of ${fmtOdds(item.fair_odds)})</span> <span class="text-slate-300">• Our model gives ${item.prob_pct}% vs ${impliedPct.toFixed(1)}% implied by ${fmtOdds(dec)}.</span>`;
+    } else {
+      boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-semibold transition';
+      boostVerdict.innerHTML = `<span class="text-rose-300 font-bold">🔴 SKIP IT (${edgePct.toFixed(1)}% Value — Boost is below fair odds of ${fmtOdds(item.fair_odds)})</span> <span class="text-slate-300">• Model gives ${item.prob_pct}% vs ${impliedPct.toFixed(1)}% implied by ${fmtOdds(dec)}.</span>`;
+    }
+  };
+  boostSelect?.addEventListener('change', evaluateBoostChecker);
+  boostInput?.addEventListener('input', evaluateBoostChecker);
+  boostAddBtn?.addEventListener('click', () => {
+    const item = boostByMarket.get(boostSelect?.value || '');
+    const dec = parseOddsInput(boostInput?.value || '');
+    if (!item || !dec) return;
+    addLegToSlip({
+      fixture_id: f.id,
+      div: f.div,
+      match_date: f.match_date,
+      home_team: f.home_team,
+      away_team: f.away_team,
+      market: item.market,
+      selection_label: `${item.label} (⚡ Boost)`,
+      odds: roundNum(dec, 2),
+      model_prob: item.prob,
+    });
+  });
+  body.querySelectorAll('.boost-prefill-btn').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      if (boostSelect) boostSelect.value = btn.dataset.pickBoost || '';
+      evaluateBoostChecker();
+      boostInput?.focus();
+    })
+  );
+  evaluateBoostChecker();
 
   document.getElementById('regen-summary-btn').addEventListener('click', async () => {
     const res = await api(`/api/fixture/${fixtureId}/ai-summary`, { method: 'POST', body: '{}' });

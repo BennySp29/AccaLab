@@ -58,6 +58,25 @@ def _to_float(val: Any) -> float | None:
         return None
 
 
+def _american_to_decimal(val: Any) -> float | None:
+    """Convert an American moneyline/total price (e.g. '-130', '+270', 'EVEN') to decimal odds."""
+    if val is None:
+        return None
+    s = str(val).strip().upper()
+    if not s:
+        return None
+    if s in ("EVEN", "EV", "PK"):
+        return 2.0
+    try:
+        num = float(s)
+    except ValueError:
+        return None
+    if abs(num) < 100.0:
+        return None
+    dec = (1.0 + num / 100.0) if num > 0 else (1.0 + 100.0 / abs(num))
+    return round(dec, 2) if dec > 1.01 else None
+
+
 def _parse_uk_date(raw: str) -> str | None:
     s = (raw or "").strip()
     if not s:
@@ -320,6 +339,158 @@ def _enrich_from_api_football(conn: sqlite3.Connection, client: httpx.Client) ->
     return {"used": calls_made > 0 or updated > 0, "updated": updated, "cached_divisions": cached_divisions}
 
 
+ESPN_LEAGUE_SLUGS: dict[str, str] = {
+    "E0": "eng.1",
+    "E1": "eng.2",
+    "E2": "eng.3",
+    "E3": "eng.4",
+}
+
+
+def _enrich_from_espn_odds(conn: sqlite3.Connection, client: httpx.Client) -> dict[str, Any]:
+    """Fetch live public sportsbook odds (DraftKings via ESPN scoreboard) for unpriced upcoming fixtures."""
+    rows = conn.execute(
+        """
+        SELECT id, div, match_date, home_team, away_team, odds_source
+        FROM upcoming_fixtures
+        WHERE status = 'scheduled' AND match_date >= date('now', '-1 day')
+        """
+    ).fetchall()
+    if not rows:
+        return {"updated": 0, "dates_queried": 0, "errors": []}
+
+    lookup: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    dates_by_div: dict[str, set[str]] = {}
+    for r in rows:
+        d_str = r["match_date"]
+        lookup[(r["div"], d_str, r["home_team"], r["away_team"])] = dict(r)
+        dates_by_div.setdefault(r["div"], set()).add(d_str.replace("-", ""))
+
+    now = utc_now_iso()
+    updated = 0
+    dates_queried = 0
+    errors: list[str] = []
+
+    for div, date_strs in dates_by_div.items():
+        slug = ESPN_LEAGUE_SLUGS.get(div)
+        if not slug:
+            continue
+        for yyyymmdd in sorted(date_strs):
+            dates_queried += 1
+            iso_date = f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}"
+            try:
+                resp = client.get(
+                    f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard",
+                    params={"dates": yyyymmdd},
+                )
+                if resp.status_code != 200:
+                    errors.append(f"espn/{slug}/{yyyymmdd}: HTTP {resp.status_code}")
+                    continue
+                events = resp.json().get("events", [])
+            except Exception as exc:
+                errors.append(f"espn/{slug}/{yyyymmdd}: {exc}")
+                continue
+
+            for ev in events:
+                comp = (ev.get("competitions") or [{}])[0]
+                odds_list = comp.get("odds") or []
+                if not odds_list:
+                    continue
+                home_name = ""
+                away_name = ""
+                for tm in comp.get("competitors", []):
+                    ha = tm.get("homeAway")
+                    disp = (tm.get("team") or {}).get("displayName", "")
+                    if ha == "home":
+                        home_name = normalize_team_name(disp)
+                    elif ha == "away":
+                        away_name = normalize_team_name(disp)
+                if not home_name or not away_name:
+                    continue
+
+                ev_date = (ev.get("date") or "")[:10]
+                fix_row = lookup.get((div, ev_date, home_name, away_name)) or lookup.get(
+                    (div, iso_date, home_name, away_name)
+                )
+                if not fix_row:
+                    continue
+                if fix_row["odds_source"] in ("bet365_official", "api_football_b365", "user_manual"):
+                    continue
+
+                odds_obj = odds_list[0] or {}
+                ml = odds_obj.get("moneyline") or {}
+                h_ml = ((ml.get("home") or {}).get("close") or {}).get("odds") or (
+                    (ml.get("home") or {}).get("open") or {}
+                ).get("odds")
+                a_ml = ((ml.get("away") or {}).get("close") or {}).get("odds") or (
+                    (ml.get("away") or {}).get("open") or {}
+                ).get("odds")
+                d_ml = (
+                    ((ml.get("draw") or {}).get("close") or {}).get("odds")
+                    or ((ml.get("draw") or {}).get("open") or {}).get("odds")
+                    or (odds_obj.get("drawOdds") or {}).get("moneyLine")
+                )
+                b365h = _american_to_decimal(h_ml)
+                b365d = _american_to_decimal(d_ml)
+                b365a = _american_to_decimal(a_ml)
+                if not (b365h and b365d and b365a):
+                    continue
+
+                b365_o25: float | None = None
+                b365_u25: float | None = None
+                tot_obj = odds_obj.get("total") or {}
+                ov_close = (tot_obj.get("over") or {}).get("close") or (tot_obj.get("over") or {}).get("open") or {}
+                un_close = (tot_obj.get("under") or {}).get("close") or (tot_obj.get("under") or {}).get("open") or {}
+                ov_line = str(ov_close.get("line") or "").lower()
+                un_line = str(un_close.get("line") or "").lower()
+                if odds_obj.get("overUnder") == 2.5 or "2.5" in ov_line or "2.5" in un_line:
+                    b365_o25 = _american_to_decimal(ov_close.get("odds"))
+                    b365_u25 = _american_to_decimal(un_close.get("odds"))
+
+                conn.execute(
+                    """
+                    UPDATE upcoming_fixtures SET
+                        b365h = ?,
+                        b365d = ?,
+                        b365a = ?,
+                        b365_over25 = CASE
+                            WHEN ? IS NOT NULL THEN ?
+                            WHEN odds_source = 'market_estimate' THEN NULL
+                            ELSE b365_over25
+                        END,
+                        b365_under25 = CASE
+                            WHEN ? IS NOT NULL THEN ?
+                            WHEN odds_source = 'market_estimate' THEN NULL
+                            ELSE b365_under25
+                        END,
+                        b365_open_h = COALESCE(b365_open_h, ?),
+                        b365_open_d = COALESCE(b365_open_d, ?),
+                        b365_open_a = COALESCE(b365_open_a, ?),
+                        odds_source = 'live_sportsbook',
+                        updated_at = ?
+                    WHERE id = ?
+                      AND odds_source NOT IN ('bet365_official', 'api_football_b365', 'user_manual')
+                    """,
+                    (
+                        b365h,
+                        b365d,
+                        b365a,
+                        b365_o25,
+                        b365_o25,
+                        b365_u25,
+                        b365_u25,
+                        b365h,
+                        b365d,
+                        b365a,
+                        now,
+                        fix_row["id"],
+                    ),
+                )
+                updated += 1
+
+    return {"updated": updated, "dates_queried": dates_queried, "errors": errors}
+
+
 def ingest_upcoming_fixtures(conn: sqlite3.Connection, client: httpx.Client | None = None) -> dict[str, Any]:
     """Ingest official Bet365 fixtures.csv plus 2026/27 schedules from fixturedownload.com."""
     own_client = client is None
@@ -507,6 +678,7 @@ def ingest_upcoming_fixtures(conn: sqlite3.Connection, client: httpx.Client | No
             except Exception as exc:
                 errors.append(f"fixturedownload/{slug}: {exc}")
 
+        espn_info = _enrich_from_espn_odds(conn, client)
         api_info = _enrich_from_api_football(conn, client)
     finally:
         if own_client:
@@ -515,8 +687,9 @@ def ingest_upcoming_fixtures(conn: sqlite3.Connection, client: httpx.Client | No
     return {
         "official_fixtures_upserted": official_count,
         "schedule_fixtures_upserted": schedule_count,
+        "espn_odds": espn_info,
         "api_football": api_info,
-        "errors": errors,
+        "errors": errors + espn_info.get("errors", []),
     }
 
 

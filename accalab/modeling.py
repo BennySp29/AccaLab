@@ -369,13 +369,12 @@ def _predict_lambdas(
     return lam, mu
 
 
-def _estimate_market_odds(probs: dict[str, Any], elo_h: float, elo_a: float) -> dict[str, float]:
-    """Generate realistic Bet365-margin (~5.2%) market estimates when fixtures.csv doesn't cover a league yet."""
-    # Add realistic slight market tilt toward Elo reputation vs DC recent form
-    elo_edge = max(-0.04, min(0.04, (elo_h - elo_a) / 3500.0))
-    mh = max(0.06, min(0.86, probs["prob_home"] + elo_edge))
-    ma = max(0.06, min(0.86, probs["prob_away"] - elo_edge))
-    md = max(0.12, min(0.36, probs["prob_draw"]))
+def _estimate_market_odds(probs: dict[str, Any], elo_h: float = 1500.0, elo_a: float = 1500.0) -> dict[str, float]:
+    """Generate calibrated Bet365-margin (~5.2%) market estimates when live odds are unavailable."""
+    # Blend model probabilities (68%) with English league base rates (32%) instead of double-counting Elo
+    mh = max(0.06, min(0.86, 0.68 * probs["prob_home"] + 0.32 * 0.44))
+    md = max(0.12, min(0.36, 0.68 * probs["prob_draw"] + 0.32 * 0.27))
+    ma = max(0.06, min(0.86, 0.68 * probs["prob_away"] + 0.32 * 0.29))
     tot = mh + md + ma
     mh, md, ma = mh / tot, md / tot, ma / tot
 
@@ -640,8 +639,8 @@ def run_model_and_predictions(conn: sqlite3.Connection) -> dict[str, Any]:
         b365a = est["b365a"] if is_est_row else (fix["b365a"] or est["b365a"])
         b365_o25 = est["b365_over25"] if is_est_row else (fix["b365_over25"] or est["b365_over25"])
         b365_u25 = est["b365_under25"] if is_est_row else (fix["b365_under25"] or est["b365_under25"])
-        # fixtures.csv (bet365_official) does not carry BTTS prices, so keep BTTS fresh unless set via API/manual
-        refresh_btts = fix["odds_source"] in ("market_estimate", "bet365_official")
+        # fixtures.csv / live_sportsbook do not carry BTTS prices, so keep BTTS fresh unless set via API/manual
+        refresh_btts = fix["odds_source"] in ("market_estimate", "bet365_official", "live_sportsbook")
         b365_by = est["b365_btts_yes"] if refresh_btts else (fix["b365_btts_yes"] or est["b365_btts_yes"])
         b365_bn = est["b365_btts_no"] if refresh_btts else (fix["b365_btts_no"] or est["b365_btts_no"])
 

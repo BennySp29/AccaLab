@@ -105,7 +105,7 @@ def find_value_opportunities(
         sql += " AND f.div = ?"
         params.append(div_filter)
     if official_only:
-        sql += " AND f.odds_source IN ('bet365_official', 'api_football_b365', 'user_manual')"
+        sql += " AND f.odds_source IN ('bet365_official', 'api_football_b365', 'live_sportsbook', 'user_manual')"
 
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     upcoming = [r for r in rows if is_fixture_upcoming(r)]
@@ -122,7 +122,7 @@ def find_value_opportunities(
         for m_code, sel_label, m_prob, odds, fair_b_prob in _market_tuples_for_fixture(row):
             if market_filter and m_code != market_filter:
                 continue
-            if official_only and row["odds_source"] == "bet365_official" and m_code.startswith("BTTS"):
+            if official_only and row["odds_source"] in ("bet365_official", "live_sportsbook") and m_code.startswith("BTTS"):
                 continue
             if not odds or odds <= 1.01:
                 continue
@@ -817,13 +817,13 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
         a_sot_ag = float(r.get("a_sot_ag") or 0.0)
         h_form = r.get("home_form") or "N/A"
         a_form = r.get("away_form") or "N/A"
-        is_official = r["odds_source"] in ("bet365_official", "api_football_b365", "user_manual")
+        is_official = r["odds_source"] in ("bet365_official", "api_football_b365", "live_sportsbook", "user_manual")
         matched_news = (news_by_team.get(r["home_team"], []) + news_by_team.get(r["away_team"], []))[:1]
 
         for m_code, sel_label, m_prob, odds, _ in _market_tuples_for_fixture(r):
             if not odds or odds < 1.25 or odds > 5.50:
                 continue
-            if r["odds_source"] == "bet365_official" and m_code.startswith("BTTS"):
+            if r["odds_source"] in ("bet365_official", "live_sportsbook") and m_code.startswith("BTTS"):
                 continue
 
             edge_pct = (m_prob * odds - 1.0) * 100.0
