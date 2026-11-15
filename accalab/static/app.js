@@ -1793,25 +1793,57 @@ function isInSlip(fixtureId, market) {
   return state.slip.some((l) => Number(l.fixture_id) === Number(fixtureId) && l.market === market);
 }
 
+function syncModalSlipButtons() {
+  document.querySelectorAll('.modal-add-leg').forEach((btn) => {
+    try {
+      const leg = JSON.parse(btn.dataset.modalLeg || '{}');
+      const active = isInSlip(leg.fixture_id, leg.market);
+      const compact = btn.dataset.compact === '1';
+      btn.textContent = active ? '✓ In Slip' : '+ Slip';
+      btn.className = `modal-add-leg ${compact ? 'px-2 py-1' : 'px-2.5 py-1'} rounded font-semibold transition ${
+        active
+          ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200'
+          : 'bg-emerald-600/80 hover:bg-emerald-500 text-white'
+      }`;
+    } catch (_) { }
+  });
+  const boostSel = document.getElementById('boost-market-select');
+  if (boostSel && document.getElementById('boost-odds-input')?.value?.trim()) {
+    boostSel.dispatchEvent(new Event('change'));
+  }
+}
+
 function addLegToSlip(leg) {
-  const dup = state.slip.find((l) => l.fixture_id === leg.fixture_id && l.market === leg.market);
-  if (dup) {
-    showToast('Selection already on your Bet Slip');
-    return;
+  const dupIdx = state.slip.findIndex((l) => Number(l.fixture_id) === Number(leg.fixture_id) && l.market === leg.market);
+  if (dupIdx !== -1) {
+    state.slip.splice(dupIdx, 1);
+    saveSlip();
+    renderSlip();
+    syncModalSlipButtons();
+    if (state.activeTab === 'fixtures') renderFixturesTab();
+    else if (state.activeTab === 'value') renderValueTab();
+    else if (state.activeTab === 'acca') renderAccaTab();
+    showToast(`Removed ${leg.selection_label} from Bet Slip`);
+    return false;
   }
   state.slip.push(leg);
   saveSlip();
   renderSlip();
+  syncModalSlipButtons();
   if (state.activeTab === 'fixtures') renderFixturesTab();
+  else if (state.activeTab === 'value') renderValueTab();
   showToast(`Added ${leg.selection_label} @ ${fmtOdds(leg.odds)}`);
+  return true;
 }
 
 function removeLegFromSlip(idx) {
   state.slip.splice(idx, 1);
   saveSlip();
   renderSlip();
+  syncModalSlipButtons();
   if (state.activeTab === 'acca') renderAccaTab();
-  if (state.activeTab === 'fixtures') renderFixturesTab();
+  else if (state.activeTab === 'fixtures') renderFixturesTab();
+  else if (state.activeTab === 'value') renderValueTab();
 }
 
 async function renderSlip() {
@@ -1875,7 +1907,10 @@ async function renderSlip() {
     state.slip = [];
     saveSlip();
     renderSlip();
+    syncModalSlipButtons();
     if (state.activeTab === 'fixtures') renderFixturesTab();
+    else if (state.activeTab === 'value') renderValueTab();
+    else if (state.activeTab === 'acca') renderAccaTab();
   });
   document.getElementById('slip-export-b365-btn').addEventListener('click', () => {
     const customName = document.getElementById('slip-notes-input').value.trim();
@@ -2580,7 +2615,10 @@ async function openMatchPreview(fixtureId) {
                 <td class="py-2 px-2 text-right ${edgeCls}">${m.edge_pct >= 0 ? '+' : ''}${m.edge_pct}%</td>
                 <td class="py-2 pl-2 text-right">
                   ${m.b365_odds
-            ? `<button data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: m.market, selection_label: m.label, odds: m.b365_odds, model_prob: m.model_prob_pct / 100 }))}' class="modal-add-leg px-2.5 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white">+ Slip</button>`
+            ? (() => {
+                const active = isInSlip(f.id, m.market);
+                return `<button data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: m.market, selection_label: m.label, odds: m.b365_odds, model_prob: m.model_prob_pct / 100 }))}' class="modal-add-leg px-2.5 py-1 rounded font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600/80 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
+              })()
             : ''
           }
                 </td>
@@ -2620,7 +2658,7 @@ async function openMatchPreview(fixtureId) {
               <div class="text-slate-300">Chance <b class="text-white">${c.prob_pct}%</b> • Min Boost <b class="font-mono text-amber-300">${fmtOdds(c.fair_odds)}</b></div>
               <div class="flex items-center gap-1.5 shrink-0">
                 <button type="button" data-pick-boost="${esc(c.market)}" class="boost-prefill-btn px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold">Check</button>
-                <button type="button" data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: c.market, selection_label: c.label, odds: c.fair_odds, model_prob: c.prob }))}' class="modal-add-leg px-2 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold">+ Slip</button>
+                <button type="button" data-compact="1" data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: c.market, selection_label: c.label, odds: c.fair_odds, model_prob: c.prob }))}' class="modal-add-leg px-2 py-1 rounded font-semibold transition ${isInSlip(f.id, c.market) ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600/80 hover:bg-emerald-500 text-white'}">${isInSlip(f.id, c.market) ? '✓ In Slip' : '+ Slip'}</button>
               </div>
             </div>
           </div>`;
@@ -2758,12 +2796,14 @@ async function openMatchPreview(fixtureId) {
     const dec = parseOddsInput(raw);
     if (!raw) {
       boostAddBtn.disabled = true;
+      boostAddBtn.textContent = '+ Add Boost to Slip';
       boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition';
       boostVerdict.innerHTML = `Enter Bet365&apos;s boosted price above — needs <b class="text-white">&gt; ${fmtOdds(item.fair_odds)}</b> (${item.fair_odds.toFixed(2)}) for positive value (<b class="text-white">${item.prob_pct}%</b> win chance).`;
       return;
     }
     if (!dec) {
       boostAddBtn.disabled = true;
+      boostAddBtn.textContent = '+ Add Boost to Slip';
       boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition';
       boostVerdict.innerHTML = `<span class="text-amber-300">Enter valid fractional or decimal odds (e.g. 3/1, 7/2, evens, or 4.50).</span>`;
       return;
@@ -2771,11 +2811,20 @@ async function openMatchPreview(fixtureId) {
     const edgePct = (item.prob * dec - 1.0) * 100.0;
     const impliedPct = (1.0 / dec) * 100.0;
     boostAddBtn.disabled = false;
-    if (edgePct > 0) {
+    const boostActive = isInSlip(f.id, item.market);
+    if (boostActive) {
+      boostAddBtn.textContent = '✓ In Slip';
+      boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-emerald-500/25 border border-emerald-400 text-emerald-200 font-semibold transition';
+    } else if (edgePct > 0) {
+      boostAddBtn.textContent = '+ Add Boost to Slip';
       boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition';
+    } else {
+      boostAddBtn.textContent = '+ Add Boost to Slip';
+      boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-semibold transition';
+    }
+    if (edgePct > 0) {
       boostVerdict.innerHTML = `<span class="text-emerald-300 font-bold">🟢 BET ON IT (+${edgePct.toFixed(1)}% Edge — Beats fair odds of ${fmtOdds(item.fair_odds)})</span> <span class="text-slate-300">• Our model gives ${item.prob_pct}% vs ${impliedPct.toFixed(1)}% implied by ${fmtOdds(dec)}.</span>`;
     } else {
-      boostAddBtn.className = 'md:col-span-3 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-semibold transition';
       boostVerdict.innerHTML = `<span class="text-rose-300 font-bold">🔴 SKIP IT (${edgePct.toFixed(1)}% Value — Boost is below fair odds of ${fmtOdds(item.fair_odds)})</span> <span class="text-slate-300">• Model gives ${item.prob_pct}% vs ${impliedPct.toFixed(1)}% implied by ${fmtOdds(dec)}.</span>`;
     }
   };
@@ -2796,6 +2845,7 @@ async function openMatchPreview(fixtureId) {
       odds: roundNum(dec, 2),
       model_prob: item.prob,
     });
+    evaluateBoostChecker();
   });
   body.querySelectorAll('.boost-prefill-btn').forEach((btn) =>
     btn.addEventListener('click', () => {
@@ -2805,6 +2855,7 @@ async function openMatchPreview(fixtureId) {
     })
   );
   evaluateBoostChecker();
+  syncModalSlipButtons();
 
   document.getElementById('regen-summary-btn').addEventListener('click', async () => {
     const res = await api(`/api/fixture/${fixtureId}/ai-summary`, { method: 'POST', body: '{}' });
@@ -2919,7 +2970,10 @@ async function renderValueTab() {
                   <div class="text-[10px] text-slate-400">${esc(o.trust_badge)}</div>
                 </td>
                 <td class="p-3 text-right">
-                  <button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, match_date: o.match_date, home_team: o.home_team, away_team: o.away_team, market: o.market, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold">+ Slip</button>
+                  ${(() => {
+                    const active = isInSlip(o.fixture_id, o.market);
+                    return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, match_date: o.match_date, home_team: o.home_team, away_team: o.away_team, market: o.market, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
+                  })()}
                 </td>
               </tr>`;
         })
