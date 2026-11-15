@@ -1857,31 +1857,20 @@ async function renderSlip() {
   footer.innerHTML = `
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div class="text-slate-400">Combined Odds: <b class="text-white font-mono">${fmtOdds(evalData.combined_odds)}</b></div>
-      <div class="text-slate-400 text-right">Win Prob: <b class="text-white">${evalData.combined_model_prob_pct}%</b></div>
+      <div class="text-slate-400 text-right">Win Chance: <b class="text-white">${evalData.combined_model_prob_pct}%</b></div>
       <div class="text-slate-400">Value Rating: <b class="${evCls}">${evalData.expected_value_pct >= 0 ? '+' : ''}${evalData.expected_value_pct}%</b></div>
       <div class="text-slate-400 text-right">Legs: <b class="text-white">${state.slip.length}</b></div>
     </div>
-    <div class="flex items-center gap-2">
-      <label class="text-xs text-slate-400">Stake (£)</label>
-      <input id="slip-stake-input" type="number" min="1" step="1" value="${state.slipStake}" class="w-24 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-white" />
-      <div class="flex-1 text-right text-xs text-slate-300">Returns: <b class="text-emerald-400">${fmtGbp(evalData.potential_return)}</b></div>
-    </div>
-    <input id="slip-notes-input" type="text" placeholder="Optional note (e.g. Saturday acca)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white" />
+    <input id="slip-notes-input" type="text" placeholder="Optional acca name (e.g. Saturday acca)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white" />
     <div class="flex gap-2">
       <button id="slip-clear-btn" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300">Clear</button>
-      <button id="slip-save-draft-btn" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">Save Draft</button>
-      <button id="slip-place-btn" class="flex-1 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Log Bet</button>
+      <button id="slip-save-draft-btn" class="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">💾 Save Acca</button>
     </div>
     <button id="slip-export-b365-btn" class="w-full py-2.5 rounded-xl btn-bet365 text-xs font-extrabold tracking-wide flex items-center justify-center gap-2">
       <span>🚀 1-Touch Export to Bet365</span>
     </button>
   `;
 
-  document.getElementById('slip-stake-input').addEventListener('change', (e) => {
-    state.slipStake = Math.max(1, Number(e.target.value || 10));
-    saveSlip();
-    renderSlip();
-  });
   document.getElementById('slip-clear-btn').addEventListener('click', () => {
     state.slip = [];
     saveSlip();
@@ -1894,7 +1883,7 @@ async function renderSlip() {
   });
   document.getElementById('slip-save-draft-btn').addEventListener('click', async () => {
     if (!state.activeUserId || Number(state.activeUserId) === 0) {
-      showToast('Create your account first to save accumulator drafts!');
+      showToast('Create your account first to save accumulators!');
       openAuthModal('register');
       return;
     }
@@ -1908,31 +1897,8 @@ async function renderSlip() {
           legs: state.slip,
         }),
       });
-      showToast(`Saved draft "${res.saved_acca.name}" to your account!`);
+      showToast(`Saved "${res.saved_acca.name}" to your account!`);
       if (state.activeTab === 'acca') renderAccaTab();
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
-  document.getElementById('slip-place-btn').addEventListener('click', async () => {
-    if (!state.activeUserId || Number(state.activeUserId) === 0) {
-      showToast('Create your account first to log bets to your tracker!');
-      openAuthModal('register');
-      return;
-    }
-    try {
-      const notes = document.getElementById('slip-notes-input').value;
-      await api('/api/bets', {
-        method: 'POST',
-        body: JSON.stringify({ user_id: state.activeUserId, stake: state.slipStake, legs: state.slip, notes }),
-      });
-      state.slip = [];
-      saveSlip();
-      renderSlip();
-      document.getElementById('slip-drawer').classList.add('hidden');
-      showToast('Bet logged to your tracker!');
-      loadDashboard(false);
-      if (state.activeTab === 'tracker') renderActiveTab();
     } catch (err) {
       showToast(err.message, true);
     }
@@ -2027,7 +1993,7 @@ async function loadDashboard(syncSlipFromServer = true) {
   const optionsHtml = members
     .map(
       (u) =>
-        `<option value="${u.id}" ${u.id === state.activeUserId ? 'selected' : ''}>${esc(u.display_name)} (${fmtGbp(u.bankroll)})</option>`
+        `<option value="${u.id}" ${u.id === state.activeUserId ? 'selected' : ''}>${esc(u.display_name)}</option>`
     )
     .join('');
   const switcherWrap = document.getElementById('user-switcher-wrap');
@@ -2041,7 +2007,6 @@ async function loadDashboard(syncSlipFromServer = true) {
     mobileSwitcherEl.innerHTML = optionsHtml;
     mobileSwitcherEl.classList.toggle('hidden', members.length <= 1);
   }
-  document.getElementById('sidebar-bankroll').textContent = fmtGbp(activeU?.bankroll ?? 250);
 
   const badge = document.getElementById('sidebar-alert-badge');
   if (d.counts.unread_alerts > 0) {
@@ -2051,11 +2016,10 @@ async function loadDashboard(syncSlipFromServer = true) {
     badge.classList.add('hidden');
   }
 
-  const pnlColor = d.user_summary.total_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400';
   document.getElementById('kpi-strip').innerHTML = `
     <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">⚽ Upcoming: <b class="text-white font-mono">${d.counts.upcoming_fixtures}</b></span>
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">💎 Smart Picks: <b class="text-emerald-400 font-mono">${d.top_value_bets.length}</b></span>
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">📈 Profit/Loss: <b class="font-mono ${pnlColor}">${d.user_summary.total_pnl >= 0 ? '+' : ''}${fmtGbp(d.user_summary.total_pnl)}</b></span>
+    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">💎 Top Tips: <b class="text-emerald-400 font-mono">${d.top_value_bets.length}</b></span>
+    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">★ Followed Clubs: <b class="text-amber-300 font-mono">${state.favouriteTeams.length}</b></span>
   `;
 }
 
@@ -2122,7 +2086,7 @@ async function renderFixturesTab() {
       <div class="hidden lg:block bg-gradient-to-br from-emerald-500/15 via-panel to-cyan-500/10 border border-emerald-500/35 rounded-2xl p-4 md:p-5 space-y-3 shadow-lg shadow-emerald-950/30">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-500 text-slate-950">✨ Today&apos;s Suggested Bet</span>
+            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-500 text-slate-950">✨ Today&apos;s Top Tip</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-emerald-500/40 text-emerald-300">${fs.confidence_score}% Confidence</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-slate-700 text-amber-300">${fs.eval?.expected_value_pct >= 0 ? '+' : ''}${fs.eval?.expected_value_pct ?? 0}% Value</span>
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono bg-card border border-cyan-500/40 text-cyan-300">${fs.legs.length} ${fs.legs.length === 1 ? 'Leg' : 'Legs'}</span>
@@ -2147,7 +2111,7 @@ async function renderFixturesTab() {
             <div class="text-base md:text-lg font-extrabold text-white truncate">
               ${fs.legs.length === 1
         ? `${esc(fs.legs[0].selection_label)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds || fs.legs[0].odds)}</span> <span class="text-xs font-medium text-slate-300 ml-1">(${esc(fs.legs[0].home_team)} vs ${esc(fs.legs[0].away_team)})</span>`
-        : `${esc(fs.title)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds)}</span> <span class="text-xs font-semibold text-cyan-300 ml-1">• £${Number(fs.stake).toFixed(0)} → ${fmtGbp(fs.eval?.potential_return)}</span>`
+        : `${esc(fs.title)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds)}</span>`
       }
             </div>
             <div class="text-xs text-slate-300 truncate">
@@ -2509,7 +2473,6 @@ async function openMatchPreview(fixtureId) {
               <th class="py-2 px-2 text-right">Fair Odds</th>
               <th class="py-2 px-2 text-right">Bookie Odds</th>
               <th class="py-2 px-2 text-right">Value</th>
-              <th class="py-2 px-2 text-right">Rec. Stake</th>
               <th class="py-2 pl-2 text-right">Action</th>
             </tr>
           </thead>
@@ -2524,7 +2487,6 @@ async function openMatchPreview(fixtureId) {
                 <td class="py-2 px-2 text-right font-mono">${fmtOdds(m.fair_odds)}</td>
                 <td class="py-2 px-2 text-right font-mono font-bold text-white">${m.b365_odds ? fmtOdds(m.b365_odds) : '—'}</td>
                 <td class="py-2 px-2 text-right ${edgeCls}">${m.edge_pct >= 0 ? '+' : ''}${m.edge_pct}%</td>
-                <td class="py-2 px-2 text-right text-slate-300">${m.suggested_stake > 0 ? fmtGbp(m.suggested_stake) : '—'}</td>
                 <td class="py-2 pl-2 text-right">
                   ${m.b365_odds
             ? `<button data-modal-leg='${esc(JSON.stringify({ fixture_id: f.id, div: f.div, match_date: f.match_date, home_team: f.home_team, away_team: f.away_team, market: m.market, selection_label: m.label, odds: m.b365_odds, model_prob: m.model_prob_pct / 100 }))}' class="modal-add-leg px-2.5 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white">+ Slip</button>`
@@ -2684,8 +2646,8 @@ async function renderValueTab() {
   main.innerHTML = `
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
       <div>
-        <h2 class="text-xl font-bold text-white">💎 Top Value Picks</h2>
-        <p class="text-xs text-slate-400">Picks where our match model gives a higher win chance than the bookmaker&apos;s odds imply</p>
+        <h2 class="text-xl font-bold text-white">💎 Top Match Tips</h2>
+        <p class="text-xs text-slate-400">Tips where our match model gives a higher win chance than the bookmaker&apos;s odds imply</p>
       </div>
       <div class="flex flex-wrap items-center gap-2 text-xs">
         <select id="val-div-filter" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
@@ -2696,7 +2658,7 @@ async function renderValueTab() {
           <option value="E3" ${div === 'E3' ? 'selected' : ''}>League Two</option>
         </select>
         <select id="val-min-edge" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
-          <option value="2" ${minEdge === '2' ? 'selected' : ''}>All Value Picks (+2%+)</option>
+          <option value="2" ${minEdge === '2' ? 'selected' : ''}>All Value Tips (+2%+)</option>
           <option value="3" ${minEdge === '3' ? 'selected' : ''}>Good Value (+3%+)</option>
           <option value="5" ${minEdge === '5' ? 'selected' : ''}>Strong Value (+5%+)</option>
           <option value="8" ${minEdge === '8' ? 'selected' : ''}>Best Value Only (+8%+)</option>
@@ -2717,11 +2679,10 @@ async function renderValueTab() {
         <thead class="text-slate-400 border-b border-slate-800 bg-slate-900/60">
           <tr>
             <th class="p-3">Match</th>
-            <th class="p-3">Pick</th>
+            <th class="p-3">Tip</th>
             <th class="p-3 text-right">Odds</th>
             <th class="p-3 text-right">Win Chance (Fair)</th>
             <th class="p-3 text-right">Value</th>
-            <th class="p-3 text-right">Rec. Stake</th>
             <th class="p-3">Confidence</th>
             <th class="p-3 text-right">Action</th>
           </tr>
@@ -2746,10 +2707,9 @@ async function renderValueTab() {
                 <td class="p-3 text-right font-mono font-bold text-white">${fmtOdds(o.odds)}</td>
                 <td class="p-3 text-right">${o.model_prob_pct}% <span class="text-slate-400 font-mono">(${fmtOdds(o.fair_odds)})</span></td>
                 <td class="p-3 text-right font-bold text-emerald-400">+${o.edge_pct}%</td>
-                <td class="p-3 text-right font-semibold text-white">${fmtGbp(o.suggested_stake)}</td>
                 <td class="p-3 space-y-1">
                   <div>${oddsBadge(o.odds_source)}</div>
-                  <div class="text-[10px] text-slate-400">${esc(o.trust_badge)}${o.backtest_roi_pct !== null ? ` (${o.backtest_roi_pct > 0 ? '+' : ''}${o.backtest_roi_pct}% ROI)` : ''}</div>
+                  <div class="text-[10px] text-slate-400">${esc(o.trust_badge)}</div>
                 </td>
                 <td class="p-3 text-right">
                   <button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, match_date: o.match_date, home_team: o.home_team, away_team: o.away_team, market: o.market, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold">+ Slip</button>
@@ -2757,7 +2717,7 @@ async function renderValueTab() {
               </tr>`;
         })
         .join('')
-      : `<tr><td colspan="8" class="p-8 text-center text-slate-400">No picks match this filter right now — try switching to &ldquo;All Value Picks (+2%+)&rdquo;.</td></tr>`
+      : `<tr><td colspan="7" class="p-8 text-center text-slate-400">No tips match this filter right now — try switching to &ldquo;All Value Tips (+2%+)&rdquo;.</td></tr>`
     }
         </tbody>
       </table>
@@ -2852,7 +2812,7 @@ async function renderAccaTab() {
                       <span class="font-bold text-white truncate">${esc(a.name)}</span>
                       <span class="px-2 py-0.5 rounded-full font-bold ${a.ev_pct >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">${a.ev_pct >= 0 ? '+' : ''}${Number(a.ev_pct).toFixed(1)}% EV</span>
                     </div>
-                    <div class="text-[11px] text-slate-400 mt-1">${(a.legs || []).length} legs • Combined <b class="text-emerald-400 font-mono">${fmtOdds(a.combined_odds)}</b> • Stake ${fmtGbp(a.stake)} • Saved ${esc((a.created_at || '').slice(0, 10))}</div>
+                    <div class="text-[11px] text-slate-400 mt-1">${(a.legs || []).length} legs • Combined <b class="text-emerald-400 font-mono">${fmtOdds(a.combined_odds)}</b> • Saved ${esc((a.created_at || '').slice(0, 10))}</div>
                     <div class="mt-2 space-y-1">
                       ${(a.legs || [])
               .map(
@@ -2870,7 +2830,7 @@ async function renderAccaTab() {
         )
         .join('')}
             </div>`
-      : '<p class="text-xs text-slate-400">No saved drafts yet. Add legs to your Bet Slip drawer and click <b>Save Draft</b>.</p>'
+      : '<p class="text-xs text-slate-400">No saved accas yet. Add legs to your Tip Slip drawer and click <b>Save Acca</b>.</p>'
     }
     </div>
 
@@ -2882,11 +2842,11 @@ async function renderAccaTab() {
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Legs</div><div class="text-lg font-bold text-white">${slipEval.leg_count}</div></div>
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-lg font-bold font-mono text-emerald-400">${fmtOdds(slipEval.combined_odds)}</div></div>
           <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Fair Odds</div><div class="text-lg font-bold font-mono text-white">${fmtOdds(slipEval.fair_combined_odds)}</div></div>
-          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Potential Return</div><div class="text-lg font-bold text-emerald-300">${fmtGbp(slipEval.potential_return)}</div></div>
+          <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Win Chance</div><div class="text-lg font-bold text-emerald-300">${slipEval.combined_model_prob_pct}%</div></div>
         </div>
-        <button id="open-slip-inline" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Open Slip to Place Bet</button>
+        <button id="open-slip-inline" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Open Acca Slip</button>
       `
-      : '<p class="text-xs text-slate-400">Load any preset above or add legs from Matches &amp; Previews / Top Value Picks.</p>'
+      : '<p class="text-xs text-slate-400">Load any preset above or add legs from Matches &amp; Previews / Top Match Tips.</p>'
     }
     </div>
   `;
@@ -3078,24 +3038,7 @@ async function renderTrackerTab() {
 }
 
 function renderMobileMoreSubnav() {
-  const items = [
-    ['tracker', '📈 My Bets & P&L'],
-    ['leaderboard', '🏆 Leaderboard'],
-    ['settings', '⚙️ Clubs & Settings'],
-    ['backtest', '🔬 Model Stats'],
-  ];
-  return `
-    <div class="lg:hidden flex flex-wrap gap-1.5 pb-1">
-      ${items
-      .map(
-        ([tabId, label]) => `
-        <button type="button" data-mob-subtab="${tabId}" class="px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${state.activeTab === tabId
-            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
-            : 'bg-panel text-slate-300 border-slate-700/80 hover:bg-slate-800'
-          }">${label}</button>`
-      )
-      .join('')}
-    </div>`;
+  return '';
 }
 
 function bindMobileMoreSubnav() {
@@ -3313,8 +3256,8 @@ async function renderSettingsTab() {
     ${renderMobileMoreSubnav()}
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h2 class="text-xl font-bold text-white">🔔 Alerts, News &amp; Settings</h2>
-        <p class="text-xs text-slate-400">Personalised clubs, account controls, Telegram notifications, and profile bankroll limits</p>
+        <h2 class="text-xl font-bold text-white">⭐ Clubs, News &amp; Settings</h2>
+        <p class="text-xs text-slate-400">Personalised clubs, account controls, tip filter &amp; optional Telegram alerts</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button id="settings-auth-btn" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-white font-semibold">${state.authenticated ? 'Account / Password' : 'Sign In / Create Account'}</button>
@@ -3350,29 +3293,19 @@ async function renderSettingsTab() {
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <!-- Risk & Telegram Settings -->
+      <!-- Profile & Alert Settings -->
       <div class="bg-panel border border-slate-800 rounded-2xl p-4 space-y-3">
         <h3 class="text-sm font-bold text-white">Profile Settings (${esc(u.display_name)})</h3>
-        <div class="grid grid-cols-2 gap-3 text-xs">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
           <label>Display Name<input id="set-display-name" type="text" value="${esc(u.display_name)}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
-          <label>Default Slip Stake (£)<input id="set-default-stake" type="number" step="1" min="1" value="${u.default_stake || 10}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
-          <label>Bankroll (£)<input id="set-bankroll" type="number" step="5" value="${u.bankroll}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
-          <label>Staking Style
-            <select id="set-kelly" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
-              <option value="0.125" ${Number(u.kelly_fraction) <= 0.15 ? 'selected' : ''}>Cautious (Smaller stakes)</option>
-              <option value="0.25" ${Number(u.kelly_fraction) > 0.15 && Number(u.kelly_fraction) < 0.4 ? 'selected' : ''}>Balanced (Standard stakes)</option>
-              <option value="0.5" ${Number(u.kelly_fraction) >= 0.4 ? 'selected' : ''}>Confident (Larger stakes)</option>
-            </select>
-          </label>
-          <label>Pick Filter
+          <label>Tip Filter
             <select id="set-min-edge" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
-              <option value="2" ${Number(u.min_edge_pct) <= 2 ? 'selected' : ''}>More Picks (+2% value)</option>
+              <option value="2" ${Number(u.min_edge_pct) <= 2 ? 'selected' : ''}>More Tips (+2% value)</option>
               <option value="3" ${Number(u.min_edge_pct) > 2 && Number(u.min_edge_pct) < 5 ? 'selected' : ''}>Balanced (+3% value)</option>
               <option value="5" ${Number(u.min_edge_pct) >= 5 ? 'selected' : ''}>Strict — Best Only (+5% value)</option>
             </select>
           </label>
-          <label>Monthly Stake Limit (£)<input id="set-limit" type="number" step="10" value="${u.monthly_stake_limit}" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
-          <label class="col-span-2">Telegram Chat ID (optional)<input id="set-tg-chat" type="text" value="${esc(u.telegram_chat_id || '')}" placeholder="e.g. 123456789" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
+          <label class="sm:col-span-2">Telegram Chat ID (optional)<input id="set-tg-chat" type="text" value="${esc(u.telegram_chat_id || '')}" placeholder="e.g. 123456789" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"/></label>
         </div>
         <div class="flex flex-wrap gap-2">
           <button id="save-settings-btn" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold">Save Settings</button>
@@ -3504,21 +3437,18 @@ async function renderSettingsTab() {
 
   document.getElementById('save-settings-btn').addEventListener('click', async () => {
     try {
-      const newStake = Number(document.getElementById('set-default-stake').value || 10);
       await api('/api/user/preferences', {
         method: 'POST',
         body: JSON.stringify({
           display_name: document.getElementById('set-display-name').value.trim() || u.display_name,
-          default_stake: newStake,
-          bankroll: document.getElementById('set-bankroll').value,
-          kelly_fraction: document.getElementById('set-kelly').value,
+          default_stake: u.default_stake || 10,
+          bankroll: u.bankroll ?? 250,
+          kelly_fraction: u.kelly_fraction ?? 0.25,
           min_edge_pct: document.getElementById('set-min-edge').value,
-          monthly_stake_limit: document.getElementById('set-limit').value,
+          monthly_stake_limit: u.monthly_stake_limit ?? 200,
           telegram_chat_id: document.getElementById('set-tg-chat').value,
         }),
       });
-      state.slipStake = newStake;
-      saveSlip(false);
       await loadDashboard(false);
       renderSettingsTab();
       showToast('Settings saved!');
@@ -3735,7 +3665,7 @@ function renderAuthModalBody(mode = 'login') {
   body.innerHTML = `
     ${!users.length ? `
       <div class="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-slate-200">
-        <b class="text-emerald-300">Welcome to AccaLab!</b> Set up your personal account below to save your bankroll, default stake, favourite English clubs, watchlist and tracked bets.
+        <b class="text-emerald-300">Welcome to AccaLab!</b> Set up your personal account below to save your favourite English clubs, watchlist matches and custom accas.
       </div>
     ` : ''}
     <form id="auth-register-form" class="space-y-3">
@@ -3756,42 +3686,20 @@ function renderAuthModalBody(mode = 'login') {
           <label class="block text-xs text-slate-400 mb-1">Password *</label>
           <input id="reg-password" type="password" required minlength="6" placeholder="Min 6 chars" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
         </div>
-        <div>
-          <label class="block text-xs text-slate-400 mb-1">Starting Budget / Bankroll (£)</label>
-          <input id="reg-bankroll" type="number" min="10" step="10" value="250" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
-        </div>
-        <div>
-          <label class="block text-xs text-slate-400 mb-1">Typical Stake (£)</label>
-          <input id="reg-default-stake" type="number" min="1" step="1" value="10" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
-        </div>
         <details class="sm:col-span-2 text-xs text-slate-400 rounded-xl bg-surface/60 border border-slate-800 p-3">
-          <summary class="cursor-pointer hover:text-white font-semibold">Optional: Group Invite Code &amp; Staking Preferences</summary>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-3">
+          <summary class="cursor-pointer hover:text-white font-semibold">Optional: Tip Filter &amp; Profile Colour</summary>
+          <div class="grid grid-cols-2 gap-2.5 mt-3">
             <div>
-              <label class="block text-xs text-slate-400 mb-1">Staking Style</label>
-              <select id="reg-kelly" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white">
-                <option value="0.125">Cautious (Smaller stakes)</option>
-                <option value="0.25" selected>Balanced (Standard stakes)</option>
-                <option value="0.5">Confident (Larger stakes)</option>
+              <label class="block text-xs text-slate-400 mb-1">Tip Filter</label>
+              <select id="reg-min-edge" class="w-full px-2.5 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white">
+                <option value="2">More Tips (+2%)</option>
+                <option value="3" selected>Balanced (+3%)</option>
+                <option value="5">Strict (+5%)</option>
               </select>
             </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div>
-                <label class="block text-xs text-slate-400 mb-1">Pick Filter</label>
-                <select id="reg-min-edge" class="w-full px-2.5 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white">
-                  <option value="2">More Picks (+2%)</option>
-                  <option value="3" selected>Balanced (+3%)</option>
-                  <option value="5">Strict (+5%)</option>
-                </select>
-              </div>
-              <div>
-                <label class="block text-xs text-slate-400 mb-1">Avatar Colour</label>
-                <input id="reg-color" type="color" value="#10b981" class="w-full h-[34px] rounded-lg bg-surface border border-slate-700 p-0.5 cursor-pointer" />
-              </div>
-            </div>
-            <div class="sm:col-span-2">
-              <label class="block text-xs text-slate-400 mb-1">Group Invite Code (optional)</label>
-              <input id="reg-invite" type="text" value="ACCALAB2026" placeholder="ACCALAB2026" class="w-full px-3 py-2 rounded-lg bg-surface border border-slate-700 text-xs text-white" />
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Avatar Colour</label>
+              <input id="reg-color" type="color" value="#10b981" class="w-full h-[34px] rounded-lg bg-surface border border-slate-700 p-0.5 cursor-pointer" />
             </div>
           </div>
         </details>
@@ -3867,12 +3775,12 @@ function renderAuthModalBody(mode = 'login') {
           username: document.getElementById('reg-username').value.trim(),
           email: document.getElementById('reg-email').value.trim(),
           password: document.getElementById('reg-password').value,
-          invite_code: document.getElementById('reg-invite').value.trim(),
-          bankroll: Number(document.getElementById('reg-bankroll').value || 250),
-          default_stake: Number(document.getElementById('reg-default-stake')?.value || 10),
-          kelly_fraction: Number(document.getElementById('reg-kelly').value || 0.25),
-          min_edge_pct: Number(document.getElementById('reg-min-edge').value || 3.0),
-          avatar_color: document.getElementById('reg-color').value || '#10b981',
+          invite_code: 'ACCALAB2026',
+          bankroll: 250,
+          default_stake: 10,
+          kelly_fraction: 0.25,
+          min_edge_pct: Number(document.getElementById('reg-min-edge')?.value || 3.0),
+          avatar_color: document.getElementById('reg-color')?.value || '#10b981',
           preferred_leagues: preferred_leagues.length ? preferred_leagues : ['E0', 'E1', 'E2', 'E3'],
           favourite_teams: Array.from(selectedTeams),
         }),
@@ -3960,11 +3868,10 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
       }
       </div>
 
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
-        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Stake</div><div class="text-base font-bold font-mono text-white">${fmtGbp(exp.stake)}</div></div>
+      <div class="grid grid-cols-3 gap-2.5 text-xs">
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Legs</div><div class="text-base font-bold font-mono text-white">${expLegs.length}</div></div>
         <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-base font-bold font-mono text-emerald-400">${fmtOdds(ev.combined_odds)}</div></div>
-        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Potential Return</div><div class="text-base font-bold font-mono text-white">${fmtGbp(ev.potential_return || 0)}</div></div>
-        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Model EV</div><div class="text-base font-bold font-mono ${Number(ev.expected_value_pct) >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${Number(ev.expected_value_pct) >= 0 ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
+        <div class="p-3 rounded-xl bg-card border border-slate-800"><div class="text-slate-400">Value Rating</div><div class="text-base font-bold font-mono ${Number(ev.expected_value_pct) >= 0 ? 'text-emerald-400' : 'text-amber-300'}">${Number(ev.expected_value_pct) >= 0 ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
       </div>
 
       <div class="space-y-2">
@@ -4036,8 +3943,7 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
 
       <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
         <button id="b365-back-suggest-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold">← Back to Suggestions</button>
-        <button id="b365-copy-btn" type="button" class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📋 Copy Slip Summary</button>
-        <button id="b365-log-bet-btn" type="button" class="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs text-white font-extrabold">✅ Bet Placed on Bet365 — Log to Tracker</button>
+        <button id="b365-copy-btn" type="button" class="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📋 Copy Slip Summary</button>
       </div>
     `;
 
@@ -4090,30 +3996,6 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
     });
 
     document.getElementById('b365-back-suggest-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
-
-    document.getElementById('b365-log-bet-btn')?.addEventListener('click', async () => {
-      try {
-        await api('/api/bets', {
-          method: 'POST',
-          body: JSON.stringify({
-            user_id: state.activeUserId,
-            stake,
-            legs,
-            notes: `${title} (Bet365)`,
-          }),
-        });
-        state.slip = [];
-        saveSlip();
-        renderSlip();
-        modal.classList.add('hidden');
-        document.getElementById('slip-drawer').classList.add('hidden');
-        await loadDashboard(false);
-        renderActiveTab();
-        showToast('Bet placed & logged to your tracker!');
-      } catch (err) {
-        showToast(err.message, true);
-      }
-    });
   };
 
   renderHandoff();
@@ -4151,8 +4033,8 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
   const body = document.getElementById('suggest-modal-body');
   if (!modal || !body) return;
 
-  titleEl.textContent = '✨ Smart Bet Assistant & Bet365 Export';
-  subEl.textContent = 'Pick your risk appetite — from steady 1/1–2/1 builders to small-stake 40/1+ longshots';
+  titleEl.textContent = '✨ Smart Tip Assistant & Bet365 Export';
+  subEl.textContent = 'Pick your risk level — from steady 1/1–2/1 builders to 40/1+ longshots';
   modal.classList.remove('hidden');
   body.innerHTML = '<div class="text-sm text-slate-400 py-8 text-center">Analyzing upcoming fixtures, Bet365 odds &amp; team news...</div>';
 
@@ -4204,9 +4086,6 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
       const evPos = Number(ev.expected_value_pct || 0) >= 0;
       const combinedDec = Number(ev.combined_odds || 1);
       const stakeNum = Math.max(0.5, Number(currentStake || getPkgStake(s, tier)));
-      const tunedReturn = Math.round(stakeNum * combinedDec * 100) / 100;
-      const tunedProfit = Math.round((tunedReturn - stakeNum) * 100) / 100;
-      const quickStakes = [1, 2, 5, 10, 20];
 
       body.innerHTML = `
         <div class="space-y-1.5">
@@ -4226,7 +4105,6 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
                   ${pOdds ? `<span class="text-[11px] font-mono font-bold ${isActive ? 'text-emerald-300' : 'text-emerald-400'}">${esc(fmtOdds(pOdds))}</span>` : ''}
                 </div>
                 <div class="text-[10px] font-semibold mt-0.5 ${isActive ? 'text-emerald-200' : 'text-slate-400'}">${esc(rl.target_odds_label || '')}</div>
-                <div class="text-[10px] text-slate-400 truncate mt-0.5">Default £${Number(rl.default_stake || 5).toFixed(0)} stake</div>
               </button>`;
           })
           .join('')}
@@ -4265,34 +4143,10 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
             </div>
           </div>
 
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <div class="grid grid-cols-3 gap-2 text-xs">
             <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-sm font-bold font-mono text-emerald-400">${esc(fmtOdds(combinedDec))}</div></div>
-            <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Model Hit Prob</div><div class="text-sm font-bold font-mono text-white">${Number(ev.combined_model_prob_pct || 0).toFixed(1)}%</div></div>
-            <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Expected Value</div><div class="text-sm font-bold font-mono ${evPos ? 'text-emerald-400' : 'text-amber-300'}">${evPos ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
-            <div class="p-2.5 rounded-xl bg-panel border border-slate-800">
-              <div class="text-slate-400">Potential Return</div>
-              <div id="sug-return-val" class="text-sm font-bold font-mono text-white">${fmtGbp(tunedReturn)}</div>
-              <div id="sug-profit-val" class="text-[10px] font-mono text-emerald-400">+${fmtGbp(tunedProfit)} profit</div>
-            </div>
-          </div>
-
-          <div class="p-3 rounded-xl bg-panel border border-slate-800 flex flex-wrap items-center justify-between gap-2">
-            <div class="text-xs font-semibold text-slate-300">Stake Tuner</div>
-            <div class="flex flex-wrap items-center gap-1.5">
-              ${quickStakes
-          .map(
-            (amt) => `
-                <button type="button" data-sug-stake="${amt}" class="px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${Math.abs(stakeNum - amt) < 0.01
-                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
-                : 'bg-surface border-slate-700 text-slate-300 hover:border-slate-500'
-              }">£${amt}</button>`
-          )
-          .join('')}
-              <div class="flex items-center gap-1 ml-1">
-                <span class="text-xs text-slate-400">£</span>
-                <input id="sug-stake-input" type="number" min="0.5" step="0.5" value="${stakeNum}" class="w-16 px-2 py-1 rounded-lg bg-surface border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-emerald-400" />
-              </div>
-            </div>
+            <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Win Chance</div><div class="text-sm font-bold font-mono text-white">${Number(ev.combined_model_prob_pct || 0).toFixed(1)}%</div></div>
+            <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Value Rating</div><div class="text-sm font-bold font-mono ${evPos ? 'text-emerald-400' : 'text-amber-300'}">${evPos ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
           </div>
 
           <div class="space-y-2">
@@ -4322,9 +4176,9 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           </div>
 
           <div class="flex flex-wrap gap-2 pt-1">
-            <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365 (£${stakeNum % 1 === 0 ? stakeNum.toFixed(0) : stakeNum.toFixed(2)})</button>
+            <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">🚀 1-Touch Export to Bet365</button>
             <button id="sug-load-slip-btn" type="button" class="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Load to Slip</button>
-            <button id="sug-save-draft-btn" type="button" class="px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save Draft</button>
+            <button id="sug-save-draft-btn" type="button" class="px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save Acca</button>
           </div>
         </div>
       `;
@@ -4349,37 +4203,6 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
         })
       );
 
-      body.querySelectorAll('[data-sug-stake]').forEach((btn) =>
-        btn.addEventListener('click', () => {
-          currentStake = Number(btn.dataset.sugStake);
-          renderPkg();
-        })
-      );
-
-      const stakeInput = document.getElementById('sug-stake-input');
-      if (stakeInput) {
-        stakeInput.addEventListener('input', () => {
-          const parsed = Number(stakeInput.value);
-          if (!Number.isFinite(parsed) || parsed <= 0) return;
-          currentStake = parsed;
-          const nextRet = Math.round(currentStake * combinedDec * 100) / 100;
-          const nextProf = Math.round((nextRet - currentStake) * 100) / 100;
-          const retEl = document.getElementById('sug-return-val');
-          const profEl = document.getElementById('sug-profit-val');
-          const expBtn = document.getElementById('sug-export-b365-btn');
-          if (retEl) retEl.textContent = fmtGbp(nextRet);
-          if (profEl) profEl.textContent = `+${fmtGbp(nextProf)} profit`;
-          if (expBtn) expBtn.textContent = `🚀 1-Touch Export to Bet365 (£${currentStake % 1 === 0 ? currentStake.toFixed(0) : currentStake.toFixed(2)})`;
-          body.querySelectorAll('[data-sug-stake]').forEach((b) => {
-            const match = Math.abs(Number(b.dataset.sugStake) - currentStake) < 0.01;
-            b.className = `px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition ${match
-                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
-                : 'bg-surface border-slate-700 text-slate-300 hover:border-slate-500'
-              }`;
-          });
-        });
-      }
-
       document.getElementById('sug-export-b365-btn').addEventListener('click', () =>
         exportToBet365(s.legs, currentStake, s.title)
       );
@@ -4391,7 +4214,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
         modal.classList.add('hidden');
         document.getElementById('slip-drawer').classList.remove('hidden');
         if (state.activeTab === 'fixtures') renderFixturesTab();
-        showToast(`Loaded "${s.title}" (£${state.slipStake}) into your Bet Slip!`);
+        showToast(`Loaded "${s.title}" into your Tip Slip!`);
       });
       document.getElementById('sug-save-draft-btn').addEventListener('click', async () => {
         if (!state.activeUserId || Number(state.activeUserId) === 0) {

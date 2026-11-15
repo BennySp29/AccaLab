@@ -89,7 +89,7 @@
 
     <div class="px-3 pt-3">
       <button id="open-suggest-sidebar-btn" class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition">
-        <span>✨ Suggest a Bet</span>
+        <span>✨ Suggest a Tip</span>
       </button>
     </div>
 
@@ -98,22 +98,13 @@
         <span>⚽</span><span>Matches &amp; Previews</span>
       </button>
       <button data-tab="value" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>💎</span><span>Top Value Picks</span>
+        <span>💎</span><span>Top Match Tips</span>
       </button>
       <button data-tab="acca" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
         <span>🧮</span><span>Acca Builder</span>
       </button>
-      <button data-tab="tracker" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>📈</span><span>My Bets &amp; P&amp;L</span>
-      </button>
-      <button data-tab="backtest" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>🔬</span><span>Model Track Record</span>
-      </button>
-      <button data-tab="leaderboard" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>🏆</span><span>Leaderboard</span>
-      </button>
       <button data-tab="settings" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span class="flex items-center gap-3"><span>🔔</span><span>Clubs &amp; Settings</span></span>
+        <span class="flex items-center gap-3"><span>⭐</span><span>Clubs &amp; Settings</span></span>
         <span id="sidebar-alert-badge" class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
       </button>
     </nav>
@@ -132,10 +123,6 @@
       <div id="user-switcher-wrap" class="hidden">
         <label class="text-[11px] uppercase tracking-wider text-slate-400">Switch Account / Member</label>
         <select id="user-switcher" class="mt-1 w-full bg-surface border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white"></select>
-      </div>
-      <div class="text-xs text-slate-400 flex justify-between">
-        <span>Bankroll:</span>
-        <span id="sidebar-bankroll" class="font-semibold font-mono text-emerald-400">£250.00</span>
       </div>
       <button id="sync-btn-sidebar" class="w-full py-2 px-3 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-semibold transition">
         ↻ Smart Sync Data
@@ -156,7 +143,7 @@
       </div>
       <div class="flex items-center gap-2">
         <button id="open-suggest-btn" class="hidden lg:flex px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold items-center gap-1.5 shadow-md shadow-emerald-500/20 transition">
-          <span>✨ Suggest Bet</span>
+          <span>✨ Suggest Tip</span>
         </button>
         <select id="user-switcher-mobile" class="hidden lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
         <button id="open-auth-modal-mobile-btn" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Set Up Account</button>
@@ -179,7 +166,7 @@
       <span class="text-base leading-none">⚽</span><span class="mt-0.5">Matches</span>
     </button>
     <button data-tab="value" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
-      <span class="text-base leading-none">💎</span><span class="mt-0.5">Picks</span>
+      <span class="text-base leading-none">💎</span><span class="mt-0.5">Tips</span>
     </button>
     <div class="flex justify-center">
       <button id="open-suggest-mobile-btn" type="button" class="flex flex-col items-center justify-center -mt-3.5 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
@@ -190,7 +177,7 @@
       <span class="text-base leading-none">🧮</span><span class="mt-0.5">Acca</span>
     </button>
     <button data-tab="settings" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
-      <span class="text-base leading-none">⚙️</span><span class="mt-0.5">More</span>
+      <span class="text-base leading-none">⭐</span><span class="mt-0.5">Clubs</span>
     </button>
   </nav>
 
@@ -211,7 +198,7 @@
   <!-- Floating Bet Slip Drawer -->
   <div id="slip-drawer" class="hidden fixed inset-y-0 right-0 w-full max-w-md glass-panel border-l border-slate-700/80 z-50 flex flex-col shadow-2xl">
     <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
-      <h3 class="font-bold text-white text-base">🧾 Acca &amp; Bet Slip</h3>
+      <h3 class="font-bold text-white text-base">🧾 Your Acca &amp; Tip Slip</h3>
       <button id="close-slip-btn" class="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs">✕</button>
     </div>
     <div id="slip-body" class="flex-1 p-4 overflow-y-auto space-y-3 scrollbar-thin"></div>
@@ -238,7 +225,7 @@
       <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
         <div>
           <h2 class="text-lg font-bold text-white">Your AccaLab Account</h2>
-          <p class="text-xs text-slate-400">Save favourite clubs, watchlist matches, draft accas &amp; bankroll settings</p>
+          <p class="text-xs text-slate-400">Save your favourite clubs, watchlist matches &amp; saved accas across devices</p>
         </div>
         <button id="close-auth-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">✕ Close</button>
       </div>
@@ -253,6 +240,6 @@
   <!-- Toast Banner -->
   <div id="toast" class="hidden fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium shadow-xl z-50"></div>
 
-  <script type="module" src="./static/app.js?v=72a7fe51"></script>
+  <script type="module" src="./static/app.js?v=7d07e2dc"></script>
 </body>
 </html>
