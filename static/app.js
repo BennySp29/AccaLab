@@ -2126,7 +2126,7 @@ async function renderFixturesTab() {
   const featuredHtml =
     fs && fs.legs?.length
       ? `
-      <div class="bg-gradient-to-br from-emerald-500/15 via-panel to-cyan-500/10 border border-emerald-500/35 rounded-2xl p-4 md:p-5 space-y-3 shadow-lg shadow-emerald-950/30">
+      <div class="hidden lg:block bg-gradient-to-br from-emerald-500/15 via-panel to-cyan-500/10 border border-emerald-500/35 rounded-2xl p-4 md:p-5 space-y-3 shadow-lg shadow-emerald-950/30">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex flex-wrap items-center gap-2">
             <span class="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-500 text-slate-950">✨ Today&apos;s Suggested Bet</span>
@@ -3009,6 +3009,35 @@ async function renderTrackerTab() {
   });
 }
 
+function renderMobileMoreSubnav() {
+  const items = [
+    ['settings', '⚙️ Alerts & Settings'],
+    ['leaderboard', '🏆 Leaderboard'],
+    ['backtest', '🔬 Model & Backtest'],
+  ];
+  return `
+    <div class="lg:hidden flex flex-wrap gap-1.5 pb-1">
+      ${items
+      .map(
+        ([tabId, label]) => `
+        <button type="button" data-mob-subtab="${tabId}" class="px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${state.activeTab === tabId
+            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+            : 'bg-panel text-slate-300 border-slate-700/80 hover:bg-slate-800'
+          }">${label}</button>`
+      )
+      .join('')}
+    </div>`;
+}
+
+function bindMobileMoreSubnav() {
+  document.querySelectorAll('[data-mob-subtab]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      state.activeTab = btn.dataset.mobSubtab;
+      renderActiveTab();
+    })
+  );
+}
+
 // 5. MODEL & BACKTEST LAB TAB
 async function renderBacktestTab() {
   const main = document.getElementById('main-content');
@@ -3016,6 +3045,7 @@ async function renderBacktestTab() {
   const firstCalib = data.results.find((r) => r.calibration?.length)?.calibration || [];
 
   main.innerHTML = `
+    ${renderMobileMoreSubnav()}
     <div>
       <h2 class="text-xl font-bold text-white">🔬 Walk-Forward Backtest &amp; Calibration Lab</h2>
       <p class="text-xs text-slate-400">Strictly out-of-sample evaluation across 2026/27 played fixtures vs Bet365 closing odds (Value threshold ≥ 3% edge)</p>
@@ -3083,6 +3113,7 @@ async function renderBacktestTab() {
     </div>
   `;
 
+  bindMobileMoreSubnav();
   if (state.charts.calib) state.charts.calib.destroy();
   const ctx = document.getElementById('calib-chart').getContext('2d');
   state.charts.calib = new Chart(ctx, {
@@ -3104,6 +3135,7 @@ async function renderLeaderboardTab() {
   const data = await api('/api/leaderboard');
 
   main.innerHTML = `
+    ${renderMobileMoreSubnav()}
     <div>
       <h2 class="text-xl font-bold text-white">🏆 Friends Group Leaderboard</h2>
       <p class="text-xs text-slate-400">Opt-in comparison sorted by ROI% and Closing Line Value.</p>
@@ -3151,6 +3183,7 @@ async function renderLeaderboardTab() {
     </div>
   `;
 
+  bindMobileMoreSubnav();
   document.getElementById('create-friend-btn').addEventListener('click', async () => {
     if (getSupabaseClient()) {
       const fName = document.getElementById('new-friend-name').value.trim();
@@ -3208,6 +3241,7 @@ async function renderSettingsTab() {
     : newsRes.news || [];
 
   main.innerHTML = `
+    ${renderMobileMoreSubnav()}
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="text-xl font-bold text-white">🔔 Alerts, News &amp; Settings</h2>
@@ -3433,6 +3467,7 @@ async function renderSettingsTab() {
     renderSettingsTab();
   });
 
+  bindMobileMoreSubnav();
   document.getElementById('run-full-sync-btn').addEventListener('click', () => triggerSync(true, false));
   document.getElementById('force-full-sync-btn')?.addEventListener('click', () => triggerSync(true, true));
 }
@@ -3459,9 +3494,10 @@ async function renderActiveTab() {
     btn.className = `nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${active ? 'bg-emerald-500/15 text-emerald-400' : 'text-slate-300 hover:bg-slate-800/70'
       }`;
   });
+  const isMoreGroup = ['settings', 'leaderboard', 'backtest'].includes(state.activeTab);
   document.querySelectorAll('.nav-btn-mob').forEach((btn) => {
-    const active = btn.dataset.tab === state.activeTab;
-    btn.className = `nav-btn-mob flex flex-col items-center text-[11px] ${active ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`;
+    const active = btn.dataset.tab === state.activeTab || (btn.dataset.tab === 'settings' && isMoreGroup);
+    btn.className = `nav-btn-mob flex flex-col items-center py-1 px-2 text-[11px] ${active ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`;
   });
 
   if (state.activeTab === 'fixtures') return renderFixturesTab();
@@ -4335,6 +4371,7 @@ function bindGlobalEvents() {
 
   document.getElementById('open-suggest-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
   document.getElementById('open-suggest-sidebar-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
+  document.getElementById('open-suggest-mobile-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
   document.getElementById('close-suggest-modal')?.addEventListener('click', () =>
     document.getElementById('suggest-modal').classList.add('hidden')
   );
