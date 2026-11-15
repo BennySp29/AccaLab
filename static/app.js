@@ -575,7 +575,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
     const oddsVal = roundNum(Number(leg.odds || 1.0), 2);
     const oddsFrac = fmtOdds(oddsVal);
     const searchTerm = b365Home && b365Away ? `${b365Home} v ${b365Away}` : b365Home || b365Away || 'Football';
-    const searchHash = `#/AX/K^${encodeURIComponent(searchTerm)}`;
+    const searchHash = `#/AX/K^${encodeURIComponent(searchTerm)}/`;
 
     const optTok = String(leg.b365_options_id || '').trim();
     if (optTok) legOptionTokens.push(optTok);
@@ -620,9 +620,6 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
     od: combFrac,
     legs: compactLegs,
   });
-  for (const item of exportedLegs) {
-    item.b365_search_url = `https://www.bet365.com/?accalab_slip=${slipToken}${item.b365_search_hash}`;
-  }
 
   const betType = legs.length > 1 ? 'combo' : 'single';
   const overrideClean = String(optionsOverride || '').trim();
@@ -631,7 +628,7 @@ function buildBet365ExportClient(legs = [], stake = 10.0, title = 'AccaLab Sugge
   const prefillTemplateUrl = `https://www.bet365.com/en/sports?options={eventId}-{marketId}-{selectionId}&type=${betType}&stake=${cleanStake.toFixed(2)}&currency=GBP`;
 
   let deepLinkUrl = null;
-  let launchUrl = exportedLegs[0]?.b365_search_url || `https://www.bet365.com/?accalab_slip=${slipToken}#/HO/`;
+  let launchUrl = exportedLegs[0]?.b365_search_url || 'https://www.bet365.com/#/HO/';
   let mode = 'express_handoff';
   if (resolvedOptions) {
     const safeOpts = encodeURIComponent(resolvedOptions).replaceAll('%2C', ',').replaceAll('%2D', '-').replaceAll('%7E', '~');
@@ -4746,7 +4743,6 @@ async function exportToBet365(legs, stake = state.slipStake, title = 'AccaLab Su
       method: 'POST',
       body: JSON.stringify({ legs, stake, title, options_override: optionsOverride }),
     });
-    navigator.clipboard?.writeText(exp.clipboard_text).catch(() => { });
     state.slip = legs.map((l) => ({ ...l }));
     state.slipStake = Number(exp.stake || stake || 10);
     saveSlip();

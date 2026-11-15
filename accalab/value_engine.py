@@ -650,7 +650,7 @@ def build_bet365_export(
         odds_val = round(float(leg.get("odds") or 1.0), 2)
         odds_frac = decimal_to_fractional(odds_val)
         search_term = f"{b365_home} v {b365_away}" if (b365_home and b365_away) else (b365_home or b365_away or "Football")
-        search_hash = f"#/AX/K^{urllib.parse.quote(search_term)}"
+        search_hash = f"#/AX/K^{urllib.parse.quote(search_term)}/"
 
         opt_tok = str(leg.get("b365_options_id") or "").strip()
         if opt_tok:
@@ -699,8 +699,6 @@ def build_bet365_export(
     }
     slip_raw = json.dumps(slip_payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     slip_token = base64.urlsafe_b64encode(slip_raw).decode("ascii").rstrip("=")
-    for item in exported_legs:
-        item["b365_search_url"] = f"https://www.bet365.com/?accalab_slip={slip_token}{item['b365_search_hash']}"
 
     bet_type = "combo" if len(legs) > 1 else "single"
     override_clean = (options_override or "").strip()
@@ -721,7 +719,7 @@ def build_bet365_export(
         mode = "direct_prefill"
     else:
         deep_link_url = None
-        launch_url = exported_legs[0]["b365_search_url"] if exported_legs else f"https://www.bet365.com/?accalab_slip={slip_token}#/HO/"
+        launch_url = exported_legs[0]["b365_search_url"] if exported_legs else "https://www.bet365.com/#/HO/"
         mode = "express_handoff"
 
     lines = [

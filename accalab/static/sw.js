@@ -1,4 +1,4 @@
-const CACHE_NAME = 'accalab-v3-cf7ce65c';
+const CACHE_NAME = 'accalab-v3-d2798b22';
 const APP_SHELL = ['./', './index.html', './manifest.json', './static/app.js', './icon.svg'];
 
 self.addEventListener('install', (event) => {
