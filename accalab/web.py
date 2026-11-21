@@ -21,6 +21,7 @@ from accalab.config import (
     SUPABASE_URL,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_DEFAULT_CHAT_ID,
+    market_bet_type,
 )
 from accalab.db import (
     db_session,
@@ -32,6 +33,8 @@ from accalab.db import (
     utc_now_iso,
 )
 from accalab.modeling import (
+    estimate_two_way_odds,
+    extract_extended_goals_probs,
     generate_grounded_summary,
     score_matrix,
 )
@@ -40,10 +43,12 @@ from accalab.value_engine import (
     build_acca_presets,
     build_bet365_export,
     build_bet_suggestions,
+    build_custom_bets,
     devig_three_way,
     devig_two_way,
     evaluate_acca,
     find_value_opportunities,
+    get_user_already_bet_legs,
     is_fixture_upcoming,
     kelly_stake_amount,
     parse_odds_value,
@@ -494,21 +499,34 @@ def create_app() -> Flask:
             else:
                 fby = fbn = 0.0
 
+            ext_goals = extract_extended_goals_probs(fix["lambda_home"], fix["mu_away"], fix["rho"])
+            o15, u15 = estimate_two_way_odds(ext_goals["prob_over15"], base_yes=0.75)
+            fo15, fu15, _ = devig_two_way(o15, u15)
+            o35, u35 = estimate_two_way_odds(ext_goals["prob_over35"], base_yes=0.29)
+            fo35, fu35, _ = devig_two_way(o35, u35)
+
             markets = []
             for m_code, label, m_prob, odd, fair_b in [
                 ("1X2_H", f"{fix['home_team']} Win", fix["prob_home"], fix.get("b365h"), fh),
                 ("1X2_D", "Draw", fix["prob_draw"], fix.get("b365d"), fd),
                 ("1X2_A", f"{fix['away_team']} Win", fix["prob_away"], fix.get("b365a"), fa),
+                ("OU_O15", "Over 1.5 Goals", ext_goals["prob_over15"], o15, fo15),
+                ("OU_U15", "Under 1.5 Goals", ext_goals["prob_under15"], u15, fu15),
                 ("OU_O25", "Over 2.5 Goals", fix["prob_over25"], fix.get("b365_over25"), fo),
                 ("OU_U25", "Under 2.5 Goals", fix["prob_under25"], fix.get("b365_under25"), fu),
+                ("OU_O35", "Over 3.5 Goals", ext_goals["prob_over35"], o35, fo35),
+                ("OU_U35", "Under 3.5 Goals", ext_goals["prob_under35"], u35, fu35),
                 ("BTTS_Y", "BTTS Yes", fix["prob_btts_yes"], fix.get("b365_btts_yes"), fby),
                 ("BTTS_N", "BTTS No", fix["prob_btts_no"], fix.get("b365_btts_no"), fbn),
             ]:
                 edge = (m_prob * odd - 1.0) * 100.0 if odd else 0.0
                 kpct, kstake = kelly_stake_amount(m_prob, odd or 1.0, user["bankroll"], user["kelly_fraction"])
+                bt_meta = market_bet_type(m_code)
                 markets.append(
                     {
                         "market": m_code,
+                        "bet_type": bt_meta["key"],
+                        "bet_type_label": bt_meta["label"],
                         "label": label,
                         "model_prob_pct": round(m_prob * 100.0, 1),
                         "fair_odds": round(1.0 / max(m_prob, 0.01), 2),
@@ -702,9 +720,27 @@ def create_app() -> Flask:
 
     @app.route("/api/suggest-bet")
     def api_suggest_bet() -> Response:
+        exclude_already = request.args.get("exclude_already_bet") == "1"
+        exclude_scope = (request.args.get("exclude_scope") or "market_family").strip()
         with db_session() as conn:
             user = _get_active_user(conn)
-            return jsonify(build_bet_suggestions(conn, user))
+            excl = get_user_already_bet_legs(conn, user) if exclude_already else None
+            return jsonify(
+                build_bet_suggestions(
+                    conn,
+                    user,
+                    exclude_legs=excl,
+                    exclude_already_bet=exclude_already,
+                    exclude_scope=exclude_scope,
+                )
+            )
+
+    @app.route("/api/suggest-bet/build", methods=["POST"])
+    def api_suggest_bet_build() -> Response:
+        payload = request.get_json(silent=True) or {}
+        with db_session() as conn:
+            user = _get_active_user(conn)
+            return jsonify(build_custom_bets(conn, user, payload))
 
     @app.route("/api/bet365/export", methods=["POST"])
     def api_bet365_export() -> Response:

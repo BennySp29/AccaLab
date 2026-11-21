@@ -369,6 +369,42 @@ def _predict_lambdas(
     return lam, mu
 
 
+def extract_extended_goals_probs(lam: float, mu: float, rho: float) -> dict[str, float]:
+    """Compute Over/Under 1.5 and 3.5 goal probabilities from the Dixon-Coles scoreline matrix."""
+    mat = score_matrix(float(lam), float(mu), float(rho), max_goals=7)
+    p_o15 = 0.0
+    p_o35 = 0.0
+    for x, row in enumerate(mat):
+        for y, p in enumerate(row):
+            if x + y >= 2:
+                p_o15 += p
+            if x + y >= 4:
+                p_o35 += p
+    p_o15 = max(0.01, min(0.99, p_o15))
+    p_o35 = max(0.01, min(0.99, p_o35))
+    return {
+        "prob_over15": round(p_o15, 5),
+        "prob_under15": round(1.0 - p_o15, 5),
+        "prob_over35": round(p_o35, 5),
+        "prob_under35": round(1.0 - p_o35, 5),
+    }
+
+
+def estimate_two_way_odds(
+    prob_yes: float,
+    base_yes: float,
+    alpha: float = 0.60,
+    margin: float = 1.052,
+) -> tuple[float, float]:
+    """Generate calibrated 2-way estimated bookmaker odds blended with league base rates."""
+    p_yes = max(0.05, min(0.95, float(prob_yes)))
+    m_yes = max(0.08, min(0.92, alpha * p_yes + (1.0 - alpha) * float(base_yes)))
+    m_no = 1.0 - m_yes
+    o_yes = round(max(1.08, 1.0 / (m_yes * margin)), 2)
+    o_no = round(max(1.08, 1.0 / (m_no * margin)), 2)
+    return o_yes, o_no
+
+
 def _estimate_market_odds(probs: dict[str, Any], elo_h: float = 1500.0, elo_a: float = 1500.0) -> dict[str, float]:
     """Generate calibrated Bet365-margin (~5.2%) market estimates when live odds are unavailable."""
     # Blend model probabilities (68%) with English league base rates (32%) instead of double-counting Elo
@@ -379,21 +415,17 @@ def _estimate_market_odds(probs: dict[str, Any], elo_h: float = 1500.0, elo_a: f
     mh, md, ma = mh / tot, md / tot, ma / tot
 
     margin_1x2 = 1.053
-    margin_2way = 1.052
-
-    o25 = max(0.18, min(0.82, probs["prob_over25"]))
-    u25 = 1.0 - o25
-    by = max(0.18, min(0.82, probs["prob_btts_yes"]))
-    bn = 1.0 - by
+    o25, u25 = estimate_two_way_odds(probs["prob_over25"], base_yes=0.50)
+    by, bn = estimate_two_way_odds(probs["prob_btts_yes"], base_yes=0.52)
 
     return {
         "b365h": round(max(1.08, 1.0 / (mh * margin_1x2)), 2),
         "b365d": round(max(1.80, 1.0 / (md * margin_1x2)), 2),
         "b365a": round(max(1.08, 1.0 / (ma * margin_1x2)), 2),
-        "b365_over25": round(max(1.12, 1.0 / (o25 * margin_2way)), 2),
-        "b365_under25": round(max(1.12, 1.0 / (u25 * margin_2way)), 2),
-        "b365_btts_yes": round(max(1.15, 1.0 / (by * margin_2way)), 2),
-        "b365_btts_no": round(max(1.15, 1.0 / (bn * margin_2way)), 2),
+        "b365_over25": o25,
+        "b365_under25": u25,
+        "b365_btts_yes": by,
+        "b365_btts_no": bn,
     }
 
 

@@ -185,11 +185,70 @@ MARKET_LABELS = {
     "1X2_H": "Home Win",
     "1X2_D": "Draw",
     "1X2_A": "Away Win",
+    "OU_O15": "Over 1.5 Goals",
+    "OU_U15": "Under 1.5 Goals",
     "OU_O25": "Over 2.5 Goals",
     "OU_U25": "Under 2.5 Goals",
+    "OU_O35": "Over 3.5 Goals",
+    "OU_U35": "Under 3.5 Goals",
     "BTTS_Y": "BTTS Yes",
     "BTTS_N": "BTTS No",
 }
+
+MARKET_BET_TYPES: dict[str, dict[str, str]] = {
+    "1X2_H": {"key": "to_win", "label": "To Win"},
+    "1X2_A": {"key": "to_win", "label": "To Win"},
+    "1X2_D": {"key": "draw", "label": "Draw"},
+    "BTTS_Y": {"key": "btts", "label": "BTTS"},
+    "BTTS_N": {"key": "btts", "label": "BTTS"},
+    "OU_O15": {"key": "goals", "label": "Goals"},
+    "OU_U15": {"key": "goals", "label": "Goals"},
+    "OU_O25": {"key": "goals", "label": "Goals"},
+    "OU_U25": {"key": "goals", "label": "Goals"},
+    "OU_O35": {"key": "goals", "label": "Goals"},
+    "OU_U35": {"key": "goals", "label": "Goals"},
+}
+
+ALL_MARKET_CODES: frozenset[str] = frozenset(MARKET_LABELS.keys())
+
+BET_TYPE_FILTER_GROUPS: dict[str, frozenset[str]] = {
+    "ALL": ALL_MARKET_CODES,
+    "TO_WIN": frozenset({"1X2_H", "1X2_A"}),
+    "DRAW": frozenset({"1X2_D"}),
+    "1X2": frozenset({"1X2_H", "1X2_D", "1X2_A"}),
+    "BTTS": frozenset({"BTTS_Y", "BTTS_N"}),
+    "BTTS_Y": frozenset({"BTTS_Y"}),
+    "BTTS_N": frozenset({"BTTS_N"}),
+    "GOALS": frozenset({"OU_O15", "OU_U15", "OU_O25", "OU_U25", "OU_O35", "OU_U35"}),
+}
+
+
+def market_bet_type(market_code: str) -> dict[str, str]:
+    """Return canonical bet-type metadata ({key, label}) for a market code."""
+    code = str(market_code or "").strip()
+    if code in MARKET_BET_TYPES:
+        return dict(MARKET_BET_TYPES[code])
+    if code.startswith("COMBO_"):
+        return {"key": "combo", "label": "Bet Builder"}
+    return {"key": "other", "label": code or "Other"}
+
+
+def expand_bet_type_filters(filters: list[str] | str | None) -> set[str]:
+    """Expand high-level bet-type group keys or single market codes into exact market codes."""
+    if not filters:
+        return set(ALL_MARKET_CODES)
+    raw = [filters] if isinstance(filters, str) else list(filters)
+    cleaned = [str(f).strip() for f in raw if str(f).strip()]
+    if not cleaned or "ALL" in [c.upper() for c in cleaned]:
+        return set(ALL_MARKET_CODES)
+    out: set[str] = set()
+    for token in cleaned:
+        upper = token.upper()
+        if upper in BET_TYPE_FILTER_GROUPS:
+            out.update(BET_TYPE_FILTER_GROUPS[upper])
+        elif upper in MARKET_LABELS:
+            out.add(upper)
+    return out or set(ALL_MARKET_CODES)
 
 
 def normalize_team_name(name: str) -> str:

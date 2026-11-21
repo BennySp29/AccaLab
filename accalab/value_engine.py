@@ -6,13 +6,22 @@ import base64
 import json
 import sqlite3
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 
-from accalab.config import CURRENT_SEASON, LEAGUES, MARKET_LABELS, TELEGRAM_BOT_TOKEN, TELEGRAM_DEFAULT_CHAT_ID
+from accalab.config import (
+    CURRENT_SEASON,
+    LEAGUES,
+    MARKET_LABELS,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_DEFAULT_CHAT_ID,
+    expand_bet_type_filters,
+    market_bet_type,
+)
 from accalab.db import utc_now_iso
+from accalab.modeling import estimate_two_way_odds, extract_extended_goals_probs
 
 
 def devig_three_way(o1: float, o2: float, o3: float) -> tuple[float, float, float, float]:
@@ -49,35 +58,57 @@ def kelly_stake_amount(
     return round(frac_pct * 100.0, 2), round(bankroll * frac_pct, 2)
 
 
-def _market_tuples_for_fixture(row: dict[str, Any]) -> list[tuple[str, str, float, float | None, float | None]]:
-    """Return list of (market_code, selection_label, model_prob, odds, fair_bookie_prob)."""
-    items: list[tuple[str, str, float, float | None, float | None]] = []
+def _market_tuples_for_fixture(row: dict[str, Any]) -> list[tuple[str, str, float, float | None, float | None, str]]:
+    """Return list of (market_code, selection_label, model_prob, odds, fair_bookie_prob, odds_source)."""
+    items: list[tuple[str, str, float, float | None, float | None, str]] = []
+    raw_src = str(row.get("odds_source") or "market_estimate")
+    official_sources = {"bet365_official", "api_football_b365", "live_sportsbook", "user_manual"}
 
     h_o, d_o, a_o = row.get("b365h"), row.get("b365d"), row.get("b365a")
     if h_o and d_o and a_o:
         fh, fd, fa, _ = devig_three_way(h_o, d_o, a_o)
     else:
         fh = fd = fa = None
+    src_1x2 = raw_src if (raw_src in official_sources and h_o and d_o and a_o) else "market_estimate"
 
-    items.append(("1X2_H", f"{row['home_team']} Win", row["prob_home"], h_o, fh))
-    items.append(("1X2_D", "Draw", row["prob_draw"], d_o, fd))
-    items.append(("1X2_A", f"{row['away_team']} Win", row["prob_away"], a_o, fa))
+    items.append(("1X2_H", f"{row['home_team']} Win", row["prob_home"], h_o, fh, src_1x2))
+    items.append(("1X2_D", "Draw", row["prob_draw"], d_o, fd, src_1x2))
+    items.append(("1X2_A", f"{row['away_team']} Win", row["prob_away"], a_o, fa, src_1x2))
 
     o25, u25 = row.get("b365_over25"), row.get("b365_under25")
-    if o25 and u25:
-        fo, fu, _ = devig_two_way(o25, u25)
+    has_live_ou25 = raw_src in official_sources and bool(o25 and u25)
+    if not (o25 and u25):
+        o25, u25 = estimate_two_way_odds(row["prob_over25"], base_yes=0.50)
+        src_ou25 = "market_estimate"
     else:
-        fo = fu = None
-    items.append(("OU_O25", "Over 2.5 Goals", row["prob_over25"], o25, fo))
-    items.append(("OU_U25", "Under 2.5 Goals", row["prob_under25"], u25, fu))
+        src_ou25 = raw_src if has_live_ou25 else "market_estimate"
+    fo, fu, _ = devig_two_way(o25, u25)
+    items.append(("OU_O25", "Over 2.5 Goals", row["prob_over25"], o25, fo, src_ou25))
+    items.append(("OU_U25", "Under 2.5 Goals", row["prob_under25"], u25, fu, src_ou25))
 
     by, bn = row.get("b365_btts_yes"), row.get("b365_btts_no")
-    if by and bn:
-        fby, fbn, _ = devig_two_way(by, bn)
+    has_live_btts = raw_src in ("api_football_b365", "user_manual") and bool(by and bn)
+    if not (by and bn):
+        by, bn = estimate_two_way_odds(row["prob_btts_yes"], base_yes=0.52)
+        src_btts = "market_estimate"
     else:
-        fby = fbn = None
-    items.append(("BTTS_Y", "BTTS Yes", row["prob_btts_yes"], by, fby))
-    items.append(("BTTS_N", "BTTS No", row["prob_btts_no"], bn, fbn))
+        src_btts = raw_src if has_live_btts else "market_estimate"
+    fby, fbn, _ = devig_two_way(by, bn)
+    items.append(("BTTS_Y", "BTTS Yes", row["prob_btts_yes"], by, fby, src_btts))
+    items.append(("BTTS_N", "BTTS No", row["prob_btts_no"], bn, fbn, src_btts))
+
+    if row.get("lambda_home") is not None and row.get("mu_away") is not None:
+        rho_val = float(row.get("rho") if row.get("rho") is not None else -0.04)
+        ext = extract_extended_goals_probs(float(row["lambda_home"]), float(row["mu_away"]), rho_val)
+        o15, u15 = estimate_two_way_odds(ext["prob_over15"], base_yes=0.75)
+        fo15, fu15, _ = devig_two_way(o15, u15)
+        items.append(("OU_O15", "Over 1.5 Goals", ext["prob_over15"], o15, fo15, "market_estimate"))
+        items.append(("OU_U15", "Under 1.5 Goals", ext["prob_under15"], u15, fu15, "market_estimate"))
+
+        o35, u35 = estimate_two_way_odds(ext["prob_over35"], base_yes=0.29)
+        fo35, fu35, _ = devig_two_way(o35, u35)
+        items.append(("OU_O35", "Over 3.5 Goals", ext["prob_over35"], o35, fo35, "market_estimate"))
+        items.append(("OU_U35", "Under 3.5 Goals", ext["prob_under35"], u35, fu35, "market_estimate"))
 
     return items
 
@@ -95,7 +126,7 @@ def find_value_opportunities(
     sql = """
         SELECT f.*, p.prob_home, p.prob_draw, p.prob_away,
                p.prob_over25, p.prob_under25, p.prob_btts_yes, p.prob_btts_no,
-               p.lambda_home, p.mu_away
+               p.lambda_home, p.mu_away, p.rho
         FROM upcoming_fixtures f
         JOIN predictions p ON p.fixture_id = f.id
         WHERE f.status = 'scheduled'
@@ -117,12 +148,15 @@ def find_value_opportunities(
     for b in conn.execute("SELECT * FROM backtest_results").fetchall():
         bt_map[(b["div"], b["market"])] = dict(b)
 
+    allowed_markets = expand_bet_type_filters(market_filter) if market_filter else None
+    official_sources = {"bet365_official", "api_football_b365", "live_sportsbook", "user_manual"}
+
     opportunities: list[dict[str, Any]] = []
     for row in rows:
-        for m_code, sel_label, m_prob, odds, fair_b_prob in _market_tuples_for_fixture(row):
-            if market_filter and m_code != market_filter:
+        for m_code, sel_label, m_prob, odds, fair_b_prob, mkt_odds_source in _market_tuples_for_fixture(row):
+            if allowed_markets is not None and m_code not in allowed_markets:
                 continue
-            if official_only and row["odds_source"] in ("bet365_official", "live_sportsbook") and m_code.startswith("BTTS"):
+            if official_only and mkt_odds_source not in official_sources:
                 continue
             if not odds or odds <= 1.01:
                 continue
@@ -131,7 +165,7 @@ def find_value_opportunities(
                 continue
 
             kelly_pct, stake_gbp = kelly_stake_amount(m_prob, odds, bankroll, kelly_fraction)
-            bt_key = (row["div"], "1X2" if m_code.startswith("1X2") else "O/U 2.5")
+            bt_key = (row["div"], "1X2" if m_code.startswith("1X2") else ("BTTS" if m_code.startswith("BTTS") else "O/U 2.5"))
             bt = bt_map.get(bt_key)
             backtest_roi = bt["flat_roi_pct"] if bt else None
             trust_badge = (
@@ -139,6 +173,7 @@ def find_value_opportunities(
                 if (bt and bt["flat_roi_pct"] > 0 and bt["value_bets_count"] >= 10)
                 else ("Positive CLV" if (bt and bt["avg_clv_pct"] > 0) else "Model Edge")
             )
+            bt_meta = market_bet_type(m_code)
 
             opportunities.append(
                 {
@@ -151,6 +186,8 @@ def find_value_opportunities(
                     "away_team": row["away_team"],
                     "market": m_code,
                     "market_label": MARKET_LABELS.get(m_code, m_code),
+                    "bet_type": bt_meta["key"],
+                    "bet_type_label": bt_meta["label"],
                     "selection_label": sel_label,
                     "odds": round(odds, 2),
                     "fair_odds": round(1.0 / max(m_prob, 0.01), 2),
@@ -159,7 +196,7 @@ def find_value_opportunities(
                     "edge_pct": round(edge_pct, 2),
                     "kelly_pct": kelly_pct,
                     "suggested_stake": stake_gbp,
-                    "odds_source": row["odds_source"],
+                    "odds_source": mkt_odds_source,
                     "trust_badge": trust_badge,
                     "backtest_roi_pct": backtest_roi,
                 }
@@ -241,7 +278,8 @@ def build_acca_presets(conn: sqlite3.Connection, bankroll: float = 250.0) -> lis
         for r in conn.execute(
             """
             SELECT f.*, p.prob_home, p.prob_draw, p.prob_away,
-                   p.prob_over25, p.prob_under25, p.prob_btts_yes, p.prob_btts_no
+                   p.prob_over25, p.prob_under25, p.prob_btts_yes, p.prob_btts_no,
+                   p.lambda_home, p.mu_away, p.rho
             FROM upcoming_fixtures f
             JOIN predictions p ON p.fixture_id = f.id
             WHERE f.status = 'scheduled'
@@ -255,10 +293,11 @@ def build_acca_presets(conn: sqlite3.Connection, bankroll: float = 250.0) -> lis
 
     candidates: list[dict[str, Any]] = []
     for r in all_rows:
-        for m_code, sel_label, m_prob, odds, _ in _market_tuples_for_fixture(r):
+        for m_code, sel_label, m_prob, odds, _, mkt_src in _market_tuples_for_fixture(r):
             if not odds or odds <= 1.05:
                 continue
             edge_pct = (m_prob * odds - 1.0) * 100.0
+            bt_meta = market_bet_type(m_code)
             candidates.append(
                 {
                     "fixture_id": r["id"],
@@ -268,11 +307,13 @@ def build_acca_presets(conn: sqlite3.Connection, bankroll: float = 250.0) -> lis
                     "home_team": r["home_team"],
                     "away_team": r["away_team"],
                     "market": m_code,
+                    "bet_type": bt_meta["key"],
+                    "bet_type_label": bt_meta["label"],
                     "selection_label": sel_label,
                     "odds": round(odds, 2),
                     "model_prob": round(m_prob, 5),
                     "edge_pct": round(edge_pct, 2),
-                    "odds_source": r["odds_source"],
+                    "odds_source": mkt_src,
                 }
             )
 
@@ -354,10 +395,18 @@ def _leg_won(market: str, fthg: int, ftag: int) -> bool:
         return fthg == ftag
     if market == "1X2_A":
         return ftag > fthg
+    if market == "OU_O15":
+        return (fthg + ftag) >= 2
+    if market == "OU_U15":
+        return (fthg + ftag) <= 1
     if market == "OU_O25":
         return (fthg + ftag) >= 3
     if market == "OU_U25":
         return (fthg + ftag) <= 2
+    if market == "OU_O35":
+        return (fthg + ftag) >= 4
+    if market == "OU_U35":
+        return (fthg + ftag) <= 3
     if market == "BTTS_Y":
         return fthg >= 1 and ftag >= 1
     if market == "BTTS_N":
@@ -592,8 +641,12 @@ _BET365_MARKET_NAMES: dict[str, str] = {
     "1X2_H": "Full Time Result",
     "1X2_D": "Full Time Result",
     "1X2_A": "Full Time Result",
+    "OU_O15": "Goals Over/Under",
+    "OU_U15": "Goals Over/Under",
     "OU_O25": "Goals Over/Under",
     "OU_U25": "Goals Over/Under",
+    "OU_O35": "Goals Over/Under",
+    "OU_U35": "Goals Over/Under",
     "BTTS_Y": "Both Teams to Score",
     "BTTS_N": "Both Teams to Score",
 }
@@ -607,10 +660,18 @@ def _bet365_selection_name(leg: dict[str, Any]) -> str:
         return "Draw"
     if mkt == "1X2_A":
         return str(leg.get("away_team") or leg.get("selection_label") or "Away")
+    if mkt == "OU_O15":
+        return "Over 1.5"
+    if mkt == "OU_U15":
+        return "Under 1.5"
     if mkt == "OU_O25":
         return "Over 2.5"
     if mkt == "OU_U25":
         return "Under 2.5"
+    if mkt == "OU_O35":
+        return "Over 3.5"
+    if mkt == "OU_U35":
+        return "Under 3.5"
     if mkt == "BTTS_Y":
         return "Yes"
     if mkt == "BTTS_N":
@@ -763,13 +824,259 @@ def _pick_distinct_fixtures(items: list[dict[str, Any]], count: int) -> list[dic
     return picked
 
 
-def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dict[str, Any]:
-    """Synthesize stats, Dixon-Coles/Elo, backtest ROI, Bet365 prices & news into 4 ready-to-bet suggestions."""
+def _market_family(market: str) -> str:
+    m = str(market or "").strip()
+    if m.startswith("1X2_"):
+        return "1X2"
+    if m.startswith("BTTS_"):
+        return "BTTS"
+    if m.startswith("OU_"):
+        return "OU"
+    return m
+
+
+def _canonical_match_key(item: dict[str, Any]) -> str:
+    mdate = str(item.get("match_date") or "")[:10].strip()
+    home = str(item.get("home_team") or "").strip().lower()
+    away = str(item.get("away_team") or "").strip().lower()
+    return f"{mdate}|{home}|{away}" if (home and away) else ""
+
+
+def _matches_kickoff_filter(row: dict[str, Any], mode: str, now_dt: datetime | None = None) -> bool:
+    clean_mode = str(mode or "ALL").strip().upper()
+    if not clean_mode or clean_mode == "ALL":
+        return True
+    mdate = str(row.get("match_date") or "").strip()
+    if not mdate:
+        return True
+    current = now_dt or datetime.now(timezone.utc)
+    today_iso = current.strftime("%Y-%m-%d")
+    if clean_mode == "TODAY":
+        return mdate == today_iso
+    try:
+        dt = datetime.strptime(mdate[:10], "%Y-%m-%d")
+    except ValueError:
+        return True
+    dow = dt.weekday()  # 0=Mon .. 4=Fri, 5=Sat, 6=Sun
+    ktime = str(row.get("kickoff_time") or "").strip()
+    if clean_mode == "SAT_3PM":
+        return dow == 5 and (not ktime or "14:45" <= ktime <= "15:15")
+    if clean_mode == "WEEKEND":
+        return dow in (5, 6) or (dow == 4 and (not ktime or ktime >= "18:00"))
+    if clean_mode == "MIDWEEK":
+        return dow in (0, 1, 2, 3)
+    return True
+
+
+def get_user_already_bet_legs(
+    conn: sqlite3.Connection,
+    user: dict[str, Any],
+    include_bets: bool = True,
+    include_saved: bool = True,
+    include_slip: bool = True,
+) -> list[dict[str, Any]]:
+    """Collect upcoming/pending legs the user already bet on, saved as drafts, or holds in their slip."""
+    uid = int(user.get("id") or 0)
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    collected: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _push(leg: dict[str, Any], source: str) -> None:
+        mkey = _canonical_match_key(leg)
+        fid_str = str(leg.get("fixture_id") or "")
+        ident = mkey or fid_str
+        mkt = str(leg.get("market") or "").strip()
+        if not ident or not mkt:
+            return
+        dedup_k = (f"{ident}:{mkt}", source)
+        if dedup_k in seen:
+            return
+        seen.add(dedup_k)
+        collected.append(
+            {
+                "fixture_id": leg.get("fixture_id"),
+                "match_date": str(leg.get("match_date") or "")[:10],
+                "home_team": str(leg.get("home_team") or ""),
+                "away_team": str(leg.get("away_team") or ""),
+                "market": mkt,
+                "selection_label": str(leg.get("selection_label") or MARKET_LABELS.get(mkt, mkt)),
+                "source": source,
+            }
+        )
+
+    if uid > 0 and include_bets:
+        rows = conn.execute(
+            """
+            SELECT bl.fixture_id, bl.match_date, bl.home_team, bl.away_team,
+                   bl.market, bl.selection_label
+            FROM bet_legs bl
+            JOIN bets b ON b.id = bl.bet_id
+            WHERE b.user_id = ? AND (b.status = 'pending' OR bl.match_date >= ?)
+            ORDER BY b.placed_at DESC
+            """,
+            (uid, today_iso),
+        ).fetchall()
+        for r in rows:
+            _push(dict(r), "placed")
+
+    if uid > 0 and include_saved:
+        saved_rows = conn.execute(
+            "SELECT legs_json FROM saved_accas WHERE user_id = ? ORDER BY created_at DESC",
+            (uid,),
+        ).fetchall()
+        for sr in saved_rows:
+            try:
+                legs = json.loads(sr["legs_json"] or "[]")
+            except json.JSONDecodeError:
+                legs = []
+            if not isinstance(legs, list):
+                continue
+            for lg in legs:
+                if not isinstance(lg, dict):
+                    continue
+                md = str(lg.get("match_date") or "")[:10]
+                if not md or md >= today_iso:
+                    _push(lg, "saved_acca")
+
+    if include_slip:
+        for lg in user.get("active_slip") or []:
+            if not isinstance(lg, dict):
+                continue
+            md = str(lg.get("match_date") or "")[:10]
+            if not md or md >= today_iso:
+                _push(lg, "slip")
+
+    return collected
+
+
+def _build_exclusion_sets(legs: list[dict[str, Any]]) -> dict[str, set[Any]]:
+    fixture_ids: set[int] = set()
+    match_keys: set[str] = set()
+    exact_fid_mkts: set[tuple[int, str]] = set()
+    exact_key_mkts: set[tuple[str, str]] = set()
+    fam_fid_mkts: set[tuple[int, str]] = set()
+    fam_key_mkts: set[tuple[str, str]] = set()
+
+    for lg in legs:
+        if not isinstance(lg, dict):
+            continue
+        fid = lg.get("fixture_id")
+        fid_int = int(fid) if fid is not None and str(fid).isdigit() else None
+        mkey = _canonical_match_key(lg)
+        mkt = str(lg.get("market") or "").strip()
+        fam = _market_family(mkt)
+        if fid_int is not None:
+            fixture_ids.add(fid_int)
+            if mkt:
+                exact_fid_mkts.add((fid_int, mkt))
+                fam_fid_mkts.add((fid_int, fam))
+        if mkey:
+            match_keys.add(mkey)
+            if mkt:
+                exact_key_mkts.add((mkey, mkt))
+                fam_key_mkts.add((mkey, fam))
+
+    return {
+        "fixture_ids": fixture_ids,
+        "match_keys": match_keys,
+        "exact_fid_mkts": exact_fid_mkts,
+        "exact_key_mkts": exact_key_mkts,
+        "fam_fid_mkts": fam_fid_mkts,
+        "fam_key_mkts": fam_key_mkts,
+    }
+
+
+def _is_candidate_excluded(
+    cand: dict[str, Any],
+    excl_sets: dict[str, set[Any]],
+    scope: str = "market_family",
+) -> bool:
+    fid = cand.get("fixture_id")
+    fid_int = int(fid) if fid is not None and str(fid).isdigit() else None
+    mkey = _canonical_match_key(cand)
+    if scope == "fixture":
+        if fid_int is not None and fid_int in excl_sets["fixture_ids"]:
+            return True
+        if mkey and mkey in excl_sets["match_keys"]:
+            return True
+        return False
+
+    mkt = str(cand.get("market") or "").strip()
+    fam = _market_family(mkt)
+    if fid_int is not None:
+        if (fid_int, mkt) in excl_sets["exact_fid_mkts"] or (fid_int, fam) in excl_sets["fam_fid_mkts"]:
+            return True
+    if mkey:
+        if (mkey, mkt) in excl_sets["exact_key_mkts"] or (mkey, fam) in excl_sets["fam_key_mkts"]:
+            return True
+    return False
+
+
+def _build_suggestion_package(
+    pkg_id: str,
+    risk_level: str,
+    title: str,
+    badge: str,
+    subtitle: str,
+    legs: list[dict[str, Any]],
+    stake: float,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    avg_conf = int(round(sum(l["confidence_score"] for l in legs) / max(1, len(legs))))
+    merged_reasons: list[str] = []
+    seen_r: set[str] = set()
+    for l in legs:
+        for rsn in l.get("reasons", [])[: (4 if len(legs) == 1 else 2)]:
+            if rsn not in seen_r:
+                seen_r.add(rsn)
+                merged_reasons.append(rsn)
+    clean_legs = []
+    for l in legs:
+        bt_meta = market_bet_type(l["market"])
+        clean_legs.append(
+            {
+                "fixture_id": l["fixture_id"],
+                "div": l["div"],
+                "league_name": l["league_name"],
+                "match_date": l["match_date"],
+                "kickoff_time": l.get("kickoff_time") or "",
+                "home_team": l["home_team"],
+                "away_team": l["away_team"],
+                "market": l["market"],
+                "bet_type": l.get("bet_type") or bt_meta["key"],
+                "bet_type_label": l.get("bet_type_label") or bt_meta["label"],
+                "selection_label": l["selection_label"],
+                "odds": l["odds"],
+                "odds_fractional": l.get("odds_fractional") or decimal_to_fractional(l["odds"]),
+                "model_prob": l["model_prob"],
+                "edge_pct": l["edge_pct"],
+                "odds_source": l["odds_source"],
+            }
+        )
+    ev = evaluate_acca(clean_legs, stake=stake)
+    ev["combined_odds_fractional"] = decimal_to_fractional(ev.get("combined_odds"))
+    b365 = build_bet365_export(clean_legs, stake=stake, title=title)
+    pkg: dict[str, Any] = {
+        "id": pkg_id,
+        "risk_level": risk_level,
+        "title": title,
+        "badge": badge,
+        "subtitle": subtitle,
+        "confidence_score": avg_conf,
+        "stake": round(stake, 2),
+        "legs": clean_legs,
+        "eval": ev,
+        "reasons": merged_reasons[:4],
+        "bet365_export": b365,
+    }
+    if extra:
+        pkg.update(extra)
+    return pkg
+
+
+def _build_scored_candidates(conn: sqlite3.Connection, user: dict[str, Any]) -> list[dict[str, Any]]:
     bankroll = float(user.get("bankroll") or 250.0)
     kelly_frac = float(user.get("kelly_fraction") or 0.25)
-    default_stake = float(user.get("default_stake") or 10.0)
-    fav_teams = set(user.get("favourite_teams") or [])
-    pref_leagues = set(user.get("preferred_leagues") or LEAGUES.keys())
 
     rows = [
         dict(r)
@@ -777,7 +1084,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
             """
             SELECT f.*, p.prob_home, p.prob_draw, p.prob_away,
                    p.prob_over25, p.prob_under25, p.prob_btts_yes, p.prob_btts_no,
-                   p.lambda_home, p.mu_away,
+                   p.lambda_home, p.mu_away, p.rho,
                    hr.elo AS home_elo, hr.form_last6 AS home_form,
                    hr.sot_for_pg AS h_sot_for, hr.sot_against_pg AS h_sot_ag,
                    ar.elo AS away_elo, ar.form_last6 AS away_form,
@@ -794,7 +1101,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
 
     rows = [r for r in rows if is_fixture_upcoming(r)] or rows
     if not rows:
-        return {"risk_levels": [], "by_risk": {}, "suggestions": [], "by_id": {}, "top_single": None}
+        return []
 
     bt_map: dict[tuple[str, str], dict[str, Any]] = {
         (b["div"], b["market"]): dict(b)
@@ -806,6 +1113,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
         for team in json.loads(nd.get("matched_teams_json") or "[]"):
             news_by_team.setdefault(team, []).append(nd)
 
+    official_sources = {"bet365_official", "api_football_b365", "live_sportsbook", "user_manual"}
     candidates: list[dict[str, Any]] = []
     for r in rows:
         h_elo = float(r.get("home_elo") or 1500.0)
@@ -816,15 +1124,13 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
         a_sot_ag = float(r.get("a_sot_ag") or 0.0)
         h_form = r.get("home_form") or "N/A"
         a_form = r.get("away_form") or "N/A"
-        is_official = r["odds_source"] in ("bet365_official", "api_football_b365", "live_sportsbook", "user_manual")
         matched_news = (news_by_team.get(r["home_team"], []) + news_by_team.get(r["away_team"], []))[:1]
 
-        for m_code, sel_label, m_prob, odds, _ in _market_tuples_for_fixture(r):
-            if not odds or odds < 1.25 or odds > 5.50:
-                continue
-            if r["odds_source"] in ("bet365_official", "live_sportsbook") and m_code.startswith("BTTS"):
+        for m_code, sel_label, m_prob, odds, _, mkt_src in _market_tuples_for_fixture(r):
+            if not odds or odds < 1.05 or odds > 10.0:
                 continue
 
+            is_official = mkt_src in official_sources
             edge_pct = (m_prob * odds - 1.0) * 100.0
             bt_key = (r["div"], "1X2" if m_code.startswith("1X2") else ("BTTS" if m_code.startswith("BTTS") else "O/U 2.5"))
             bt = bt_map.get(bt_key)
@@ -837,11 +1143,12 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
             h_sot_diff = h_sot_for - h_sot_ag
             a_sot_diff = a_sot_for - a_sot_ag
             elo_gap = h_elo - a_elo
+            tot_xg = float(r["lambda_home"]) + float(r["mu_away"])
             aligned = (
                 (m_code == "1X2_H" and elo_gap >= 30 and h_sot_diff >= a_sot_diff)
                 or (m_code == "1X2_A" and elo_gap <= -30 and a_sot_diff >= h_sot_diff)
-                or (m_code in ("OU_O25", "BTTS_Y") and (r["lambda_home"] + r["mu_away"]) >= 2.75)
-                or (m_code == "OU_U25" and (r["lambda_home"] + r["mu_away"]) <= 2.35)
+                or (m_code in ("OU_O15", "OU_O25", "OU_O35", "BTTS_Y") and tot_xg >= 2.75)
+                or (m_code in ("OU_U15", "OU_U25", "OU_U35", "BTTS_N") and tot_xg <= 2.35)
                 or (m_code == "1X2_D" and abs(elo_gap) <= 35)
             )
             bt_bonus = 6.0 if (bt and bt["flat_roi_pct"] > 0 and bt["value_bets_count"] >= 10) else (3.0 if (bt and bt["avg_clv_pct"] > 0) else 0.0)
@@ -850,6 +1157,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
             raw_conf = 35.0 + edge_pct * 2.2 + m_prob * 45.0 + bt_bonus + off_bonus + align_bonus
             conf_score = int(max(45, min(98, round(raw_conf))))
             _, k_stake = kelly_stake_amount(m_prob, odds, bankroll, kelly_frac)
+            bt_meta = market_bet_type(m_code)
 
             reasons = [
                 f"Model rates {sel_label} at {m_prob*100:.1f}% (fair {decimal_to_fractional(1.0/max(m_prob,0.01))}) vs {decimal_to_fractional(odds)} odds ({edge_pct:+.1f}% edge), xG {r['lambda_home']:.2f}–{r['mu_away']:.2f}.",
@@ -873,21 +1181,55 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
                     "home_team": r["home_team"],
                     "away_team": r["away_team"],
                     "market": m_code,
+                    "bet_type": bt_meta["key"],
+                    "bet_type_label": bt_meta["label"],
                     "selection_label": sel_label,
                     "odds": round(odds, 2),
                     "odds_fractional": decimal_to_fractional(odds),
-                    "total_xg": round(float(r["lambda_home"]) + float(r["mu_away"]), 2),
+                    "total_xg": round(tot_xg, 2),
                     "model_prob": round(m_prob, 5),
                     "model_prob_pct": round(m_prob * 100.0, 1),
                     "edge_pct": round(edge_pct, 2),
                     "confidence_score": conf_score,
                     "kelly_stake": k_stake,
-                    "odds_source": r["odds_source"],
+                    "odds_source": mkt_src,
                     "is_official": is_official,
                     "trust_badge": trust_badge,
                     "reasons": reasons,
                 }
             )
+
+    return candidates
+
+
+def build_bet_suggestions(
+    conn: sqlite3.Connection,
+    user: dict[str, Any],
+    exclude_legs: list[dict[str, Any]] | None = None,
+    exclude_already_bet: bool = False,
+    exclude_scope: str = "market_family",
+) -> dict[str, Any]:
+    """Synthesize stats, Dixon-Coles/Elo, backtest ROI, Bet365 prices & news into 4 ready-to-bet suggestions."""
+    default_stake = float(user.get("default_stake") or 10.0)
+    fav_teams = set(user.get("favourite_teams") or [])
+    pref_leagues = set(user.get("preferred_leagues") or LEAGUES.keys())
+
+    all_cands = _build_scored_candidates(conn, user)
+    candidates = [c for c in all_cands if 1.25 <= c["odds"] <= 5.50]
+    if not candidates:
+        candidates = list(all_cands)
+
+    if exclude_already_bet or exclude_legs:
+        combined_excl = (
+            get_user_already_bet_legs(conn, user) if exclude_already_bet else []
+        ) + list(exclude_legs or [])
+        if combined_excl:
+            excl_sets = _build_exclusion_sets(combined_excl)
+            filtered = [
+                c for c in candidates if not _is_candidate_excluded(c, excl_sets, scope=exclude_scope)
+            ]
+            if filtered:
+                candidates = filtered
 
     if not candidates:
         return {"risk_levels": [], "by_risk": {}, "suggestions": [], "by_id": {}, "top_single": None}
@@ -901,49 +1243,7 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
         legs: list[dict[str, Any]],
         stake: float,
     ) -> dict[str, Any]:
-        avg_conf = int(round(sum(l["confidence_score"] for l in legs) / max(1, len(legs))))
-        merged_reasons: list[str] = []
-        seen_r: set[str] = set()
-        for l in legs:
-            for rsn in l["reasons"][: (4 if len(legs) == 1 else 2)]:
-                if rsn not in seen_r:
-                    seen_r.add(rsn)
-                    merged_reasons.append(rsn)
-        clean_legs = [
-            {
-                "fixture_id": l["fixture_id"],
-                "div": l["div"],
-                "league_name": l["league_name"],
-                "match_date": l["match_date"],
-                "kickoff_time": l.get("kickoff_time") or "",
-                "home_team": l["home_team"],
-                "away_team": l["away_team"],
-                "market": l["market"],
-                "selection_label": l["selection_label"],
-                "odds": l["odds"],
-                "odds_fractional": l.get("odds_fractional") or decimal_to_fractional(l["odds"]),
-                "model_prob": l["model_prob"],
-                "edge_pct": l["edge_pct"],
-                "odds_source": l["odds_source"],
-            }
-            for l in legs
-        ]
-        ev = evaluate_acca(clean_legs, stake=stake)
-        ev["combined_odds_fractional"] = decimal_to_fractional(ev.get("combined_odds"))
-        b365 = build_bet365_export(clean_legs, stake=stake, title=title)
-        return {
-            "id": pkg_id,
-            "risk_level": risk_level,
-            "title": title,
-            "badge": badge,
-            "subtitle": subtitle,
-            "confidence_score": avg_conf,
-            "stake": round(stake, 2),
-            "legs": clean_legs,
-            "eval": ev,
-            "reasons": merged_reasons[:4],
-            "bet365_export": b365,
-        }
+        return _build_suggestion_package(pkg_id, risk_level, title, badge, subtitle, legs, stake)
 
     def _pool_or_fallback(preferred: list[dict[str, Any]], needed: int, fallback_sorted: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if len({c["fixture_id"] for c in preferred}) >= needed:
@@ -1247,4 +1547,272 @@ def build_bet_suggestions(conn: sqlite3.Connection, user: dict[str, Any]) -> dic
         "suggestions": primary_suggestions,
         "by_id": by_id,
         "top_single": pkg_low_single,
+    }
+
+
+_CUSTOM_BET_TYPE_LABELS: dict[str, str] = {
+    "ALL": "Any Mix",
+    "TO_WIN": "To Win",
+    "DRAW": "Draw",
+    "1X2": "Match Result",
+    "BTTS": "BTTS",
+    "BTTS_Y": "BTTS Yes",
+    "BTTS_N": "BTTS No",
+    "GOALS": "Goals",
+    "OU_O15": "Over 1.5",
+    "OU_U15": "Under 1.5",
+    "OU_O25": "Over 2.5",
+    "OU_U25": "Under 2.5",
+    "OU_O35": "Over 3.5",
+    "OU_U35": "Under 3.5",
+}
+
+
+def _score_candidate_for_risk(c: dict[str, Any], risk_level: str) -> float:
+    odds = float(c["odds"])
+    prob = float(c["model_prob"])
+    edge = float(c["edge_pct"])
+    conf = float(c["confidence_score"])
+    off = 4.0 if c.get("is_official") else 0.0
+    if risk_level == "low":
+        return prob * 100.0 + edge * 1.3 + off - max(0.0, odds - 2.35) * 14.0
+    if risk_level == "high":
+        return edge * 1.8 + min(odds, 4.5) * 6.5 + conf * 0.2 - max(0.0, 1.50 - odds) * 12.0
+    if risk_level == "longshot":
+        return edge * 1.6 + min(odds, 7.0) * 8.0 + prob * 15.0 - max(0.0, 1.80 - odds) * 14.0
+    # medium (default)
+    return edge * 1.6 + prob * 45.0 + conf * 0.25 + off * 0.5 - max(0.0, odds - 3.80) * 6.0
+
+
+def build_custom_bets(
+    conn: sqlite3.Connection,
+    user: dict[str, Any],
+    criteria: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build 1..5 custom single/accumulator bets matching user criteria while excluding already-bet legs."""
+    cfg = criteria or {}
+    bet_types_raw = cfg.get("bet_types") or ["ALL"]
+    if isinstance(bet_types_raw, str):
+        bet_types_raw = [bet_types_raw]
+    bet_types_clean = [str(t).strip().upper() for t in bet_types_raw if str(t).strip()] or ["ALL"]
+    allowed_markets = expand_bet_type_filters(bet_types_clean)
+
+    risk_level = str(cfg.get("risk_level") or "medium").strip().lower()
+    if risk_level not in ("low", "medium", "high", "longshot"):
+        risk_level = "medium"
+
+    try:
+        legs_count = max(1, min(8, int(cfg.get("legs_count") or 4)))
+    except (TypeError, ValueError):
+        legs_count = 4
+    try:
+        num_bets = max(1, min(5, int(cfg.get("num_bets") or 1)))
+    except (TypeError, ValueError):
+        num_bets = 1
+
+    div_filter = str(cfg.get("div") or "").strip()
+    kickoff_filter = str(cfg.get("kickoff_filter") or "ALL").strip().upper()
+    official_only = bool(cfg.get("official_only", False))
+    exclude_already_bet = bool(cfg.get("exclude_already_bet", True))
+    exclude_scope = str(cfg.get("exclude_scope") or "market_family").strip()
+    if exclude_scope not in ("market_family", "fixture"):
+        exclude_scope = "market_family"
+    include_saved = bool(cfg.get("include_saved", True))
+    include_slip = bool(cfg.get("include_slip", True))
+
+    all_cands = _build_scored_candidates(conn, user)
+    if not all_cands:
+        return {
+            "bets": [],
+            "requested_bets": num_bets,
+            "requested_legs": legs_count,
+            "excluded_count": 0,
+            "available_pool_count": 0,
+            "notice": "No scheduled fixtures available yet — click Smart Sync Data first.",
+        }
+
+    excl_legs: list[dict[str, Any]] = []
+    if exclude_already_bet:
+        excl_legs.extend(
+            get_user_already_bet_legs(
+                conn, user, include_bets=True, include_saved=include_saved, include_slip=include_slip
+            )
+        )
+        for cl in cfg.get("excluded_legs") or []:
+            if isinstance(cl, dict):
+                excl_legs.append(cl)
+    excl_sets = _build_exclusion_sets(excl_legs)
+
+    avoid_legs = [al for al in (cfg.get("avoid_legs") or []) if isinstance(al, dict)]
+    avoid_sets = _build_exclusion_sets(avoid_legs)
+
+    pref_leagues = set(user.get("preferred_leagues") or LEAGUES.keys())
+    pool: list[dict[str, Any]] = []
+    for c in all_cands:
+        if c["market"] not in allowed_markets:
+            continue
+        if c["odds"] < 1.08 or c["odds"] > 10.0:
+            continue
+        if div_filter == "PREFERRED":
+            if pref_leagues and c["div"] not in pref_leagues:
+                continue
+        elif div_filter in LEAGUES and c["div"] != div_filter:
+            continue
+        if not _matches_kickoff_filter(c, kickoff_filter):
+            continue
+        if official_only and not c.get("is_official"):
+            continue
+        if exclude_already_bet and _is_candidate_excluded(c, excl_sets, scope=exclude_scope):
+            continue
+        if avoid_legs and _is_candidate_excluded(c, avoid_sets, scope="market_family"):
+            continue
+        scored = dict(c)
+        scored["_score"] = _score_candidate_for_risk(c, risk_level)
+        pool.append(scored)
+
+    pool.sort(key=lambda x: (x["_score"], x["edge_pct"], x["model_prob"]), reverse=True)
+    dedup_excl_count = len(
+        {
+            f"{_canonical_match_key(l) or l.get('fixture_id')}:{l.get('market')}"
+            for l in excl_legs
+            if l.get("market")
+        }
+    )
+
+    if not pool:
+        return {
+            "bets": [],
+            "requested_bets": num_bets,
+            "requested_legs": legs_count,
+            "excluded_count": dedup_excl_count,
+            "available_pool_count": 0,
+            "notice": "No matching legs found for these criteria — try enabling more bet types, leagues, or turning off strict exclusions.",
+        }
+
+    default_stake = float(user.get("default_stake") or 10.0)
+    stake_by_risk = {
+        "low": round(max(5.0, default_stake), 2),
+        "medium": round(default_stake, 2),
+        "high": 5.0,
+        "longshot": 2.0,
+    }
+    bet_stake = stake_by_risk[risk_level]
+    risk_names = {
+        "low": "Low Risk",
+        "medium": "Balanced",
+        "high": "High Risk",
+        "longshot": "Longshot",
+    }
+
+    if "ALL" in bet_types_clean:
+        bt_summary = "Mixed"
+    elif len(bet_types_clean) <= 2:
+        bt_summary = " + ".join(_CUSTOM_BET_TYPE_LABELS.get(t, t) for t in bet_types_clean)
+    else:
+        bt_summary = f"{len(bet_types_clean)} Bet Types"
+
+    distinct_bet_type_keys = {market_bet_type(m)["key"] for m in allowed_markets}
+    multi_type_mode = len(distinct_bet_type_keys) > 1 or len(allowed_markets) > 2
+
+    def _cand_match_id(c: dict[str, Any]) -> str:
+        return _canonical_match_key(c) or f"fid:{c['fixture_id']}"
+
+    used_match_keys_all: set[str] = set()
+    used_family_keys_all: set[tuple[str, str]] = set()
+    for al in avoid_legs:
+        mk = _canonical_match_key(al) or (f"fid:{al['fixture_id']}" if al.get("fixture_id") else "")
+        if mk:
+            used_match_keys_all.add(mk)
+            used_family_keys_all.add((mk, _market_family(str(al.get("market") or ""))))
+
+    built_bets: list[dict[str, Any]] = []
+    notice = ""
+
+    for b_idx in range(num_bets):
+        picked: list[dict[str, Any]] = []
+        used_this_bet: set[str] = set()
+        type_counts: dict[str, int] = {}
+
+        def _pick_next(allow_reused_fixture: bool) -> dict[str, Any] | None:
+            best_c: dict[str, Any] | None = None
+            best_adj = -1e18
+            for c in pool:
+                mk = _cand_match_id(c)
+                fam = _market_family(c["market"])
+                if mk in used_this_bet:
+                    continue
+                if (mk, fam) in used_family_keys_all:
+                    continue
+                if not allow_reused_fixture and mk in used_match_keys_all:
+                    continue
+                adj = c["_score"]
+                if multi_type_mode:
+                    adj -= type_counts.get(c["bet_type"], 0) * 4.5
+                if adj > best_adj:
+                    best_adj = adj
+                    best_c = c
+            return best_c
+
+        while len(picked) < legs_count:
+            nxt = _pick_next(allow_reused_fixture=False)
+            if not nxt:
+                break
+            picked.append(nxt)
+            mk = _cand_match_id(nxt)
+            used_this_bet.add(mk)
+            type_counts[nxt["bet_type"]] = type_counts.get(nxt["bet_type"], 0) + 1
+
+        if len(picked) < legs_count and len(allowed_markets) > 1:
+            while len(picked) < legs_count:
+                nxt = _pick_next(allow_reused_fixture=True)
+                if not nxt:
+                    break
+                picked.append(nxt)
+                mk = _cand_match_id(nxt)
+                used_this_bet.add(mk)
+                type_counts[nxt["bet_type"]] = type_counts.get(nxt["bet_type"], 0) + 1
+
+        if not picked:
+            notice = (
+                f"Stopped at {len(built_bets)} of {num_bets} requested bets — not enough unique fixtures left matching your criteria."
+            )
+            break
+        if b_idx > 0 and len(picked) < legs_count:
+            notice = (
+                f"Built {len(built_bets)} full {legs_count}-leg bets (not enough unused matches left for bet #{b_idx + 1})."
+            )
+            break
+
+        for leg in picked:
+            mk = _cand_match_id(leg)
+            used_match_keys_all.add(mk)
+            used_family_keys_all.add((mk, _market_family(leg["market"])))
+
+        fold_label = "Single" if len(picked) == 1 else f"{len(picked)}-Fold"
+        title = f"{bt_summary} {fold_label} #{b_idx + 1}" if num_bets > 1 else f"{bt_summary} {fold_label}"
+        subtitle = (
+            f"{risk_names[risk_level]} • {len(picked)} {'leg' if len(picked) == 1 else 'legs'}"
+            + (" • Excludes already-bet legs" if exclude_already_bet else "")
+        )
+        pkg = _build_suggestion_package(
+            pkg_id=f"custom_{b_idx + 1}",
+            risk_level=risk_level,
+            title=title,
+            badge=f"{risk_names[risk_level]} • {bt_summary}",
+            subtitle=subtitle,
+            legs=picked,
+            stake=bet_stake,
+            extra={"criteria": {"bet_types": bet_types_clean, "risk_level": risk_level, "legs_count": legs_count}},
+        )
+        built_bets.append(pkg)
+        if b_idx == 0 and len(picked) < legs_count:
+            notice = f"Only {len(picked)} distinct matches matched your criteria (requested {legs_count} legs)."
+
+    return {
+        "bets": built_bets,
+        "requested_bets": num_bets,
+        "requested_legs": legs_count,
+        "excluded_count": dedup_excl_count,
+        "available_pool_count": len(pool),
+        "notice": notice,
     }

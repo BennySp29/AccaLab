@@ -1,5 +1,48 @@
 // AccaLab Frontend PWA Application
 
+function loadSavedSuggestCriteria() {
+  const fallback = {
+    mode: 'builder',
+    betTypes: ['ALL'],
+    riskLevel: localStorage.getItem('accalab_risk_level') || 'medium',
+    legsCount: 4,
+    numBets: 1,
+    div: '',
+    kickoffFilter: 'ALL',
+    officialOnly: false,
+    excludeAlreadyBet: true,
+    excludeScope: 'market_family',
+    includeSaved: true,
+    includeSlip: true,
+    manageOpen: false,
+    builtBets: [],
+    notice: '',
+    excludedCount: 0,
+    availablePoolCount: 0,
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem('accalab_suggest_criteria') || 'null');
+    if (saved && typeof saved === 'object') {
+      return {
+        ...fallback,
+        mode: saved.mode === 'presets' ? 'presets' : 'builder',
+        betTypes: Array.isArray(saved.betTypes) && saved.betTypes.length ? saved.betTypes : ['ALL'],
+        riskLevel: ['low', 'medium', 'high', 'longshot'].includes(saved.riskLevel) ? saved.riskLevel : fallback.riskLevel,
+        legsCount: Math.max(1, Math.min(8, Number(saved.legsCount || 4))),
+        numBets: Math.max(1, Math.min(5, Number(saved.numBets || 1))),
+        div: typeof saved.div === 'string' ? saved.div : '',
+        kickoffFilter: typeof saved.kickoffFilter === 'string' ? saved.kickoffFilter : 'ALL',
+        officialOnly: Boolean(saved.officialOnly),
+        excludeAlreadyBet: saved.excludeAlreadyBet !== undefined ? Boolean(saved.excludeAlreadyBet) : true,
+        excludeScope: saved.excludeScope === 'fixture' ? 'fixture' : 'market_family',
+        includeSaved: saved.includeSaved !== undefined ? Boolean(saved.includeSaved) : true,
+        includeSlip: saved.includeSlip !== undefined ? Boolean(saved.includeSlip) : true,
+      };
+    }
+  } catch (_) {}
+  return fallback;
+}
+
 const state = {
   activeTab: 'fixtures',
   activeDiv: 'ALL',
@@ -17,13 +60,38 @@ const state = {
   activeRiskLevel: localStorage.getItem('accalab_risk_level') || 'high',
   kickoffFilter: 'ALL',
   valDiv: '',
+  valBetType: 'ALL',
   valMinEdge: null,
   valOfficialOnly: false,
   b365ChecklistSource: 'suggest',
+  suggestBuilder: loadSavedSuggestCriteria(),
   liveScoresByMatch: {},
   liveScoresUpdatedAt: null,
   charts: {},
 };
+
+function persistSuggestCriteria() {
+  const sb = state.suggestBuilder || {};
+  try {
+    localStorage.setItem(
+      'accalab_suggest_criteria',
+      JSON.stringify({
+        mode: sb.mode,
+        betTypes: sb.betTypes,
+        riskLevel: sb.riskLevel,
+        legsCount: sb.legsCount,
+        numBets: sb.numBets,
+        div: sb.div,
+        kickoffFilter: sb.kickoffFilter,
+        officialOnly: sb.officialOnly,
+        excludeAlreadyBet: sb.excludeAlreadyBet,
+        excludeScope: sb.excludeScope,
+        includeSaved: sb.includeSaved,
+        includeSlip: sb.includeSlip,
+      })
+    );
+  } catch (_) {}
+}
 
 const esc = (s) => {
   const raw = s && typeof s === 'object' ? (s.name ?? s.label ?? s.title ?? '') : s;
@@ -268,6 +336,118 @@ function matchesKickoffFilter(item, mode = state.kickoffFilter, nowDate = new Da
   return true;
 }
 
+const BET_TYPE_OPTIONS = [
+  { code: 'ALL', label: 'Any Mix', shortLabel: 'All Types', icon: '🎲' },
+  { code: 'TO_WIN', label: 'To Win', shortLabel: 'To Win', icon: '🏆' },
+  { code: 'DRAW', label: 'Draw', shortLabel: 'Draw', icon: '🤝' },
+  { code: 'BTTS_Y', label: 'BTTS Yes', shortLabel: 'BTTS Yes', icon: '⚽' },
+  { code: 'BTTS_N', label: 'BTTS No', shortLabel: 'BTTS No', icon: '🛡️' },
+  { code: 'OU_O15', label: 'Over 1.5 Goals', shortLabel: 'Over 1.5', icon: '📈' },
+  { code: 'OU_O25', label: 'Over 2.5 Goals', shortLabel: 'Over 2.5', icon: '📈' },
+  { code: 'OU_U25', label: 'Under 2.5 Goals', shortLabel: 'Under 2.5', icon: '📉' },
+  { code: 'OU_O35', label: 'Over 3.5 Goals', shortLabel: 'Over 3.5', icon: '🚀' },
+  { code: 'OU_U35', label: 'Under 3.5 Goals', shortLabel: 'Under 3.5', icon: '📉' },
+];
+
+const ALL_MARKET_CODES = [
+  '1X2_H', '1X2_D', '1X2_A',
+  'OU_O15', 'OU_U15', 'OU_O25', 'OU_U25', 'OU_O35', 'OU_U35',
+  'BTTS_Y', 'BTTS_N',
+];
+
+const BET_TYPE_GROUP_MAP = {
+  ALL: ALL_MARKET_CODES,
+  TO_WIN: ['1X2_H', '1X2_A'],
+  DRAW: ['1X2_D'],
+  '1X2': ['1X2_H', '1X2_D', '1X2_A'],
+  BTTS: ['BTTS_Y', 'BTTS_N'],
+  BTTS_Y: ['BTTS_Y'],
+  BTTS_N: ['BTTS_N'],
+  GOALS: ['OU_O15', 'OU_U15', 'OU_O25', 'OU_U25', 'OU_O35', 'OU_U35'],
+};
+
+const CUSTOM_BET_TYPE_LABELS = {
+  ALL: 'Any Mix',
+  TO_WIN: 'To Win',
+  DRAW: 'Draw',
+  '1X2': 'Match Result',
+  BTTS: 'BTTS',
+  BTTS_Y: 'BTTS Yes',
+  BTTS_N: 'BTTS No',
+  GOALS: 'Goals',
+  OU_O15: 'Over 1.5',
+  OU_U15: 'Under 1.5',
+  OU_O25: 'Over 2.5',
+  OU_U25: 'Under 2.5',
+  OU_O35: 'Over 3.5',
+  OU_U35: 'Under 3.5',
+};
+
+function expandBetTypesClient(filters = ['ALL']) {
+  const list = (Array.isArray(filters) ? filters : [filters])
+    .map((x) => String(x || '').trim().toUpperCase())
+    .filter(Boolean);
+  if (!list.length || list.includes('ALL')) return new Set(ALL_MARKET_CODES);
+  const out = new Set();
+  for (const tok of list) {
+    if (BET_TYPE_GROUP_MAP[tok]) {
+      for (const m of BET_TYPE_GROUP_MAP[tok]) out.add(m);
+    } else if (ALL_MARKET_CODES.includes(tok)) {
+      out.add(tok);
+    }
+  }
+  return out.size ? out : new Set(ALL_MARKET_CODES);
+}
+
+function matchesBetTypeFilter(market, filterCode = 'ALL') {
+  const allowed = expandBetTypesClient([filterCode || 'ALL']);
+  return allowed.has(String(market || '').trim().toUpperCase());
+}
+
+function getBetTypeInfo(market) {
+  const m = String(market || '').trim().toUpperCase();
+  if (m === '1X2_H' || m === '1X2_A') {
+    return {
+      key: 'to_win',
+      label: 'To Win',
+      badgeHtml: '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 shrink-0">🏆 To Win</span>',
+    };
+  }
+  if (m === '1X2_D') {
+    return {
+      key: 'draw',
+      label: 'Draw',
+      badgeHtml: '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/40 shrink-0">🤝 Draw</span>',
+    };
+  }
+  if (m === 'BTTS_Y' || m === 'BTTS_N') {
+    return {
+      key: 'btts',
+      label: 'BTTS',
+      badgeHtml: '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/40 shrink-0">⚽ BTTS</span>',
+    };
+  }
+  if (m.startsWith('OU_')) {
+    return {
+      key: 'goals',
+      label: 'Goals',
+      badgeHtml: '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 shrink-0">🥅 Goals</span>',
+    };
+  }
+  if (m.startsWith('COMBO_')) {
+    return {
+      key: 'combo',
+      label: 'Bet Builder',
+      badgeHtml: '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/40 shrink-0">⚡ Builder</span>',
+    };
+  }
+  return {
+    key: 'other',
+    label: m || 'Market',
+    badgeHtml: `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 shrink-0">${esc(m || 'Other')}</span>`,
+  };
+}
+
 function marketFamily(market) {
   const m = String(market || '');
   if (m.startsWith('1X2_')) return '1X2';
@@ -286,7 +466,11 @@ function twoUpBadgeHtml(market) {
   return '<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 text-[10px] font-bold shrink-0" title="Qualifies for Bet365 2 Goals Ahead Early Payout">⚡ 2-Up</span>';
 }
 
-const B365_ACCA_BOOST_MARKETS = new Set(['1X2_H', '1X2_D', '1X2_A', 'OU_O25', 'OU_U25', 'BTTS_Y', 'BTTS_N']);
+const B365_ACCA_BOOST_MARKETS = new Set([
+  '1X2_H', '1X2_D', '1X2_A',
+  'OU_O15', 'OU_U15', 'OU_O25', 'OU_U25', 'OU_O35', 'OU_U35',
+  'BTTS_Y', 'BTTS_N',
+]);
 const B365_ACCA_BOOST_TIERS = { 2: 2.5, 3: 5, 4: 7.5, 5: 10, 6: 15, 7: 20, 8: 25, 9: 30, 10: 35, 11: 40, 12: 50, 13: 60 };
 
 function computeBet365AccaBoost(legs = [], stake = 10) {
@@ -514,8 +698,12 @@ function evaluateLegLiveStatus(leg) {
   if (m === '1X2_H') winning = h > a;
   else if (m === '1X2_D') winning = h === a;
   else if (m === '1X2_A') winning = a > h;
+  else if (m === 'OU_O15') winning = h + a >= 2;
+  else if (m === 'OU_U15') winning = h + a <= 1;
   else if (m === 'OU_O25') winning = h + a >= 3;
   else if (m === 'OU_U25') winning = h + a <= 2;
+  else if (m === 'OU_O35') winning = h + a >= 4;
+  else if (m === 'OU_U35') winning = h + a <= 3;
   else if (m === 'BTTS_Y') winning = h >= 1 && a >= 1;
   else if (m === 'BTTS_N') winning = !(h >= 1 && a >= 1);
   else if (m === 'COMBO_H_BTTS') winning = h > a && h >= 1 && a >= 1;
@@ -614,8 +802,12 @@ const B365_MARKET_NAMES = {
   '1X2_H': 'Full Time Result',
   '1X2_D': 'Full Time Result',
   '1X2_A': 'Full Time Result',
+  OU_O15: 'Goals Over/Under',
+  OU_U15: 'Goals Over/Under',
   OU_O25: 'Goals Over/Under',
   OU_U25: 'Goals Over/Under',
+  OU_O35: 'Goals Over/Under',
+  OU_U35: 'Goals Over/Under',
   BTTS_Y: 'Both Teams to Score',
   BTTS_N: 'Both Teams to Score',
 };
@@ -625,8 +817,12 @@ function b365SelectionNameClient(leg) {
   if (mkt === '1X2_H') return String(leg.home_team || leg.selection_label || 'Home');
   if (mkt === '1X2_D') return 'Draw';
   if (mkt === '1X2_A') return String(leg.away_team || leg.selection_label || 'Away');
+  if (mkt === 'OU_O15') return 'Over 1.5';
+  if (mkt === 'OU_U15') return 'Under 1.5';
   if (mkt === 'OU_O25') return 'Over 2.5';
   if (mkt === 'OU_U25') return 'Under 2.5';
+  if (mkt === 'OU_O35') return 'Over 3.5';
+  if (mkt === 'OU_U35') return 'Under 3.5';
   if (mkt === 'BTTS_Y') return 'Yes';
   if (mkt === 'BTTS_N') return 'No';
   return String(leg.selection_label || mkt);
@@ -1099,7 +1295,716 @@ function computeStaticUserBetsData(gh, snap, user) {
   };
 }
 
-function buildStaticSuggestBet(gh, snap, user) {
+const PLACED_BETS_STORAGE_KEY = 'accalab_placed_bets_v1';
+
+function canonicalMatchKeyClient(item) {
+  const mdate = String(item?.match_date || '').slice(0, 10).trim();
+  const home = String(item?.home_team || '').trim().toLowerCase();
+  const away = String(item?.away_team || '').trim().toLowerCase();
+  return home && away ? `${mdate}|${home}|${away}` : '';
+}
+
+function placedLegSignatureClient(legs = []) {
+  return (Array.isArray(legs) ? legs : [])
+    .map((l) => `${canonicalMatchKeyClient(l) || l.fixture_id || ''}:${l.market || ''}`)
+    .sort()
+    .join('|');
+}
+
+function getActivePlacedScopeKey() {
+  return `u_${Number(state.activeUserId || 0)}`;
+}
+
+function loadLocalPlacedBets() {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  try {
+    const raw = JSON.parse(localStorage.getItem(PLACED_BETS_STORAGE_KEY) || '{}');
+    const scope = getActivePlacedScopeKey();
+    const list = Array.isArray(raw?.[scope]) ? raw[scope] : [];
+    const active = list.filter(
+      (b) =>
+        Array.isArray(b.legs) &&
+        b.legs.some((l) => !l.match_date || String(l.match_date).slice(0, 10) >= todayIso)
+    );
+    if (active.length !== list.length) {
+      raw[scope] = active;
+      localStorage.setItem(PLACED_BETS_STORAGE_KEY, JSON.stringify(raw));
+    }
+    return active;
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveLocalPlacedBets(list) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PLACED_BETS_STORAGE_KEY) || '{}');
+    raw[getActivePlacedScopeKey()] = Array.isArray(list) ? list : [];
+    localStorage.setItem(PLACED_BETS_STORAGE_KEY, JSON.stringify(raw));
+  } catch (_) {}
+}
+
+function findLocalPlacedBetByLegs(legs = []) {
+  const sig = placedLegSignatureClient(legs);
+  if (!sig) return null;
+  return loadLocalPlacedBets().find((b) => placedLegSignatureClient(b.legs) === sig) || null;
+}
+
+async function markBetAsPlaced(legs = [], title = 'Placed Bet', stake = 10) {
+  if (!Array.isArray(legs) || !legs.length) return null;
+  const cleanLegs = legs.map((l) => ({
+    fixture_id: l.fixture_id,
+    div: l.div || '',
+    league_name: l.league_name || '',
+    match_date: String(l.match_date || '').slice(0, 10),
+    kickoff_time: l.kickoff_time || '',
+    home_team: l.home_team || '',
+    away_team: l.away_team || '',
+    market: l.market || '1X2_H',
+    selection_label: l.selection_label || l.market || '',
+    odds: Number(l.odds || 2.0),
+    model_prob: Number(l.model_prob || 0.5),
+  }));
+  const sig = placedLegSignatureClient(cleanLegs);
+  const existing = loadLocalPlacedBets();
+  const dup = existing.find((b) => placedLegSignatureClient(b.legs) === sig);
+  if (dup) return dup;
+  const entry = {
+    id: `pl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    title: title || 'Placed Bet',
+    stake: Number(stake || 10),
+    placed_at: new Date().toISOString(),
+    legs: cleanLegs,
+  };
+  saveLocalPlacedBets([entry, ...existing]);
+
+  if (Number(state.activeUserId || 0) > 0) {
+    try {
+      await api('/api/bets', {
+        method: 'POST',
+        body: JSON.stringify({
+          legs: cleanLegs,
+          stake: Number(stake || 10),
+          notes: title || '',
+        }),
+      });
+    } catch (_) {}
+  }
+  return entry;
+}
+
+function unmarkPlacedBet(placedId) {
+  const next = loadLocalPlacedBets().filter((b) => b.id !== placedId);
+  saveLocalPlacedBets(next);
+  return next;
+}
+
+function unmarkPlacedBetByLegs(legs = []) {
+  const sig = placedLegSignatureClient(legs);
+  const next = loadLocalPlacedBets().filter((b) => placedLegSignatureClient(b.legs) !== sig);
+  saveLocalPlacedBets(next);
+}
+
+function buildExclusionSetsClient(legs = []) {
+  const fixtureIds = new Set();
+  const matchKeys = new Set();
+  const exactFidMkts = new Set();
+  const exactKeyMkts = new Set();
+  const famFidMkts = new Set();
+  const famKeyMkts = new Set();
+
+  for (const lg of legs) {
+    if (!lg || typeof lg !== 'object') continue;
+    const fid = lg.fixture_id !== undefined && lg.fixture_id !== null && String(lg.fixture_id) !== '' ? Number(lg.fixture_id) : null;
+    const mkey = canonicalMatchKeyClient(lg);
+    const mkt = String(lg.market || '').trim();
+    const fam = marketFamily(mkt);
+    if (Number.isFinite(fid) && fid > 0) {
+      fixtureIds.add(fid);
+      if (mkt) {
+        exactFidMkts.add(`${fid}:${mkt}`);
+        famFidMkts.add(`${fid}:${fam}`);
+      }
+    }
+    if (mkey) {
+      matchKeys.add(mkey);
+      if (mkt) {
+        exactKeyMkts.add(`${mkey}:${mkt}`);
+        famKeyMkts.add(`${mkey}:${fam}`);
+      }
+    }
+  }
+  return { fixtureIds, matchKeys, exactFidMkts, exactKeyMkts, famFidMkts, famKeyMkts };
+}
+
+function isLegExcludedClient(cand, exclSets, scope = 'market_family') {
+  if (!cand || !exclSets) return false;
+  const fid = cand.fixture_id !== undefined && cand.fixture_id !== null && String(cand.fixture_id) !== '' ? Number(cand.fixture_id) : null;
+  const mkey = canonicalMatchKeyClient(cand);
+  if (scope === 'fixture') {
+    if (Number.isFinite(fid) && fid > 0 && exclSets.fixtureIds.has(fid)) return true;
+    if (mkey && exclSets.matchKeys.has(mkey)) return true;
+    return false;
+  }
+  const mkt = String(cand.market || '').trim();
+  const fam = marketFamily(mkt);
+  if (Number.isFinite(fid) && fid > 0) {
+    if (exclSets.exactFidMkts.has(`${fid}:${mkt}`) || exclSets.famFidMkts.has(`${fid}:${fam}`)) return true;
+  }
+  if (mkey) {
+    if (exclSets.exactKeyMkts.has(`${mkey}:${mkt}`) || exclSets.famKeyMkts.has(`${mkey}:${fam}`)) return true;
+  }
+  return false;
+}
+
+async function collectAlreadyBetData({ includeSaved = true, includeSlip = true } = {}) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const collected = [];
+  const seen = new Set();
+
+  const pushLeg = (lg, source, extra = {}) => {
+    if (!lg || typeof lg !== 'object') return;
+    const mkey = canonicalMatchKeyClient(lg);
+    const fidStr = lg.fixture_id ? String(lg.fixture_id) : '';
+    const mkt = String(lg.market || '').trim();
+    if ((!mkey && !fidStr) || !mkt) return;
+    const dedup = `${mkey || fidStr}:${mkt}:${source}`;
+    if (seen.has(dedup)) return;
+    seen.add(dedup);
+    collected.push({
+      fixture_id: lg.fixture_id,
+      div: lg.div || '',
+      league_name: lg.league_name || '',
+      match_date: String(lg.match_date || '').slice(0, 10),
+      home_team: lg.home_team || '',
+      away_team: lg.away_team || '',
+      market: mkt,
+      selection_label: lg.selection_label || mkt,
+      source,
+      ...extra,
+    });
+  };
+
+  for (const pb of loadLocalPlacedBets()) {
+    for (const lg of pb.legs || []) {
+      const md = String(lg.match_date || '').slice(0, 10);
+      if (!md || md >= todayIso) {
+        pushLeg(lg, 'placed', { placedId: pb.id, betTitle: pb.title });
+      }
+    }
+  }
+
+  const [betsRes, savedRes] = await Promise.all([
+    Number(state.activeUserId || 0) > 0 ? api('/api/bets').catch(() => ({ bets: [] })) : Promise.resolve({ bets: [] }),
+    includeSaved && Number(state.activeUserId || 0) > 0
+      ? api('/api/user/saved-accas').catch(() => ({ saved_accas: [] }))
+      : Promise.resolve({ saved_accas: [] }),
+  ]);
+
+  for (const b of betsRes?.bets || []) {
+    const pendingBet = String(b.status || '').toLowerCase() === 'pending';
+    for (const lg of b.legs || []) {
+      const md = String(lg.match_date || '').slice(0, 10);
+      if (pendingBet || !md || md >= todayIso) {
+        pushLeg(lg, 'placed');
+      }
+    }
+  }
+
+  if (includeSaved) {
+    for (const sa of savedRes?.saved_accas || []) {
+      for (const lg of sa.legs || []) {
+        const md = String(lg.match_date || '').slice(0, 10);
+        if (!md || md >= todayIso) {
+          pushLeg(lg, 'saved_acca', { betTitle: sa.name });
+        }
+      }
+    }
+  }
+
+  if (includeSlip) {
+    for (const lg of state.slip || []) {
+      const md = String(lg.match_date || '').slice(0, 10);
+      if (!md || md >= todayIso) {
+        pushLeg(lg, 'slip');
+      }
+    }
+  }
+
+  const uniqueKeys = new Set(
+    collected.map((l) => `${canonicalMatchKeyClient(l) || l.fixture_id}:${l.market}`)
+  );
+  return {
+    legs: collected,
+    sets: buildExclusionSetsClient(collected),
+    count: uniqueKeys.size,
+  };
+}
+
+function extractExtendedGoalsProbsClient(lam, mu, rho = -0.04) {
+  const l = Math.max(0.2, Number(lam || 1.32));
+  const m = Math.max(0.2, Number(mu || 1.12));
+  const r = Number.isFinite(Number(rho)) ? Number(rho) : -0.04;
+  const maxG = 7;
+  const poisson = (rate) => {
+    const out = [Math.exp(-rate)];
+    let fact = 1;
+    let pow = 1;
+    for (let k = 1; k <= maxG; k += 1) {
+      fact *= k;
+      pow *= rate;
+      out.push(Math.exp(-rate) * (pow / fact));
+    }
+    return out;
+  };
+  const tau = (x, y) => {
+    let val = 1.0;
+    if (x === 0 && y === 0) val = 1.0 - l * m * r;
+    else if (x === 0 && y === 1) val = 1.0 + l * r;
+    else if (x === 1 && y === 0) val = 1.0 + m * r;
+    else if (x === 1 && y === 1) val = 1.0 - r;
+    return Math.max(val, 0.05);
+  };
+  const px = poisson(l);
+  const py = poisson(m);
+  let total = 0;
+  let o15 = 0;
+  let o35 = 0;
+  for (let x = 0; x <= maxG; x += 1) {
+    for (let y = 0; y <= maxG; y += 1) {
+      const p = px[x] * py[y] * tau(x, y);
+      total += p;
+      if (x + y >= 2) o15 += p;
+      if (x + y >= 4) o35 += p;
+    }
+  }
+  const norm = total > 0 ? total : 1.0;
+  const pO15 = Math.max(0.01, Math.min(0.99, o15 / norm));
+  const pO35 = Math.max(0.01, Math.min(0.99, o35 / norm));
+  return {
+    prob_over15: roundNum(pO15, 5),
+    prob_under15: roundNum(1.0 - pO15, 5),
+    prob_over35: roundNum(pO35, 5),
+    prob_under35: roundNum(1.0 - pO35, 5),
+  };
+}
+
+function estimateTwoWayOddsClient(probYes, baseYes, alpha = 0.60, margin = 1.052) {
+  const pYes = Math.max(0.05, Math.min(0.95, Number(probYes || 0.5)));
+  const mYes = Math.max(0.08, Math.min(0.92, alpha * pYes + (1.0 - alpha) * Number(baseYes || 0.5)));
+  const mNo = 1.0 - mYes;
+  return [
+    roundNum(Math.max(1.08, 1.0 / (mYes * margin)), 2),
+    roundNum(Math.max(1.08, 1.0 / (mNo * margin)), 2),
+  ];
+}
+
+function buildAllFixtureCandidatesClient(gh, snap, user) {
+  const bankroll = Number(user?.bankroll || 250);
+  const kellyFrac = Number(user?.kelly_fraction || 0.25);
+  const allFix = (snap.fixtures || []).map((f) => applyStaticCustomOdds(f, gh?.customOddsByFixture));
+  const upcoming = allFix.filter((f) => isFixtureUpcomingClient(f));
+  const rows = upcoming.length ? upcoming : allFix;
+  if (!rows.length) return [];
+
+  const btMap = new Map();
+  for (const b of snap.backtest?.results || []) {
+    btMap.set(`${b.div}:${b.market}`, b);
+  }
+  const newsByTeam = new Map();
+  for (const n of snap.news || []) {
+    for (const tm of n.matched_teams || []) {
+      if (!newsByTeam.has(tm)) newsByTeam.set(tm, n);
+    }
+  }
+  const officialSources = new Set(['bet365_official', 'api_football_b365', 'live_sportsbook', 'user_manual']);
+  const candidates = [];
+
+  for (const r of rows) {
+    const rawSrc = String(r.odds_source || 'market_estimate');
+    const hElo = Number(r.home_elo || 1500);
+    const aElo = Number(r.away_elo || 1500);
+    const hForm = r.home_form || 'N/A';
+    const aForm = r.away_form || 'N/A';
+    const matchedNews = newsByTeam.get(r.home_team) || newsByTeam.get(r.away_team) || null;
+    const lam = Number(r.lambda_home || 1.35);
+    const mu = Number(r.mu_away || 1.15);
+    const rho = Number(r.rho ?? -0.04);
+    const totXg = lam + mu;
+
+    const src1x2 = officialSources.has(rawSrc) && r.b365h && r.b365d && r.b365a ? rawSrc : 'market_estimate';
+    let o25 = r.b365_over25;
+    let u25 = r.b365_under25;
+    let srcOu25 = officialSources.has(rawSrc) && o25 && u25 ? rawSrc : 'market_estimate';
+    if (!o25 || !u25) {
+      [o25, u25] = estimateTwoWayOddsClient(r.prob_over25, 0.50);
+      srcOu25 = 'market_estimate';
+    }
+
+    const hasLiveBtts = ['api_football_b365', 'user_manual'].includes(rawSrc) && r.b365_btts_yes && r.b365_btts_no;
+    let by = r.b365_btts_yes;
+    let bn = r.b365_btts_no;
+    const srcBtts = hasLiveBtts ? rawSrc : 'market_estimate';
+    if (!by || !bn) {
+      [by, bn] = estimateTwoWayOddsClient(r.prob_btts_yes, 0.52);
+    }
+
+    const ext = extractExtendedGoalsProbsClient(lam, mu, rho);
+    const [o15, u15] = estimateTwoWayOddsClient(ext.prob_over15, 0.75);
+    const [o35, u35] = estimateTwoWayOddsClient(ext.prob_over35, 0.29);
+
+    const tuples = [
+      ['1X2_H', `${r.home_team} Win`, r.prob_home, r.b365h, src1x2],
+      ['1X2_D', 'Draw', r.prob_draw, r.b365d, src1x2],
+      ['1X2_A', `${r.away_team} Win`, r.prob_away, r.b365a, src1x2],
+      ['OU_O15', 'Over 1.5 Goals', ext.prob_over15, o15, 'market_estimate'],
+      ['OU_U15', 'Under 1.5 Goals', ext.prob_under15, u15, 'market_estimate'],
+      ['OU_O25', 'Over 2.5 Goals', r.prob_over25, o25, srcOu25],
+      ['OU_U25', 'Under 2.5 Goals', r.prob_under25, u25, srcOu25],
+      ['OU_O35', 'Over 3.5 Goals', ext.prob_over35, o35, 'market_estimate'],
+      ['OU_U35', 'Under 3.5 Goals', ext.prob_under35, u35, 'market_estimate'],
+      ['BTTS_Y', 'BTTS Yes', r.prob_btts_yes, by, srcBtts],
+      ['BTTS_N', 'BTTS No', r.prob_btts_no, bn, srcBtts],
+    ];
+
+    for (const [mCode, selLabel, rawProb, rawOdd, mktSrc] of tuples) {
+      const odds = Number(rawOdd);
+      const mProb = Number(rawProb);
+      if (!Number.isFinite(odds) || odds < 1.05 || odds > 10.0) continue;
+      const edgePct = (mProb * odds - 1.0) * 100.0;
+      const btGroup = mCode.startsWith('1X2') ? '1X2' : mCode.startsWith('BTTS') ? 'BTTS' : 'O/U 2.5';
+      const bt = btMap.get(`${r.div}:${btGroup}`);
+      const trustBadge =
+        bt && bt.flat_roi_pct > 0 && bt.value_bets_count >= 10
+          ? 'Backtest Proven'
+          : bt && bt.avg_clv_pct > 0
+            ? 'Positive CLV'
+            : 'Model Edge';
+      const isOfficial = officialSources.has(mktSrc);
+      const btBonus = bt && bt.flat_roi_pct > 0 && bt.value_bets_count >= 10 ? 6.0 : bt && bt.avg_clv_pct > 0 ? 3.0 : 0.0;
+      const offBonus = isOfficial ? 5.0 : 0.0;
+      const eloGap = hElo - aElo;
+      const aligned =
+        (mCode === '1X2_H' && eloGap >= 30) ||
+        (mCode === '1X2_A' && eloGap <= -30) ||
+        (['OU_O15', 'OU_O25', 'OU_O35', 'BTTS_Y'].includes(mCode) && totXg >= 2.75) ||
+        (['OU_U15', 'OU_U25', 'OU_U35', 'BTTS_N'].includes(mCode) && totXg <= 2.35) ||
+        (mCode === '1X2_D' && Math.abs(eloGap) <= 35);
+      const rawConf = 35.0 + edgePct * 2.2 + mProb * 45.0 + btBonus + offBonus + (aligned ? 5.0 : 0.0);
+      const confScore = Math.max(45, Math.min(98, Math.round(rawConf)));
+      const ks = kellyStakeClient(mProb, odds, bankroll, kellyFrac);
+      const btMeta = getBetTypeInfo(mCode);
+
+      candidates.push({
+        fixture_id: r.id,
+        div: r.div,
+        league_name: r.league_name || getLeagueName(r.div, snap.dashboard?.leagues),
+        match_date: r.match_date,
+        kickoff_time: r.kickoff_time || '',
+        home_team: r.home_team,
+        away_team: r.away_team,
+        market: mCode,
+        bet_type: btMeta.key,
+        bet_type_label: btMeta.label,
+        selection_label: selLabel,
+        odds: roundNum(odds, 2),
+        odds_fractional: fmtOdds(odds),
+        total_xg: roundNum(totXg, 2),
+        model_prob: roundNum(mProb, 5),
+        model_prob_pct: roundNum(mProb * 100.0, 1),
+        edge_pct: roundNum(edgePct, 2),
+        confidence_score: confScore,
+        kelly_stake: ks.suggested_stake,
+        odds_source: mktSrc,
+        is_official: isOfficial,
+        trust_badge: trustBadge,
+        reasons: [
+          `Model rates ${selLabel} at ${(mProb * 100).toFixed(1)}% (fair ${fmtOdds(1.0 / Math.max(mProb, 0.01))}) vs ${fmtOdds(odds)} odds (${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}% edge), xG ${lam.toFixed(2)}–${mu.toFixed(2)}.`,
+          `Elo ratings: ${r.home_team} ${Math.round(hElo)} vs ${r.away_team} ${Math.round(aElo)} • Form: ${hForm} vs ${aForm}.`,
+          matchedNews ? `Latest news: [${matchedNews.source}] ${matchedNews.title}` : `Trust: ${trustBadge}${bt ? ` (${bt.flat_roi_pct >= 0 ? '+' : ''}${bt.flat_roi_pct}% backtest ROI)` : ''}.`,
+        ],
+      });
+    }
+  }
+  return candidates;
+}
+
+function scoreCandidateForRiskClient(c, riskLevel) {
+  const odds = Number(c.odds || 2.0);
+  const prob = Number(c.model_prob || 0.5);
+  const edge = Number(c.edge_pct || 0);
+  const conf = Number(c.confidence_score || 60);
+  const off = c.is_official ? 4.0 : 0.0;
+  if (riskLevel === 'low') {
+    return prob * 100.0 + edge * 1.3 + off - Math.max(0.0, odds - 2.35) * 14.0;
+  }
+  if (riskLevel === 'high') {
+    return edge * 1.8 + Math.min(odds, 4.5) * 6.5 + conf * 0.2 - Math.max(0.0, 1.5 - odds) * 12.0;
+  }
+  if (riskLevel === 'longshot') {
+    return edge * 1.6 + Math.min(odds, 7.0) * 8.0 + prob * 15.0 - Math.max(0.0, 1.8 - odds) * 14.0;
+  }
+  return edge * 1.6 + prob * 45.0 + conf * 0.25 + off * 0.5 - Math.max(0.0, odds - 3.8) * 6.0;
+}
+
+function getGhAlreadyBetLegsClient(gh, user, { includeSaved = true, includeSlip = true } = {}) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const collected = [];
+  for (const pb of loadLocalPlacedBets()) {
+    for (const lg of pb.legs || []) {
+      const md = String(lg.match_date || '').slice(0, 10);
+      if (!md || md >= todayIso) collected.push(lg);
+    }
+  }
+  if (user && Number(user.id) > 0) {
+    for (const b of gh?.betsByUser?.[user.id] || []) {
+      const pending = String(b.status || '').toLowerCase() === 'pending';
+      for (const lg of b.legs || []) {
+        const md = String(lg.match_date || '').slice(0, 10);
+        if (pending || !md || md >= todayIso) collected.push(lg);
+      }
+    }
+    if (includeSaved) {
+      for (const sa of gh?.savedAccasByUser?.[user.id] || []) {
+        for (const lg of sa.legs || []) {
+          const md = String(lg.match_date || '').slice(0, 10);
+          if (!md || md >= todayIso) collected.push(lg);
+        }
+      }
+    }
+  }
+  if (includeSlip) {
+    for (const lg of user?.active_slip || state.slip || []) {
+      const md = String(lg.match_date || '').slice(0, 10);
+      if (!md || md >= todayIso) collected.push(lg);
+    }
+  }
+  return collected;
+}
+
+function buildCustomBetsClient(gh, snap, user, criteria = {}) {
+  const betTypesRaw = Array.isArray(criteria.bet_types)
+    ? criteria.bet_types
+    : criteria.bet_types
+      ? [criteria.bet_types]
+      : ['ALL'];
+  const betTypesClean = betTypesRaw.map((t) => String(t || '').trim().toUpperCase()).filter(Boolean);
+  if (!betTypesClean.length) betTypesClean.push('ALL');
+  const allowedMarkets = expandBetTypesClient(betTypesClean);
+
+  const riskRaw = String(criteria.risk_level || 'medium').toLowerCase();
+  const riskLevel = ['low', 'medium', 'high', 'longshot'].includes(riskRaw) ? riskRaw : 'medium';
+  const legsCount = Math.max(1, Math.min(8, Number(criteria.legs_count || 4)));
+  const numBets = Math.max(1, Math.min(5, Number(criteria.num_bets || 1)));
+  const divFilter = String(criteria.div || '').trim();
+  const kickoffFilter = String(criteria.kickoff_filter || 'ALL').trim().toUpperCase();
+  const officialOnly = Boolean(criteria.official_only);
+  const excludeAlreadyBet = criteria.exclude_already_bet !== undefined ? Boolean(criteria.exclude_already_bet) : true;
+  const excludeScope = criteria.exclude_scope === 'fixture' ? 'fixture' : 'market_family';
+  const includeSaved = criteria.include_saved !== undefined ? Boolean(criteria.include_saved) : true;
+  const includeSlip = criteria.include_slip !== undefined ? Boolean(criteria.include_slip) : true;
+
+  const allCands = buildAllFixtureCandidatesClient(gh, snap, user);
+  if (!allCands.length) {
+    return {
+      bets: [],
+      requested_bets: numBets,
+      requested_legs: legsCount,
+      excluded_count: 0,
+      available_pool_count: 0,
+      notice: 'No scheduled fixtures available yet.',
+    };
+  }
+
+  const exclLegs = [];
+  if (excludeAlreadyBet) {
+    exclLegs.push(...getGhAlreadyBetLegsClient(gh, user, { includeSaved, includeSlip }));
+    for (const cl of criteria.excluded_legs || []) {
+      if (cl && typeof cl === 'object') exclLegs.push(cl);
+    }
+  }
+  const exclSets = buildExclusionSetsClient(exclLegs);
+  const avoidLegs = (criteria.avoid_legs || []).filter((l) => l && typeof l === 'object');
+  const avoidSets = buildExclusionSetsClient(avoidLegs);
+
+  const prefLeagues = new Set(user?.preferred_leagues || ['E0', 'E1', 'E2', 'E3']);
+  const pool = allCands
+    .filter((c) => {
+      if (!allowedMarkets.has(c.market)) return false;
+      if (c.odds < 1.08 || c.odds > 10.0) return false;
+      if (divFilter === 'PREFERRED') {
+        if (prefLeagues.size && !prefLeagues.has(c.div)) return false;
+      } else if (['E0', 'E1', 'E2', 'E3'].includes(divFilter) && c.div !== divFilter) {
+        return false;
+      }
+      if (!matchesKickoffFilter(c, kickoffFilter)) return false;
+      if (officialOnly && !c.is_official) return false;
+      if (excludeAlreadyBet && isLegExcludedClient(c, exclSets, excludeScope)) return false;
+      if (avoidLegs.length && isLegExcludedClient(c, avoidSets, 'market_family')) return false;
+      return true;
+    })
+    .map((c) => ({ ...c, _score: scoreCandidateForRiskClient(c, riskLevel) }))
+    .sort((a, b) => b._score - a._score || b.edge_pct - a.edge_pct || b.model_prob - a.model_prob);
+
+  const dedupExclCount = new Set(
+    exclLegs.filter((l) => l.market).map((l) => `${canonicalMatchKeyClient(l) || l.fixture_id}:${l.market}`)
+  ).size;
+
+  if (!pool.length) {
+    return {
+      bets: [],
+      requested_bets: numBets,
+      requested_legs: legsCount,
+      excluded_count: dedupExclCount,
+      available_pool_count: 0,
+      notice: 'No matching legs found for these criteria — try enabling more bet types, leagues, or relaxing exclusions.',
+    };
+  }
+
+  const defaultStake = Number(user?.default_stake || 10);
+  const stakeByRisk = { low: Math.max(5, defaultStake), medium: defaultStake, high: 5, longshot: 2 };
+  const betStake = roundNum(stakeByRisk[riskLevel], 2);
+  const riskNames = { low: 'Low Risk', medium: 'Balanced', high: 'High Risk', longshot: 'Longshot' };
+  const btSummary = betTypesClean.includes('ALL')
+    ? 'Mixed'
+    : betTypesClean.length <= 2
+      ? betTypesClean.map((t) => CUSTOM_BET_TYPE_LABELS[t] || t).join(' + ')
+      : `${betTypesClean.length} Bet Types`;
+  const distinctTypeKeys = new Set([...allowedMarkets].map((m) => getBetTypeInfo(m).key));
+  const multiTypeMode = distinctTypeKeys.size > 1 || allowedMarkets.size > 2;
+
+  const candMatchId = (c) => canonicalMatchKeyClient(c) || `fid:${c.fixture_id}`;
+  const usedMatchKeysAll = new Set();
+  const usedFamilyKeysAll = new Set();
+  for (const al of avoidLegs) {
+    const mk = canonicalMatchKeyClient(al) || (al.fixture_id ? `fid:${al.fixture_id}` : '');
+    if (mk) {
+      usedMatchKeysAll.add(mk);
+      usedFamilyKeysAll.add(`${mk}:${marketFamily(al.market)}`);
+    }
+  }
+
+  const builtBets = [];
+  let notice = '';
+
+  for (let bIdx = 0; bIdx < numBets; bIdx += 1) {
+    const picked = [];
+    const usedThisBet = new Set();
+    const typeCounts = {};
+
+    const pickNext = (allowReusedFixture) => {
+      let bestC = null;
+      let bestAdj = -1e18;
+      for (const c of pool) {
+        const mk = candMatchId(c);
+        const famKey = `${mk}:${marketFamily(c.market)}`;
+        if (usedThisBet.has(mk)) continue;
+        if (usedFamilyKeysAll.has(famKey)) continue;
+        if (!allowReusedFixture && usedMatchKeysAll.has(mk)) continue;
+        let adj = c._score;
+        if (multiTypeMode) adj -= (typeCounts[c.bet_type] || 0) * 4.5;
+        if (adj > bestAdj) {
+          bestAdj = adj;
+          bestC = c;
+        }
+      }
+      return bestC;
+    };
+
+    while (picked.length < legsCount) {
+      const nxt = pickNext(false);
+      if (!nxt) break;
+      picked.push(nxt);
+      usedThisBet.add(candMatchId(nxt));
+      typeCounts[nxt.bet_type] = (typeCounts[nxt.bet_type] || 0) + 1;
+    }
+
+    if (picked.length < legsCount && allowedMarkets.size > 1) {
+      while (picked.length < legsCount) {
+        const nxt = pickNext(true);
+        if (!nxt) break;
+        picked.push(nxt);
+        usedThisBet.add(candMatchId(nxt));
+        typeCounts[nxt.bet_type] = (typeCounts[nxt.bet_type] || 0) + 1;
+      }
+    }
+
+    if (!picked.length) {
+      notice = `Stopped at ${builtBets.length} of ${numBets} requested bets — not enough unique fixtures left matching your criteria.`;
+      break;
+    }
+    if (bIdx > 0 && picked.length < legsCount) {
+      notice = `Built ${builtBets.length} full ${legsCount}-leg bets (not enough unused matches left for bet #${bIdx + 1}).`;
+      break;
+    }
+
+    for (const lg of picked) {
+      const mk = candMatchId(lg);
+      usedMatchKeysAll.add(mk);
+      usedFamilyKeysAll.add(`${mk}:${marketFamily(lg.market)}`);
+    }
+
+    const cleanLegs = picked.map((l) => ({
+      fixture_id: l.fixture_id,
+      div: l.div,
+      league_name: l.league_name,
+      match_date: l.match_date,
+      kickoff_time: l.kickoff_time || '',
+      home_team: l.home_team,
+      away_team: l.away_team,
+      market: l.market,
+      bet_type: l.bet_type,
+      bet_type_label: l.bet_type_label,
+      selection_label: l.selection_label,
+      odds: l.odds,
+      odds_fractional: l.odds_fractional || fmtOdds(l.odds),
+      model_prob: l.model_prob,
+      edge_pct: l.edge_pct,
+      odds_source: l.odds_source,
+    }));
+    const foldLabel = cleanLegs.length === 1 ? 'Single' : `${cleanLegs.length}-Fold`;
+    const title = numBets > 1 ? `${btSummary} ${foldLabel} #${bIdx + 1}` : `${btSummary} ${foldLabel}`;
+    const subtitle = `${riskNames[riskLevel]} • ${cleanLegs.length} ${cleanLegs.length === 1 ? 'leg' : 'legs'}${excludeAlreadyBet ? ' • Excludes already-bet legs' : ''}`;
+    const ev = evaluateAccaClient(cleanLegs, betStake);
+    ev.combined_odds_fractional = fmtOdds(ev.combined_odds);
+    const avgConf = Math.round(picked.reduce((acc, l) => acc + l.confidence_score, 0) / picked.length);
+    const reasons = [];
+    for (const l of picked) {
+      for (const rsn of (l.reasons || []).slice(0, cleanLegs.length === 1 ? 3 : 1)) {
+        if (!reasons.includes(rsn)) reasons.push(rsn);
+      }
+    }
+    builtBets.push({
+      id: `custom_${bIdx + 1}`,
+      risk_level: riskLevel,
+      title,
+      badge: `${riskNames[riskLevel]} • ${btSummary}`,
+      subtitle,
+      confidence_score: avgConf,
+      stake: betStake,
+      legs: cleanLegs,
+      eval: ev,
+      reasons: reasons.slice(0, 4),
+      bet365_export: buildBet365ExportClient(cleanLegs, betStake, title, '', snap.dashboard?.leagues),
+      criteria: { bet_types: betTypesClean, risk_level: riskLevel, legs_count: legsCount },
+    });
+
+    if (bIdx === 0 && cleanLegs.length < legsCount) {
+      notice = `Only ${cleanLegs.length} distinct matches matched your criteria (requested ${legsCount} legs).`;
+    }
+  }
+
+  return {
+    bets: builtBets,
+    requested_bets: numBets,
+    requested_legs: legsCount,
+    excluded_count: dedupExclCount,
+    available_pool_count: pool.length,
+    notice,
+  };
+}
+
+function buildStaticSuggestBet(gh, snap, user, options = {}) {
   const base = cloneJson(snap.suggest_bet || { risk_levels: [], by_risk: {}, suggestions: [], by_id: {}, top_single: null });
   const favSet = new Set(user.favourite_teams || []);
   const prefLeagues = new Set(user.preferred_leagues || ['E0', 'E1', 'E2', 'E3']);
@@ -1113,30 +2018,53 @@ function buildStaticSuggestBet(gh, snap, user) {
     return fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(item);
   };
 
-  const upcomingOpps = (snap.value_bets || []).filter(isItemUpcoming);
-  const toLeg = (o) => ({
-    fixture_id: o.fixture_id,
-    div: o.div,
-    league_name: o.league_name,
-    match_date: o.match_date,
-    kickoff_time: fixById.get(o.fixture_id)?.kickoff_time || o.kickoff_time || '',
-    home_team: o.home_team,
-    away_team: o.away_team,
-    market: o.market,
-    selection_label: o.selection_label,
-    odds: o.odds,
-    odds_fractional: fmtOdds(o.odds),
-    model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
-    edge_pct: o.edge_pct,
-    odds_source: o.odds_source,
-  });
+  const excludeAlreadyBet = Boolean(options.excludeAlreadyBet);
+  const excludeScope = options.excludeScope === 'fixture' ? 'fixture' : 'market_family';
+  const exclLegs = excludeAlreadyBet ? getGhAlreadyBetLegsClient(gh, user) : [];
+  const exclSets = excludeAlreadyBet && exclLegs.length ? buildExclusionSetsClient(exclLegs) : null;
 
-  if (hasUpcoming && upcomingOpps.length) {
+  const upcomingOpps = (snap.value_bets || []).filter(
+    (o) => isItemUpcoming(o) && (!exclSets || !isLegExcludedClient(o, exclSets, excludeScope))
+  );
+  const toLeg = (o) => {
+    const btMeta = getBetTypeInfo(o.market);
+    return {
+      fixture_id: o.fixture_id,
+      div: o.div,
+      league_name: o.league_name,
+      match_date: o.match_date,
+      kickoff_time: fixById.get(o.fixture_id)?.kickoff_time || o.kickoff_time || '',
+      home_team: o.home_team,
+      away_team: o.away_team,
+      market: o.market,
+      bet_type: o.bet_type || btMeta.key,
+      bet_type_label: o.bet_type_label || btMeta.label,
+      selection_label: o.selection_label,
+      odds: o.odds,
+      odds_fractional: fmtOdds(o.odds),
+      model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
+      edge_pct: o.edge_pct,
+      odds_source: o.odds_source,
+    };
+  };
+
+  if (upcomingOpps.length) {
     const refreshPkg = (pkg) => {
       if (!pkg || !Array.isArray(pkg.legs)) return pkg;
-      if (pkg.legs.every(isItemUpcoming)) return pkg;
+      const needsRefresh =
+        !pkg.legs.every(isItemUpcoming) ||
+        (exclSets && pkg.legs.some((l) => isLegExcludedClient(l, exclSets, excludeScope)));
+      if (!needsRefresh) {
+        pkg.legs = pkg.legs.map((l) => {
+          const btMeta = getBetTypeInfo(l.market);
+          return { ...l, bet_type: l.bet_type || btMeta.key, bet_type_label: l.bet_type_label || btMeta.label };
+        });
+        return pkg;
+      }
       const targetLen = pkg.legs.length;
-      const kept = pkg.legs.filter(isItemUpcoming);
+      const kept = pkg.legs.filter(
+        (l) => isItemUpcoming(l) && (!exclSets || !isLegExcludedClient(l, exclSets, excludeScope))
+      );
       const usedFids = new Set(kept.map((l) => l.fixture_id));
       for (const cand of upcomingOpps) {
         if (kept.length >= targetLen) break;
@@ -1147,9 +2075,12 @@ function buildStaticSuggestBet(gh, snap, user) {
       if (!kept.length) return pkg;
       const ev = evaluateAccaClient(kept, pkg.stake || 5);
       ev.combined_odds_fractional = fmtOdds(ev.combined_odds);
-      pkg.legs = kept;
+      pkg.legs = kept.map((l) => {
+        const btMeta = getBetTypeInfo(l.market);
+        return { ...l, bet_type: l.bet_type || btMeta.key, bet_type_label: l.bet_type_label || btMeta.label };
+      });
       pkg.eval = ev;
-      pkg.bet365_export = buildBet365ExportClient(kept, pkg.stake || 5, pkg.title, '', snap.dashboard?.leagues);
+      pkg.bet365_export = buildBet365ExportClient(pkg.legs, pkg.stake || 5, pkg.title, '', snap.dashboard?.leagues);
       return pkg;
     };
 
@@ -1374,6 +2305,11 @@ async function staticApi(path, opts = {}) {
     const [fh, fd, fa, over1x2] = f.b365h && f.b365d && f.b365a ? devigThreeWayClient(f.b365h, f.b365d, f.b365a) : [0, 0, 0, 0];
     const [fo, fu, overOu] = f.b365_over25 && f.b365_under25 ? devigTwoWayClient(f.b365_over25, f.b365_under25) : [0, 0, 0];
     const [fby, fbn] = f.b365_btts_yes && f.b365_btts_no ? devigTwoWayClient(f.b365_btts_yes, f.b365_btts_no) : [0, 0];
+    const extG = extractExtendedGoalsProbsClient(f.lambda_home, f.mu_away, f.rho ?? -0.04);
+    const [o15, u15] = estimateTwoWayOddsClient(extG.prob_over15, 0.75);
+    const [fo15, fu15] = devigTwoWayClient(o15, u15);
+    const [o35, u35] = estimateTwoWayOddsClient(extG.prob_over35, 0.29);
+    const [fo35, fu35] = devigTwoWayClient(o35, u35);
 
     d.overround_1x2_pct = roundNum(over1x2, 2);
     d.overround_ou25_pct = roundNum(overOu, 2);
@@ -1381,15 +2317,22 @@ async function staticApi(path, opts = {}) {
       ['1X2_H', `${f.home_team} Win`, f.prob_home, f.b365h, fh],
       ['1X2_D', 'Draw', f.prob_draw, f.b365d, fd],
       ['1X2_A', `${f.away_team} Win`, f.prob_away, f.b365a, fa],
+      ['OU_O15', 'Over 1.5 Goals', extG.prob_over15, o15, fo15],
+      ['OU_U15', 'Under 1.5 Goals', extG.prob_under15, u15, fu15],
       ['OU_O25', 'Over 2.5 Goals', f.prob_over25, f.b365_over25, fo],
       ['OU_U25', 'Under 2.5 Goals', f.prob_under25, f.b365_under25, fu],
+      ['OU_O35', 'Over 3.5 Goals', extG.prob_over35, o35, fo35],
+      ['OU_U35', 'Under 3.5 Goals', extG.prob_under35, u35, fu35],
       ['BTTS_Y', 'BTTS Yes', f.prob_btts_yes, f.b365_btts_yes, fby],
       ['BTTS_N', 'BTTS No', f.prob_btts_no, f.b365_btts_no, fbn],
     ].map(([market, label, mProb, odd, fairB]) => {
       const edge = odd ? (mProb * odd - 1.0) * 100.0 : 0.0;
       const ks = kellyStakeClient(mProb, odd || 1.0, activeUser.bankroll, activeUser.kelly_fraction);
+      const btMeta = getBetTypeInfo(market);
       return {
         market,
+        bet_type: btMeta.key,
+        bet_type_label: btMeta.label,
         label,
         model_prob_pct: roundNum(mProb * 100.0, 1),
         fair_odds: roundNum(1.0 / Math.max(mProb, 0.01), 2),
@@ -1405,6 +2348,7 @@ async function staticApi(path, opts = {}) {
 
   if (pathname === '/api/value-bets') {
     const div = (query.get('div') || '').trim();
+    const market = (query.get('market') || '').trim();
     const minEdge = Number(query.get('min_edge') ?? 2.0);
     const officialOnly = query.get('official_only') === '1';
     const fixById = new Map((snap.fixtures || []).map((f) => [f.id, f]));
@@ -1416,13 +2360,20 @@ async function staticApi(path, opts = {}) {
           if (!(fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(o))) return false;
         }
         if (div && o.div !== div) return false;
+        if (market && !matchesBetTypeFilter(o.market, market)) return false;
         if (officialOnly && !['bet365_official', 'api_football_b365', 'live_sportsbook', 'user_manual'].includes(o.odds_source)) return false;
-        if (officialOnly && ['bet365_official', 'live_sportsbook'].includes(o.odds_source) && String(o.market).startsWith('BTTS')) return false;
         return Number(o.edge_pct) >= minEdge;
       })
       .map((o) => {
         const ks = kellyStakeClient(Number(o.model_prob_pct) / 100.0, o.odds, activeUser.bankroll, activeUser.kelly_fraction);
-        return { ...o, kelly_pct: ks.kelly_pct, suggested_stake: ks.suggested_stake };
+        const btMeta = getBetTypeInfo(o.market);
+        return {
+          ...o,
+          bet_type: o.bet_type || btMeta.key,
+          bet_type_label: o.bet_type_label || btMeta.label,
+          kelly_pct: ks.kelly_pct,
+          suggested_stake: ks.suggested_stake,
+        };
       });
     return {
       opportunities: opps,
@@ -1441,7 +2392,14 @@ async function staticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/suggest-bet') {
-    return buildStaticSuggestBet(gh, snap, activeUser);
+    return buildStaticSuggestBet(gh, snap, activeUser, {
+      excludeAlreadyBet: query.get('exclude_already_bet') === '1',
+      excludeScope: query.get('exclude_scope') || 'market_family',
+    });
+  }
+
+  if (pathname === '/api/suggest-bet/build' && method === 'POST') {
+    return buildCustomBetsClient(gh, snap, activeUser, bodyData);
   }
 
   if (pathname === '/api/bet365/export' && method === 'POST') {
@@ -2059,6 +3017,7 @@ async function api(path, opts = {}) {
     '/api/fixtures',
     '/api/value-bets',
     '/api/suggest-bet',
+    '/api/suggest-bet/build',
   ]);
   const useCloudClient =
     Boolean(getSupabaseClient()) &&
@@ -2309,6 +3268,7 @@ async function renderSlip() {
         <div class="min-w-0 flex-1">
           <div class="text-xs text-slate-400 truncate">${esc(leg.home_team)} vs ${esc(leg.away_team)}</div>
           <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+            ${getBetTypeInfo(leg.market).badgeHtml}
             <span class="text-sm font-semibold text-white">${esc(leg.selection_label)}</span>
             ${twoUpBadgeHtml(leg.market)}
           </div>
@@ -2372,6 +3332,7 @@ async function renderSlip() {
     })
   );
 
+  const slipPlaced = Boolean(findLocalPlacedBetByLegs(state.slip));
   const accaBoost = computeBet365AccaBoost(state.slip, state.slipStake);
   const evCls = evalData.expected_value_pct >= 0 ? 'text-emerald-400' : 'text-rose-400';
   footer.innerHTML = `
@@ -2391,13 +3352,20 @@ async function renderSlip() {
     <input id="slip-notes-input" type="text" placeholder="Optional acca name (e.g. Saturday acca)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white" />
     <div class="flex gap-1.5">
       <button id="slip-clear-btn" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300">Clear</button>
-      <button id="slip-live-btn" type="button" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold">📡 Live Scores</button>
+      <button id="slip-live-btn" type="button" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold">📡 Live</button>
       <button id="slip-share-btn" type="button" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold">📤 Share</button>
       <button id="slip-save-draft-btn" class="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">💾 Save</button>
     </div>
-    <button id="slip-export-b365-btn" class="w-full py-2.5 rounded-xl btn-bet365 text-xs font-extrabold tracking-wide flex items-center justify-center gap-2">
-      <span>📋 Build on Bet365 (Quick Checklist)</span>
-    </button>
+    <div class="flex gap-1.5">
+      <button id="slip-mark-placed-btn" type="button" class="px-3 py-2.5 rounded-xl border text-xs font-bold transition ${
+        slipPlaced
+          ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+          : 'bg-slate-800 hover:bg-emerald-600/25 border-slate-700 text-emerald-300'
+      }">${slipPlaced ? '✅ Placed' : '✅ Mark Placed'}</button>
+      <button id="slip-export-b365-btn" class="flex-1 py-2.5 rounded-xl btn-bet365 text-xs font-extrabold tracking-wide flex items-center justify-center gap-2">
+        <span>📋 Build on Bet365</span>
+      </button>
+    </div>
   `;
 
   document.getElementById('slip-clear-btn').addEventListener('click', () => {
@@ -2418,6 +3386,18 @@ async function renderSlip() {
   document.getElementById('slip-share-btn').addEventListener('click', () => {
     const customName = document.getElementById('slip-notes-input').value.trim();
     shareAccaSummary(state.slip, customName || 'AccaLab Tip Slip');
+  });
+  document.getElementById('slip-mark-placed-btn')?.addEventListener('click', async () => {
+    const customName = document.getElementById('slip-notes-input').value.trim();
+    if (findLocalPlacedBetByLegs(state.slip)) {
+      unmarkPlacedBetByLegs(state.slip);
+      showToast('Removed bet from placed history');
+    } else {
+      await markBetAsPlaced(state.slip, customName || `Placed ${state.slip.length}-Fold`, state.slipStake);
+      showToast('Marked as placed — these legs will be excluded in Suggest a Bet!');
+    }
+    renderSlip();
+    if (state.activeTab === 'value') renderValueTab();
   });
   document.getElementById('slip-export-b365-btn').addEventListener('click', () => {
     const customName = document.getElementById('slip-notes-input').value.trim();
@@ -2841,7 +3821,9 @@ async function renderFixturesTab() {
       document.getElementById('slip-drawer').classList.remove('hidden');
       showToast('Suggested bet added to your Bet Slip!');
     });
-    document.getElementById('feat-open-suggest')?.addEventListener('click', () => openSuggestModal(activeRisk));
+    document.getElementById('feat-open-suggest')?.addEventListener('click', () =>
+      openSuggestModal({ mode: 'presets', risk: activeRisk })
+    );
   }
 
   document.getElementById('for-you-view-all')?.addEventListener('click', () => {
@@ -3177,7 +4159,7 @@ async function openMatchPreview(fixtureId) {
         const edgeCls = m.edge_pct >= 3 ? 'text-emerald-400 font-bold' : m.edge_pct >= 0 ? 'text-amber-300' : 'text-slate-400';
         return `
               <tr class="border-b border-slate-800/60">
-                <td class="py-2 pr-2 font-medium text-white"><div class="flex items-center gap-1.5 flex-wrap"><span>${esc(m.label)}</span>${twoUpBadgeHtml(m.market)}</div></td>
+                <td class="py-2 pr-2 font-medium text-white"><div class="flex items-center gap-1.5 flex-wrap">${getBetTypeInfo(m.market).badgeHtml}<span>${esc(m.label)}</span>${twoUpBadgeHtml(m.market)}</div></td>
                 <td class="py-2 px-2 text-right">${m.model_prob_pct}%</td>
                 <td class="py-2 px-2 text-right font-mono">${fmtOdds(m.fair_odds)}</td>
                 <td class="py-2 px-2 text-right font-mono font-bold text-white">${m.b365_odds ? fmtOdds(m.b365_odds) : '—'}</td>
@@ -3465,13 +4447,18 @@ async function renderValueTab() {
   const main = document.getElementById('main-content');
   const rawUserEdge = Math.round(Number(state.dashboard?.active_user?.min_edge_pct || 3));
   const defaultEdge = rawUserEdge >= 8 ? '8' : rawUserEdge >= 5 ? '5' : rawUserEdge <= 2 ? '2' : '3';
-  const minEdge = state.valMinEdge || defaultEdge;
+  const minEdge = state.valMinEdge !== null && state.valMinEdge !== undefined ? String(state.valMinEdge) : defaultEdge;
   const officialOnly = state.valOfficialOnly ? '1' : '0';
   const div = state.valDiv || '';
+  const betTypeFilter = state.valBetType || 'ALL';
 
   const q = new URLSearchParams({ min_edge: minEdge, official_only: officialOnly });
   if (div) q.set('div', div);
-  const data = await api(`/api/value-bets?${q.toString()}`);
+  if (betTypeFilter && betTypeFilter !== 'ALL') q.set('market', betTypeFilter);
+  const [data, alreadyData] = await Promise.all([
+    api(`/api/value-bets?${q.toString()}`),
+    collectAlreadyBetData({ includeSaved: true, includeSlip: false }).catch(() => ({ sets: null })),
+  ]);
 
   const baseOpps = state.valMyPrefsOnly
     ? (data.opportunities || []).filter(
@@ -3487,7 +4474,7 @@ async function renderValueTab() {
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
       <div>
         <h2 class="text-xl font-bold text-white">💎 Top Match Tips</h2>
-        <p class="text-xs text-slate-400">Tips where our match model gives a higher win chance than the bookmaker&apos;s odds imply • <span class="text-cyan-300">🕒 Odds updated ${esc(formatRelativeFreshness())}</span></p>
+        <p class="text-xs text-slate-400">Tips ranked by value &amp; bet type where our match model beats the bookmaker&apos;s odds • <span class="text-cyan-300">🕒 Odds updated ${esc(formatRelativeFreshness())}</span></p>
       </div>
       <div class="flex flex-wrap items-center gap-2 text-xs">
         <button type="button" data-open-boost-checker="1" class="px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 font-semibold transition">⚡ Check Boost</button>
@@ -3502,6 +4489,7 @@ async function renderValueTab() {
           ${KICKOFF_FILTER_OPTIONS.map(([kCode, kLabel]) => `<option value="${kCode}" ${state.kickoffFilter === kCode ? 'selected' : ''}>${kLabel}</option>`).join('')}
         </select>
         <select id="val-min-edge" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
+          <option value="0" ${minEdge === '0' ? 'selected' : ''}>Model Picks (0%+ Value)</option>
           <option value="2" ${minEdge === '2' ? 'selected' : ''}>All Value Tips (+2%+)</option>
           <option value="3" ${minEdge === '3' ? 'selected' : ''}>Good Value (+3%+)</option>
           <option value="5" ${minEdge === '5' ? 'selected' : ''}>Strong Value (+5%+)</option>
@@ -3518,11 +4506,24 @@ async function renderValueTab() {
       </div>
     </div>
 
+    <div class="flex flex-wrap items-center gap-1.5">
+      <span class="text-[11px] font-semibold text-slate-400 mr-1">Bet Type:</span>
+      ${BET_TYPE_OPTIONS.map(
+        (opt) => `
+        <button type="button" data-val-bettype="${esc(opt.code)}" class="px-2.5 py-1 rounded-full text-[11px] font-semibold border transition ${
+          betTypeFilter === opt.code
+            ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/70 shadow-sm'
+            : 'bg-panel text-slate-400 border-slate-800 hover:text-white hover:border-slate-600'
+        }">${opt.icon} ${esc(opt.shortLabel)}</button>`
+      ).join('')}
+    </div>
+
     <div class="bg-panel border border-slate-800 rounded-2xl overflow-x-auto">
       <table class="w-full text-xs text-left">
         <thead class="text-slate-400 border-b border-slate-800 bg-slate-900/60">
           <tr>
             <th class="p-3">Match</th>
+            <th class="p-3">Bet Type</th>
             <th class="p-3">Tip</th>
             <th class="p-3 text-right">Odds</th>
             <th class="p-3 text-right">Win Chance (Fair)</th>
@@ -3538,6 +4539,8 @@ async function renderValueTab() {
           const isFav =
             state.favouriteTeams.includes(o.home_team) ||
             state.favouriteTeams.includes(o.away_team);
+          const btInfo = getBetTypeInfo(o.market);
+          const alreadyBet = alreadyData?.sets ? isLegExcludedClient(o, alreadyData.sets, 'market_family') : false;
           return `
               <tr class="border-b border-slate-800/70 hover:bg-slate-800/30 ${isFav ? 'bg-amber-500/5' : ''}">
                 <td class="p-3">
@@ -3547,10 +4550,12 @@ async function renderValueTab() {
                   </button>
                   <div class="text-[11px] text-slate-400">${esc(o.league_name)} • ${esc(o.match_date)}${o.kickoff_time ? ` ${esc(o.kickoff_time)}` : ''}</div>
                 </td>
+                <td class="p-3 whitespace-nowrap">${btInfo.badgeHtml}</td>
                 <td class="p-3 font-medium text-emerald-300">
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <span>${esc(o.selection_label)}</span>
                     ${twoUpBadgeHtml(o.market)}
+                    ${alreadyBet ? '<span class="px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-400/40 text-indigo-200 text-[10px] font-semibold">✓ Already Bet</span>' : ''}
                   </div>
                 </td>
                 <td class="p-3 text-right font-mono font-bold text-white">${fmtOdds(o.odds)}</td>
@@ -3563,19 +4568,29 @@ async function renderValueTab() {
                 <td class="p-3 text-right">
                   ${(() => {
                     const active = isInSlip(o.fixture_id, o.market);
-                    return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, league_name: o.league_name, match_date: o.match_date, kickoff_time: o.kickoff_time || '', home_team: o.home_team, away_team: o.away_team, market: o.market, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
+                    return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, league_name: o.league_name, match_date: o.match_date, kickoff_time: o.kickoff_time || '', home_team: o.home_team, away_team: o.away_team, market: o.market, bet_type: btInfo.key, bet_type_label: btInfo.label, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
                   })()}
                 </td>
               </tr>`;
         })
         .join('')
-      : `<tr><td colspan="7" class="p-8 text-center text-slate-400">No tips match this filter right now — try switching to &ldquo;All Value Tips (+2%+)&rdquo;.</td></tr>`
+      : `<tr><td colspan="8" class="p-8 text-center text-slate-400 space-y-2"><div>No tips match this filter right now.</div>${minEdge !== '0' ? `<button id="val-show-zero-edge-btn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 font-semibold">Show Model Picks (0%+ Value)</button>` : ''}</td></tr>`
     }
         </tbody>
       </table>
     </div>
   `;
 
+  document.querySelectorAll('[data-val-bettype]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      state.valBetType = btn.dataset.valBettype || 'ALL';
+      renderValueTab();
+    })
+  );
+  document.getElementById('val-show-zero-edge-btn')?.addEventListener('click', () => {
+    state.valMinEdge = '0';
+    renderValueTab();
+  });
   document.getElementById('val-div-filter')?.addEventListener('change', (e) => {
     state.valDiv = e.target.value;
     renderValueTab();
@@ -3640,7 +4655,7 @@ async function renderAccaTab() {
                 <div class="p-2 rounded-lg bg-card border border-slate-700/70 text-xs flex justify-between gap-2">
                   <div>
                     <div class="text-slate-400">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
-                    <div class="font-semibold text-white">${esc(l.selection_label)}</div>
+                    <div class="flex items-center gap-1.5 flex-wrap mt-0.5">${getBetTypeInfo(l.market).badgeHtml}<span class="font-semibold text-white">${esc(l.selection_label)}</span></div>
                   </div>
                   <div class="text-right font-mono">
                     <div class="text-emerald-400 font-bold">${fmtOdds(l.odds)}</div>
@@ -4775,11 +5790,23 @@ function renderB365CouponBox(leg) {
         ${cell('X: Draw', 'Draw', mkt === '1X2_D')}
         ${cell(`2: ${leg.away_team || 'Away'}`, 'Away', mkt === '1X2_A')}
       </div>`;
+  } else if (mkt === 'OU_O15' || mkt === 'OU_U15') {
+    gridHtml = `
+      <div class="grid grid-cols-2 gap-1.5">
+        ${cell('Over 1.5', '2+ Goals', mkt === 'OU_O15')}
+        ${cell('Under 1.5', '0–1 Goals', mkt === 'OU_U15')}
+      </div>`;
   } else if (mkt === 'OU_O25' || mkt === 'OU_U25') {
     gridHtml = `
       <div class="grid grid-cols-2 gap-1.5">
         ${cell('Over 2.5', '3+ Goals', mkt === 'OU_O25')}
         ${cell('Under 2.5', '0–2 Goals', mkt === 'OU_U25')}
+      </div>`;
+  } else if (mkt === 'OU_O35' || mkt === 'OU_U35') {
+    gridHtml = `
+      <div class="grid grid-cols-2 gap-1.5">
+        ${cell('Over 3.5', '4+ Goals', mkt === 'OU_O35')}
+        ${cell('Under 3.5', '0–3 Goals', mkt === 'OU_U35')}
       </div>`;
   } else if (mkt === 'BTTS_Y' || mkt === 'BTTS_N') {
     gridHtml = `
@@ -4967,13 +5994,23 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
       <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
         <button id="b365-back-suggest-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold">${
           state.b365ChecklistSource === 'suggest'
-            ? '← Back to Suggestions'
+            ? '← Back to Suggest a Bet'
             : state.b365ChecklistSource === 'slip'
               ? '← Back to Bet Slip'
               : state.b365ChecklistSource === 'boost'
                 ? '← Back to Boost Checker'
                 : '✕ Close Checklist'
         }</button>
+        ${(() => {
+          const isPlaced = Boolean(findLocalPlacedBetByLegs(legs));
+          return `<button id="b365-mark-placed-btn" type="button" class="px-3.5 py-2 rounded-xl text-xs font-extrabold border transition ${
+            isPlaced
+              ? 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
+              : allDone
+                ? 'bg-emerald-500 hover:bg-emerald-400 border-emerald-300 text-slate-950 shadow-md shadow-emerald-500/20'
+                : 'bg-slate-800 hover:bg-emerald-600/30 border-emerald-500/40 text-emerald-300'
+          }">${isPlaced ? '✅ Marked as Placed' : '✅ Mark Bet Placed'}</button>`;
+        })()}
         <button id="b365-share-btn" type="button" class="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs text-white font-semibold">📤 Share Slip</button>
         ${doneCount > 0 ? '<button id="b365-reset-ticks-btn" type="button" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 font-semibold">✓ Reset Ticks</button>' : ''}
       </div>
@@ -5073,9 +6110,20 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
       renderHandoff();
     });
 
+    document.getElementById('b365-mark-placed-btn')?.addEventListener('click', async () => {
+      if (findLocalPlacedBetByLegs(legs)) {
+        unmarkPlacedBetByLegs(legs);
+        showToast('Removed from placed bets history');
+      } else {
+        await markBetAsPlaced(legs, title || exp.title || 'Placed Bet', stake);
+        showToast('Marked as placed — legs excluded from Suggest a Bet!');
+      }
+      renderHandoff();
+    });
+
     document.getElementById('b365-back-suggest-btn')?.addEventListener('click', () => {
       if (state.b365ChecklistSource === 'suggest') {
-        openSuggestModal(state.activeRiskLevel || 'high');
+        openSuggestModal();
       } else if (state.b365ChecklistSource === 'boost') {
         openBoostCheckerModal(expLegs[0]?.fixture_id || null, expLegs[0]?.market || '');
       } else if (state.b365ChecklistSource === 'slip') {
@@ -5447,7 +6495,7 @@ async function openBoostCheckerModal(initialFixtureId = null, initialMarket = ''
   }
 }
 
-async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'high') {
+async function openSuggestModal(optsOrRisk = null) {
   closeAllOverlays('suggest-modal');
   const modal = document.getElementById('suggest-modal');
   const titleEl = document.getElementById('suggest-modal-title');
@@ -5455,85 +6503,138 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
   const body = document.getElementById('suggest-modal-body');
   if (!modal || !body) return;
 
-  titleEl.textContent = '✨ Smart Tip Assistant & Bet365 Export';
-  subEl.textContent = 'Pick your risk level — from steady 1/1–2/1 builders to 40/1+ longshots';
+  const sb = state.suggestBuilder;
+  let initialRiskOrKey = state.activeRiskLevel || 'high';
+  if (optsOrRisk && typeof optsOrRisk === 'object') {
+    if (optsOrRisk.mode === 'presets' || optsOrRisk.mode === 'builder') {
+      sb.mode = optsOrRisk.mode;
+      persistSuggestCriteria();
+    }
+    if (optsOrRisk.risk) initialRiskOrKey = optsOrRisk.risk;
+  } else if (typeof optsOrRisk === 'string' && optsOrRisk.trim()) {
+    sb.mode = 'presets';
+    initialRiskOrKey = optsOrRisk;
+  }
+
+  titleEl.textContent = '✨ Suggest a Bet & Bet365 Builder';
+  subEl.textContent = 'Build multiple custom bets to your exact criteria while skipping legs you have already bet on';
   modal.classList.remove('hidden');
-  body.innerHTML = '<div class="text-sm text-slate-400 py-8 text-center">Analyzing upcoming fixtures, Bet365 odds &amp; team news...</div>';
+  body.innerHTML = '<div class="text-sm text-slate-400 py-8 text-center">Loading upcoming fixtures, Bet365 odds &amp; your active bets...</div>';
 
   try {
-    const [res, valRes] = await Promise.all([
-      api('/api/suggest-bet'),
-      api('/api/value-bets?min_edge=1').catch(() => ({ opportunities: [] })),
+    const fetchPresets = (exclFlag, scope) =>
+      api(`/api/suggest-bet?exclude_already_bet=${exclFlag ? '1' : '0'}&exclude_scope=${encodeURIComponent(scope)}`);
+
+    const [initialPresets, valRes, initAlready] = await Promise.all([
+      fetchPresets(sb.excludeAlreadyBet, sb.excludeScope),
+      api('/api/value-bets?min_edge=-25').catch(() => ({ opportunities: [] })),
+      collectAlreadyBetData({ includeSaved: sb.includeSaved, includeSlip: sb.includeSlip }),
     ]);
-    const suggestions = res.suggestions || [];
-    const riskLevels = res.risk_levels || [];
-    const byRisk = res.by_risk || {};
-    const candidatePool = (valRes.opportunities || []).map((o) => ({
-      fixture_id: o.fixture_id,
-      div: o.div,
-      league_name: o.league_name,
-      match_date: o.match_date,
-      kickoff_time: o.kickoff_time || '',
-      home_team: o.home_team,
-      away_team: o.away_team,
-      market: o.market,
-      selection_label: o.selection_label,
-      odds: Number(o.odds),
-      odds_fractional: fmtOdds(o.odds),
-      model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
-      edge_pct: Number(o.edge_pct || 0),
-      odds_source: o.odds_source,
-    }));
+
+    let res = initialPresets;
+    let alreadyData = initAlready;
+    let isBuilding = false;
+
+    const candidatePool = (valRes.opportunities || []).map((o) => {
+      const btMeta = getBetTypeInfo(o.market);
+      return {
+        fixture_id: o.fixture_id,
+        div: o.div,
+        league_name: o.league_name,
+        match_date: o.match_date,
+        kickoff_time: o.kickoff_time || '',
+        home_team: o.home_team,
+        away_team: o.away_team,
+        market: o.market,
+        bet_type: o.bet_type || btMeta.key,
+        bet_type_label: o.bet_type_label || btMeta.label,
+        selection_label: o.selection_label,
+        odds: Number(o.odds),
+        odds_fractional: fmtOdds(o.odds),
+        model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
+        edge_pct: Number(o.edge_pct || 0),
+        odds_source: o.odds_source,
+      };
+    });
+
     const lockedKeys = new Set();
     const skippedSwapKeys = new Set();
-    const legKey = (l) => `${Number(l.fixture_id)}:${l.market}`;
-
-    if (!suggestions.length && !riskLevels.length) {
-      body.innerHTML = '<div class="text-sm text-slate-400 py-6 text-center">No scheduled fixtures available yet — click Sync Live Data first.</div>';
-      return;
-    }
+    const legKey = (l) => `${canonicalMatchKeyClient(l) || Number(l.fixture_id)}:${l.market}`;
+    const legMatchKey = (l) => canonicalMatchKeyClient(l) || `fid:${Number(l.fixture_id)}`;
 
     let activeRisk = state.activeRiskLevel || 'high';
     let activeKey = null;
-
-    if (byRisk[initialRiskOrKey]) {
-      activeRisk = initialRiskOrKey;
-      activeKey = byRisk[activeRisk]?.primary?.id || byRisk[activeRisk]?.options?.[0]?.id;
-    } else if (res.by_id?.[initialRiskOrKey]) {
-      const matched = res.by_id[initialRiskOrKey];
-      activeKey = matched.id;
-      activeRisk = matched.risk_level || activeRisk;
-    }
-
-    if (!byRisk[activeRisk] && riskLevels.length) {
-      activeRisk = riskLevels[0].id;
-    }
-    if (!activeKey || !res.by_id?.[activeKey]) {
-      activeKey = byRisk[activeRisk]?.primary?.id || byRisk[activeRisk]?.options?.[0]?.id || suggestions[0]?.id;
-    }
+    const syncPresetSelection = () => {
+      const riskLevels = res.risk_levels || [];
+      const byRisk = res.by_risk || {};
+      const suggestions = res.suggestions || [];
+      if (byRisk[initialRiskOrKey]) {
+        activeRisk = initialRiskOrKey;
+        activeKey = byRisk[activeRisk]?.primary?.id || byRisk[activeRisk]?.options?.[0]?.id;
+      } else if (res.by_id?.[initialRiskOrKey]) {
+        const matched = res.by_id[initialRiskOrKey];
+        activeKey = matched.id;
+        activeRisk = matched.risk_level || activeRisk;
+      }
+      if (!byRisk[activeRisk] && riskLevels.length) activeRisk = riskLevels[0].id;
+      if (!activeKey || !res.by_id?.[activeKey]) {
+        activeKey = byRisk[activeRisk]?.primary?.id || byRisk[activeRisk]?.options?.[0]?.id || suggestions[0]?.id;
+      }
+    };
+    syncPresetSelection();
 
     const getPkgStake = (pkg, tier) => Number(pkg?.stake || tier?.default_stake || state.slipStake || 5);
-    let currentStake = getPkgStake(res.by_id?.[activeKey], byRisk[activeRisk]);
+    let currentStake = getPkgStake(res.by_id?.[activeKey], (res.by_risk || {})[activeRisk]);
 
     const persistRisk = (riskId) => {
       state.activeRiskLevel = riskId;
       try {
         localStorage.setItem('accalab_risk_level', riskId);
-      } catch (_) { }
+      } catch (_) {}
       if (state.activeTab === 'fixtures') renderFixturesTab();
     };
 
-    const swapLegAt = (pkg, swapIdx) => {
+    const refreshAlreadyData = async () => {
+      alreadyData = await collectAlreadyBetData({
+        includeSaved: sb.includeSaved,
+        includeSlip: sb.includeSlip,
+      });
+    };
+
+    const swapLegInPkg = (pkg, swapIdx, { respectCriteria = false, extraAvoidLegs = [] } = {}) => {
       if (!pkg?.legs?.[swapIdx]) return false;
       const oldLeg = pkg.legs[swapIdx];
       skippedSwapKeys.add(legKey(oldLeg));
-      const usedFixtures = new Set(pkg.legs.map((l, idx) => (idx === swapIdx ? null : Number(l.fixture_id))));
+      const usedMatchesThisBet = new Set(
+        pkg.legs.map((l, idx) => (idx === swapIdx ? null : legMatchKey(l))).filter(Boolean)
+      );
+      const otherUsedLegKeys = new Set(extraAvoidLegs.map((l) => legKey(l)));
+      const allowedMkts = respectCriteria
+        ? expandBetTypesClient(pkg.criteria?.bet_types || sb.betTypes)
+        : null;
+      const prefLeagues = new Set(state.preferredLeagues || ['E0', 'E1', 'E2', 'E3']);
+
       const findBest = (allowSkipped) =>
         candidatePool
           .filter((c) => {
-            if (usedFixtures.has(Number(c.fixture_id))) return false;
+            if (usedMatchesThisBet.has(legMatchKey(c))) return false;
             if (legKey(c) === legKey(oldLeg)) return false;
+            if (otherUsedLegKeys.has(legKey(c))) return false;
             if (!allowSkipped && skippedSwapKeys.has(legKey(c))) return false;
+            if (sb.excludeAlreadyBet && isLegExcludedClient(c, alreadyData.sets, sb.excludeScope)) return false;
+            if (respectCriteria) {
+              if (allowedMkts && !allowedMkts.has(c.market)) return false;
+              if (sb.div === 'PREFERRED') {
+                if (prefLeagues.size && !prefLeagues.has(c.div)) return false;
+              } else if (sb.div && c.div !== sb.div) {
+                return false;
+              }
+              if (!matchesKickoffFilter(c, sb.kickoffFilter)) return false;
+              if (sb.officialOnly && !['bet365_official', 'api_football_b365', 'live_sportsbook', 'user_manual'].includes(c.odds_source)) {
+                return false;
+              }
+              return c.odds >= 1.08 && c.odds <= 10.0;
+            }
             return c.odds >= 1.2 && c.odds <= 8.0;
           })
           .sort((a, b) => {
@@ -5549,11 +6650,597 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
       }
       if (!replacement) return false;
       pkg.legs[swapIdx] = { ...replacement };
-      pkg.eval = evaluateAccaClient(pkg.legs, currentStake);
+      pkg.eval = evaluateAccaClient(pkg.legs, Number(pkg.stake || currentStake || 10));
       return true;
     };
 
-    const renderPkg = () => {
+    const runBuildBets = async (append = false) => {
+      if (isBuilding) return;
+      isBuilding = true;
+      renderModal();
+      try {
+        await refreshAlreadyData();
+        const avoidLegs = append ? sb.builtBets.flatMap((b) => b.legs || []) : [];
+        const payload = {
+          bet_types: sb.betTypes,
+          risk_level: sb.riskLevel,
+          legs_count: sb.legsCount,
+          num_bets: sb.numBets,
+          div: sb.div,
+          kickoff_filter: sb.kickoffFilter,
+          official_only: sb.officialOnly,
+          exclude_already_bet: sb.excludeAlreadyBet,
+          exclude_scope: sb.excludeScope,
+          include_saved: sb.includeSaved,
+          include_slip: sb.includeSlip,
+          excluded_legs: sb.excludeAlreadyBet ? alreadyData.legs : [],
+          avoid_legs: avoidLegs,
+        };
+        const buildRes = await api('/api/suggest-bet/build', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        const newBets = (buildRes.bets || []).map((b, i) => ({
+          ...b,
+          id: `custom_${Date.now()}_${i}`,
+        }));
+        if (append) {
+          sb.builtBets = [...sb.builtBets, ...newBets];
+        } else {
+          sb.builtBets = newBets;
+        }
+        sb.notice = buildRes.notice || '';
+        sb.excludedCount = Number(buildRes.excluded_count ?? alreadyData.count ?? 0);
+        sb.availablePoolCount = Number(buildRes.available_pool_count || 0);
+        if (newBets.length) {
+          showToast(
+            append
+              ? `Added ${newBets.length} more ${newBets.length === 1 ? 'bet' : 'bets'}!`
+              : `Built ${newBets.length} custom ${newBets.length === 1 ? 'bet' : 'bets'}!`
+          );
+        } else {
+          showToast(sb.notice || 'No matching bets found for those criteria', true);
+        }
+      } catch (err) {
+        showToast(err.message || 'Unable to build bets', true);
+      } finally {
+        isBuilding = false;
+        renderModal();
+      }
+    };
+
+    const renderModeBar = () => `
+      <div class="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-slate-800/80">
+        <div class="flex gap-1.5">
+          <button type="button" data-suggest-mode="builder" class="px-3.5 py-1.5 rounded-xl text-xs font-extrabold border transition ${
+            sb.mode === 'builder'
+              ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm shadow-emerald-500/20'
+              : 'bg-card border-slate-700 text-slate-300 hover:text-white'
+          }">🛠️ Build Custom Bets</button>
+          <button type="button" data-suggest-mode="presets" class="px-3.5 py-1.5 rounded-xl text-xs font-extrabold border transition ${
+            sb.mode === 'presets'
+              ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm shadow-emerald-500/20'
+              : 'bg-card border-slate-700 text-slate-300 hover:text-white'
+          }">⚡ Quick Presets</button>
+        </div>
+        <div class="text-[11px] text-slate-400">
+          ${alreadyData.count > 0 ? `<span class="text-indigo-300 font-semibold">${alreadyData.count}</span> active bet ${alreadyData.count === 1 ? 'leg' : 'legs'} tracked` : 'No active bet legs tracked yet'}
+        </div>
+      </div>`;
+
+    const renderExclusionManager = () => {
+      if (!sb.manageOpen) return '';
+      const srcBadge = (src) =>
+        src === 'placed'
+          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">Placed</span>'
+          : src === 'saved_acca'
+            ? '<span class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-bold">Saved</span>'
+            : '<span class="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 text-[10px] font-bold">Slip</span>';
+      const localPlacedCount = loadLocalPlacedBets().length;
+      return `
+        <div class="mt-2 p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2.5 text-xs">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap items-center gap-3">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Sources:</span>
+              <span class="text-slate-300">✓ Placed Bets (${alreadyData.legs.filter((l) => l.source === 'placed').length})</span>
+              <label class="flex items-center gap-1 cursor-pointer text-slate-300">
+                <input id="sug-excl-saved-cb" type="checkbox" ${sb.includeSaved ? 'checked' : ''} class="accent-emerald-500" />
+                <span>Saved Accas</span>
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer text-slate-300">
+                <input id="sug-excl-slip-cb" type="checkbox" ${sb.includeSlip ? 'checked' : ''} class="accent-emerald-500" />
+                <span>Current Slip</span>
+              </label>
+            </div>
+            ${localPlacedCount > 0 ? '<button id="sug-clear-placed-btn" type="button" class="px-2 py-1 rounded bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-[11px] font-semibold">Clear Placed</button>' : ''}
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mr-1">Exclude Scope:</span>
+            <button type="button" data-excl-scope="market_family" class="px-2.5 py-1 rounded-full text-[11px] font-semibold border transition ${
+              sb.excludeScope === 'market_family'
+                ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                : 'bg-panel border-slate-700 text-slate-400 hover:text-white'
+            }">Same Bet Type on Match</button>
+            <button type="button" data-excl-scope="fixture" class="px-2.5 py-1 rounded-full text-[11px] font-semibold border transition ${
+              sb.excludeScope === 'fixture'
+                ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                : 'bg-panel border-slate-700 text-slate-400 hover:text-white'
+            }">Entire Match (All Markets)</button>
+          </div>
+          ${alreadyData.legs.length
+            ? `<div class="max-h-36 overflow-y-auto space-y-1 pr-1 scrollbar-thin">
+                ${alreadyData.legs
+                  .map(
+                    (l) => `
+                  <div class="px-2.5 py-1.5 rounded-lg bg-panel border border-slate-800/80 flex items-center justify-between gap-2 text-[11px]">
+                    <div class="min-w-0 flex items-center gap-1.5 flex-wrap">
+                      ${srcBadge(l.source)}
+                      ${getBetTypeInfo(l.market).badgeHtml}
+                      <span class="font-semibold text-white truncate">${esc(l.selection_label)}</span>
+                      <span class="text-slate-400 truncate">(${esc(l.home_team)} vs ${esc(l.away_team)})</span>
+                    </div>
+                    ${l.placedId ? `<button type="button" data-unmark-placed-id="${esc(l.placedId)}" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-rose-600/30 text-slate-300 shrink-0" title="Remove placed bet">✕</button>` : ''}
+                  </div>`
+                  )
+                  .join('')}
+              </div>`
+            : '<div class="text-[11px] text-slate-500">No upcoming legs marked as placed, saved, or in slip yet. Mark any bet as Placed to exclude its legs automatically.</div>'
+          }
+        </div>`;
+    };
+
+    const renderBuilderView = () => {
+      const riskBtns = [
+        ['low', '🟢 Low Risk'],
+        ['medium', '🟡 Medium'],
+        ['high', '🟠 High Risk'],
+        ['longshot', '🔥 Longshot'],
+      ];
+
+      const builtHtml = sb.builtBets.length
+        ? `<div class="space-y-3">
+            ${sb.notice ? `<div class="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-200 text-xs">ℹ️ ${esc(sb.notice)}</div>` : ''}
+            ${sb.builtBets
+              .map((b, bIdx) => {
+                const ev = b.eval || {};
+                const evPos = Number(ev.expected_value_pct || 0) >= 0;
+                const bStake = Number(b.stake || 5);
+                const accaBoost = computeBet365AccaBoost(b.legs || [], bStake);
+                const isPlaced = Boolean(findLocalPlacedBetByLegs(b.legs || []));
+                return `
+                <div class="p-4 rounded-2xl bg-card border ${isPlaced ? 'border-emerald-500/60' : 'border-slate-800'} space-y-3">
+                  <div class="flex flex-wrap items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 border border-emerald-400/40 text-emerald-300">Bet #${bIdx + 1}</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 border border-indigo-400/40 text-indigo-200">${esc(b.badge)}</span>
+                        ${isPlaced ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-slate-950">✅ Placed</span>' : ''}
+                      </div>
+                      <h3 class="text-base font-extrabold text-white mt-1">${esc(b.title)}</h3>
+                      <p class="text-xs text-slate-400">${esc(b.subtitle)}</p>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      ${(b.legs || []).length > 1 ? `<button type="button" data-cb-reroll="${bIdx}" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-xs font-bold">🔄 Re-Roll</button>` : ''}
+                      <span class="px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold font-mono">${b.confidence_score}%</span>
+                      <button type="button" data-cb-remove="${bIdx}" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-rose-600/30 text-slate-300 text-xs" title="Remove this bet">✕</button>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-3 gap-2 text-xs">
+                    <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Combined Odds</div><div class="text-sm font-bold font-mono text-emerald-400">${esc(fmtOdds(ev.combined_odds || 1))}</div></div>
+                    <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Win Chance</div><div class="text-sm font-bold font-mono text-white">${Number(ev.combined_model_prob_pct || 0).toFixed(1)}%</div></div>
+                    <div class="p-2.5 rounded-xl bg-panel border border-slate-800"><div class="text-slate-400">Value Rating</div><div class="text-sm font-bold font-mono ${evPos ? 'text-emerald-400' : 'text-amber-300'}">${evPos ? '+' : ''}${Number(ev.expected_value_pct || 0).toFixed(1)}%</div></div>
+                  </div>
+
+                  ${(accaBoost.eligible || accaBoost.twoUpCount > 0)
+                    ? `<div class="flex flex-wrap items-center gap-1.5">
+                        ${accaBoost.badgeHtml}
+                        ${accaBoost.twoUpCount > 0 ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 border border-emerald-400/40 text-emerald-300">⚡ ${accaBoost.twoUpCount}x 2-Up Early Payout</span>` : ''}
+                      </div>`
+                    : ''
+                  }
+
+                  <div class="space-y-2">
+                    ${(b.legs || [])
+                      .map((l, lIdx) => {
+                        const isLocked = lockedKeys.has(legKey(l));
+                        const btInfo = getBetTypeInfo(l.market);
+                        return `
+                        <div class="p-2.5 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} flex items-center justify-between gap-2 text-xs">
+                          <div class="min-w-0">
+                            <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}${l.kickoff_time ? ` ${esc(l.kickoff_time)}` : ''}</div>
+                            <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+                              ${btInfo.badgeHtml}
+                              <span class="font-bold text-white truncate">${lIdx + 1}. ${esc(l.selection_label)}</span>
+                              ${twoUpBadgeHtml(l.market)}
+                            </div>
+                            <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                          </div>
+                          <div class="flex items-center gap-2 shrink-0">
+                            <div class="text-right font-mono">
+                              <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
+                              <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
+                            </div>
+                            <div class="flex flex-col gap-1">
+                              <button type="button" data-cb-lock="${bIdx}:${lIdx}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
+                              <button type="button" data-cb-swap="${bIdx}:${lIdx}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
+                            </div>
+                          </div>
+                        </div>`;
+                      })
+                      .join('')}
+                  </div>
+
+                  <div class="flex flex-wrap gap-1.5 pt-1">
+                    <button type="button" data-cb-b365="${bIdx}" class="flex-1 py-2 px-3 rounded-xl btn-bet365 text-xs font-extrabold">📋 Build on Bet365</button>
+                    <button type="button" data-cb-placed="${bIdx}" class="px-3 py-2 rounded-xl border text-xs font-bold transition ${
+                      isPlaced
+                        ? 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
+                        : 'bg-slate-800 hover:bg-emerald-600/30 border-emerald-500/40 text-emerald-300'
+                    }">${isPlaced ? '✅ Placed' : '✅ Mark Placed'}</button>
+                    <button type="button" data-cb-slip="${bIdx}" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Slip</button>
+                    <button type="button" data-cb-save="${bIdx}" class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save</button>
+                    <button type="button" data-cb-share="${bIdx}" class="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold">📤</button>
+                  </div>
+                </div>`;
+              })
+              .join('')}
+          </div>`
+        : `<div class="p-6 rounded-2xl bg-card/60 border border-dashed border-slate-700 text-center space-y-2 text-xs text-slate-400">
+            ${sb.notice ? `<div class="text-amber-300 font-semibold">⚠️ ${esc(sb.notice)}</div>` : '<div class="text-sm font-bold text-slate-200">Set your criteria above and press Build a Bet</div>'}
+            <div>Choose bet types like <b>To Win</b>, <b>BTTS Yes</b>, or <b>Over 2.5 Goals</b>, pick legs &amp; how many bets to generate, and automatically skip legs you&apos;ve already backed.</div>
+          </div>`;
+
+      body.innerHTML = `
+        ${renderModeBar()}
+
+        <div class="p-4 rounded-2xl bg-card border border-slate-800 space-y-3.5 text-xs">
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">1. Type of Bet (Select one or mix several)</span>
+              <span class="text-[10px] text-slate-400">${sb.betTypes.includes('ALL') ? 'All Markets' : `${sb.betTypes.length} selected`}</span>
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+              ${BET_TYPE_OPTIONS.map((opt) => {
+                const on = sb.betTypes.includes(opt.code);
+                return `<button type="button" data-cb-type="${esc(opt.code)}" class="px-2.5 py-1.5 rounded-full text-[11px] font-semibold border transition ${
+                  on
+                    ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200 shadow-sm'
+                    : 'bg-panel border-slate-700 text-slate-300 hover:border-slate-500'
+                }">${opt.icon} ${esc(opt.shortLabel)}</button>`;
+              }).join('')}
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div class="space-y-1.5">
+              <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">2. Risk / Odds Target</div>
+              <div class="grid grid-cols-2 gap-1.5">
+                ${riskBtns
+                  .map(([rid, rlabel]) => {
+                    const on = sb.riskLevel === rid;
+                    return `<button type="button" data-cb-risk="${rid}" class="px-2.5 py-2 rounded-xl text-[11px] font-bold border text-left transition ${
+                      on
+                        ? 'bg-emerald-500/20 border-emerald-400 text-white'
+                        : 'bg-panel border-slate-700 text-slate-300 hover:border-slate-500'
+                    }">${rlabel}</button>`;
+                  })
+                  .join('')}
+              </div>
+            </div>
+
+            <div class="space-y-2.5">
+              <div class="space-y-1">
+                <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">3. Legs per Bet</div>
+                <div class="grid grid-cols-8 gap-1">
+                  ${[1, 2, 3, 4, 5, 6, 7, 8]
+                    .map(
+                      (n) => `<button type="button" data-cb-legs="${n}" class="py-1.5 rounded-lg font-mono font-bold border transition ${
+                        sb.legsCount === n
+                          ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                          : 'bg-panel border-slate-700 text-slate-400 hover:text-white'
+                      }">${n}</button>`
+                    )
+                    .join('')}
+                </div>
+              </div>
+              <div class="space-y-1">
+                <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">4. How Many Bets to Build</div>
+                <div class="grid grid-cols-5 gap-1.5">
+                  ${[1, 2, 3, 4, 5]
+                    .map(
+                      (n) => `<button type="button" data-cb-num-bets="${n}" class="py-1.5 rounded-lg font-mono font-bold border transition ${
+                        sb.numBets === n
+                          ? 'bg-indigo-500/25 border-indigo-400 text-indigo-200'
+                          : 'bg-panel border-slate-700 text-slate-400 hover:text-white'
+                      }">${n} ${n === 1 ? 'Bet' : 'Bets'}</button>`
+                    )
+                    .join('')}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+            <select id="cb-div-select" class="bg-panel border border-slate-700 rounded-xl px-2.5 py-2 text-white">
+              <option value="" ${sb.div === '' ? 'selected' : ''}>All English Leagues</option>
+              <option value="PREFERRED" ${sb.div === 'PREFERRED' ? 'selected' : ''}>★ My Preferred Leagues</option>
+              <option value="E0" ${sb.div === 'E0' ? 'selected' : ''}>Premier League</option>
+              <option value="E1" ${sb.div === 'E1' ? 'selected' : ''}>Championship</option>
+              <option value="E2" ${sb.div === 'E2' ? 'selected' : ''}>League One</option>
+              <option value="E3" ${sb.div === 'E3' ? 'selected' : ''}>League Two</option>
+            </select>
+            <select id="cb-ko-select" class="bg-panel border border-slate-700 rounded-xl px-2.5 py-2 text-white">
+              ${KICKOFF_FILTER_OPTIONS.map(([kCode, kLabel]) => `<option value="${kCode}" ${sb.kickoffFilter === kCode ? 'selected' : ''}>${kLabel}</option>`).join('')}
+            </select>
+            <label class="flex items-center gap-2 px-3 py-2 rounded-xl bg-panel border border-slate-700 cursor-pointer text-slate-200">
+              <input id="cb-official-cb" type="checkbox" ${sb.officialOnly ? 'checked' : ''} class="accent-emerald-500" />
+              <span>Official / Live Odds Only</span>
+            </label>
+          </div>
+
+          <div class="p-3 rounded-xl bg-panel border border-slate-800">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <label class="flex items-center gap-2 cursor-pointer text-slate-200 font-semibold">
+                <input id="cb-exclude-cb" type="checkbox" ${sb.excludeAlreadyBet ? 'checked' : ''} class="accent-emerald-500" />
+                <span>Exclude legs I&apos;ve already bet on</span>
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 border border-indigo-400/40 text-indigo-200">${alreadyData.count} excluded</span>
+              </label>
+              <button id="cb-manage-excl-btn" type="button" class="text-[11px] font-semibold text-cyan-300 hover:underline">
+                ${sb.manageOpen ? 'Hide Excluded ▴' : 'Manage Excluded ▾'}
+              </button>
+            </div>
+            ${renderExclusionManager()}
+          </div>
+
+          <div class="flex flex-wrap gap-2 pt-0.5">
+            <button id="cb-build-btn" type="button" ${isBuilding ? 'disabled' : ''} class="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/20 disabled:opacity-60 transition">
+              ${isBuilding ? '⏳ Building...' : sb.builtBets.length ? `🔨 Build Fresh (${sb.numBets})` : `🔨 Build ${sb.numBets === 1 ? 'a Bet' : `${sb.numBets} Bets`}`}
+            </button>
+            ${sb.builtBets.length ? `<button id="cb-add-more-btn" type="button" ${isBuilding ? 'disabled' : ''} class="px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs disabled:opacity-60 transition">➕ Add ${sb.numBets} More</button>` : ''}
+            ${sb.builtBets.length ? '<button id="cb-clear-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs">Clear</button>' : ''}
+          </div>
+        </div>
+
+        ${builtHtml}
+      `;
+
+      bindSharedModalEvents();
+
+      body.querySelectorAll('[data-cb-type]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const code = btn.dataset.cbType;
+          if (code === 'ALL') {
+            sb.betTypes = ['ALL'];
+          } else {
+            const next = sb.betTypes.filter((t) => t !== 'ALL');
+            if (next.includes(code)) {
+              const filtered = next.filter((t) => t !== code);
+              sb.betTypes = filtered.length ? filtered : ['ALL'];
+            } else {
+              sb.betTypes = [...next, code];
+            }
+          }
+          persistSuggestCriteria();
+          renderModal();
+        })
+      );
+      body.querySelectorAll('[data-cb-risk]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          sb.riskLevel = btn.dataset.cbRisk;
+          persistSuggestCriteria();
+          renderModal();
+        })
+      );
+      body.querySelectorAll('[data-cb-legs]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          sb.legsCount = Number(btn.dataset.cbLegs);
+          persistSuggestCriteria();
+          renderModal();
+        })
+      );
+      body.querySelectorAll('[data-cb-num-bets]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          sb.numBets = Number(btn.dataset.cbNumBets);
+          persistSuggestCriteria();
+          renderModal();
+        })
+      );
+      document.getElementById('cb-div-select')?.addEventListener('change', (e) => {
+        sb.div = e.target.value;
+        persistSuggestCriteria();
+      });
+      document.getElementById('cb-ko-select')?.addEventListener('change', (e) => {
+        sb.kickoffFilter = e.target.value;
+        persistSuggestCriteria();
+      });
+      document.getElementById('cb-official-cb')?.addEventListener('change', (e) => {
+        sb.officialOnly = Boolean(e.target.checked);
+        persistSuggestCriteria();
+      });
+      document.getElementById('cb-exclude-cb')?.addEventListener('change', (e) => {
+        sb.excludeAlreadyBet = Boolean(e.target.checked);
+        persistSuggestCriteria();
+        renderModal();
+      });
+      document.getElementById('cb-manage-excl-btn')?.addEventListener('click', () => {
+        sb.manageOpen = !sb.manageOpen;
+        renderModal();
+      });
+      document.getElementById('sug-excl-saved-cb')?.addEventListener('change', async (e) => {
+        sb.includeSaved = Boolean(e.target.checked);
+        persistSuggestCriteria();
+        await refreshAlreadyData();
+        renderModal();
+      });
+      document.getElementById('sug-excl-slip-cb')?.addEventListener('change', async (e) => {
+        sb.includeSlip = Boolean(e.target.checked);
+        persistSuggestCriteria();
+        await refreshAlreadyData();
+        renderModal();
+      });
+      body.querySelectorAll('[data-excl-scope]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          sb.excludeScope = btn.dataset.exclScope;
+          persistSuggestCriteria();
+          renderModal();
+        })
+      );
+      document.getElementById('sug-clear-placed-btn')?.addEventListener('click', async () => {
+        saveLocalPlacedBets([]);
+        await refreshAlreadyData();
+        renderModal();
+        showToast('Cleared locally marked placed bets');
+      });
+      body.querySelectorAll('[data-unmark-placed-id]').forEach((btn) =>
+        btn.addEventListener('click', async () => {
+          unmarkPlacedBet(btn.dataset.unmarkPlacedId);
+          await refreshAlreadyData();
+          renderModal();
+          showToast('Removed bet from excluded placed list');
+        })
+      );
+
+      document.getElementById('cb-build-btn')?.addEventListener('click', () => runBuildBets(false));
+      document.getElementById('cb-add-more-btn')?.addEventListener('click', () => runBuildBets(true));
+      document.getElementById('cb-clear-btn')?.addEventListener('click', () => {
+        sb.builtBets = [];
+        sb.notice = '';
+        renderModal();
+      });
+
+      body.querySelectorAll('[data-cb-remove]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.dataset.cbRemove);
+          sb.builtBets.splice(idx, 1);
+          renderModal();
+        })
+      );
+      body.querySelectorAll('[data-cb-lock]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const [bIdx, lIdx] = btn.dataset.cbLock.split(':').map(Number);
+          const leg = sb.builtBets[bIdx]?.legs?.[lIdx];
+          if (!leg) return;
+          const k = legKey(leg);
+          if (lockedKeys.has(k)) lockedKeys.delete(k);
+          else lockedKeys.add(k);
+          renderModal();
+        })
+      );
+      body.querySelectorAll('[data-cb-swap]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const [bIdx, lIdx] = btn.dataset.cbSwap.split(':').map(Number);
+          const pkg = sb.builtBets[bIdx];
+          const leg = pkg?.legs?.[lIdx];
+          if (!pkg || !leg) return;
+          lockedKeys.delete(legKey(leg));
+          const otherLegs = sb.builtBets.flatMap((ob, oi) => (oi === bIdx ? [] : ob.legs || []));
+          if (swapLegInPkg(pkg, lIdx, { respectCriteria: true, extraAvoidLegs: otherLegs })) {
+            renderModal();
+            showToast(`Swapped leg ${lIdx + 1} to ${pkg.legs[lIdx].selection_label}`);
+          } else {
+            showToast('No alternative matching legs available for swap', true);
+          }
+        })
+      );
+      body.querySelectorAll('[data-cb-reroll]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const bIdx = Number(btn.dataset.cbReroll);
+          const pkg = sb.builtBets[bIdx];
+          if (!pkg) return;
+          const otherLegs = sb.builtBets.flatMap((ob, oi) => (oi === bIdx ? [] : ob.legs || []));
+          let changed = 0;
+          for (let i = 0; i < (pkg.legs || []).length; i += 1) {
+            if (!lockedKeys.has(legKey(pkg.legs[i]))) {
+              if (swapLegInPkg(pkg, i, { respectCriteria: true, extraAvoidLegs: otherLegs })) changed += 1;
+            }
+          }
+          if (changed > 0) {
+            renderModal();
+            showToast(`Re-rolled ${changed} unlocked ${changed === 1 ? 'leg' : 'legs'}!`);
+          } else {
+            showToast('Unlock at least one leg to re-roll', true);
+          }
+        })
+      );
+      body.querySelectorAll('[data-cb-b365]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const pkg = sb.builtBets[Number(btn.dataset.cbB365)];
+          if (pkg) exportToBet365(pkg.legs, pkg.stake || 5, pkg.title, '', 'suggest');
+        })
+      );
+      body.querySelectorAll('[data-cb-placed]').forEach((btn) =>
+        btn.addEventListener('click', async () => {
+          const pkg = sb.builtBets[Number(btn.dataset.cbPlaced)];
+          if (!pkg) return;
+          if (findLocalPlacedBetByLegs(pkg.legs)) {
+            unmarkPlacedBetByLegs(pkg.legs);
+            showToast('Unmarked placed bet');
+          } else {
+            await markBetAsPlaced(pkg.legs, pkg.title, pkg.stake || 5);
+            showToast('Marked as placed — legs excluded from future builds!');
+          }
+          await refreshAlreadyData();
+          renderModal();
+          if (state.activeTab === 'value') renderValueTab();
+        })
+      );
+      body.querySelectorAll('[data-cb-slip]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const pkg = sb.builtBets[Number(btn.dataset.cbSlip)];
+          if (!pkg) return;
+          state.slip = pkg.legs.map((l) => ({ ...l }));
+          state.slipStake = Number(pkg.stake || state.slipStake || 10);
+          saveSlip();
+          renderSlip();
+          closeAllOverlays('slip-drawer');
+          document.getElementById('slip-drawer').classList.remove('hidden');
+          if (state.activeTab === 'fixtures') renderFixturesTab();
+          showToast(`Loaded "${pkg.title}" into your Tip Slip!`);
+        })
+      );
+      body.querySelectorAll('[data-cb-share]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const pkg = sb.builtBets[Number(btn.dataset.cbShare)];
+          if (pkg) shareAccaSummary(pkg.legs, pkg.title);
+        })
+      );
+      body.querySelectorAll('[data-cb-save]').forEach((btn) =>
+        btn.addEventListener('click', async () => {
+          const pkg = sb.builtBets[Number(btn.dataset.cbSave)];
+          if (!pkg) return;
+          if (!state.activeUserId || Number(state.activeUserId) === 0) {
+            showToast('Create your account first to save accumulator drafts!');
+            openAuthModal('register');
+            return;
+          }
+          try {
+            const saved = await api('/api/user/saved-accas', {
+              method: 'POST',
+              body: JSON.stringify({ name: pkg.title, stake: pkg.stake || 5, legs: pkg.legs }),
+            });
+            await loadDashboard(false);
+            await refreshAlreadyData();
+            if (state.activeTab === 'acca') renderAccaTab();
+            renderModal();
+            showToast(`Saved "${saved.saved_acca.name}" to your drafts!`);
+          } catch (err) {
+            showToast(err.message, true);
+          }
+        })
+      );
+    };
+
+    const renderPresetsView = () => {
+      const suggestions = res.suggestions || [];
+      const riskLevels = res.risk_levels || [];
+      const byRisk = res.by_risk || {};
+      if (!suggestions.length && !riskLevels.length) {
+        body.innerHTML = `${renderModeBar()}<div class="text-sm text-slate-400 py-6 text-center">No scheduled fixtures available yet — click Smart Sync Data first.</div>`;
+        bindSharedModalEvents();
+        return;
+      }
+
       const tier = byRisk[activeRisk] || riskLevels[0] || {};
       const tierOptions = tier.options || suggestions;
       const s = res.by_id?.[activeKey] || tier.primary || tierOptions[0] || suggestions[0];
@@ -5562,28 +7249,41 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
       const combinedDec = Number(ev.combined_odds || 1);
       const stakeNum = Math.max(0.5, Number(currentStake || getPkgStake(s, tier)));
       const sugAccaBoost = computeBet365AccaBoost(s.legs || [], stakeNum);
+      const isPlaced = Boolean(findLocalPlacedBetByLegs(s.legs || []));
 
       body.innerHTML = `
+        ${renderModeBar()}
+
+        <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-panel border border-slate-800 text-xs">
+          <label class="flex items-center gap-2 cursor-pointer text-slate-200 font-semibold">
+            <input id="preset-exclude-cb" type="checkbox" ${sb.excludeAlreadyBet ? 'checked' : ''} class="accent-emerald-500" />
+            <span>Exclude legs I&apos;ve already bet on</span>
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 border border-indigo-400/40 text-indigo-200">${alreadyData.count} excluded</span>
+          </label>
+          <button type="button" data-suggest-mode="builder" class="text-[11px] font-bold text-emerald-300 hover:underline">Need custom bet types or multiple bets? →</button>
+        </div>
+
         <div class="space-y-1.5">
           <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">1. Choose Your Risk Level</div>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
             ${riskLevels
-          .map((rl) => {
-            const isActive = rl.id === activeRisk;
-            const pOdds = rl.primary?.eval?.combined_odds;
-            return `
-              <button type="button" data-risk-tier="${esc(rl.id)}" class="p-2.5 rounded-xl text-left border transition ${isActive
-                ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm shadow-emerald-500/20'
-                : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
-              }">
-                <div class="flex items-center justify-between gap-1">
-                  <span class="text-xs font-extrabold">${esc(rl.emoji || '')} ${esc(rl.short_label || rl.label)}</span>
-                  ${pOdds ? `<span class="text-[11px] font-mono font-bold ${isActive ? 'text-emerald-300' : 'text-emerald-400'}">${esc(fmtOdds(pOdds))}</span>` : ''}
-                </div>
-                <div class="text-[10px] font-semibold mt-0.5 ${isActive ? 'text-emerald-200' : 'text-slate-400'}">${esc(rl.target_odds_label || '')}</div>
-              </button>`;
-          })
-          .join('')}
+              .map((rl) => {
+                const isActive = rl.id === activeRisk;
+                const pOdds = rl.primary?.eval?.combined_odds;
+                return `
+                  <button type="button" data-risk-tier="${esc(rl.id)}" class="p-2.5 rounded-xl text-left border transition ${
+                    isActive
+                      ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm shadow-emerald-500/20'
+                      : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
+                  }">
+                    <div class="flex items-center justify-between gap-1">
+                      <span class="text-xs font-extrabold">${esc(rl.emoji || '')} ${esc(rl.short_label || rl.label)}</span>
+                      ${pOdds ? `<span class="text-[11px] font-mono font-bold ${isActive ? 'text-emerald-300' : 'text-emerald-400'}">${esc(fmtOdds(pOdds))}</span>` : ''}
+                    </div>
+                    <div class="text-[10px] font-semibold mt-0.5 ${isActive ? 'text-emerald-200' : 'text-slate-400'}">${esc(rl.target_odds_label || '')}</div>
+                  </button>`;
+              })
+              .join('')}
           </div>
         </div>
 
@@ -5591,20 +7291,21 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">2. Pick Angle Within ${esc(tier.short_label || activeRisk)}</div>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
             ${tierOptions
-          .map(
-            (item) => `
-              <button type="button" data-sug-tab="${esc(item.id)}" class="px-3 py-2 rounded-xl text-left border transition ${item.id === s.id
-                ? 'bg-indigo-500/20 border-indigo-400 text-white'
-                : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
-              }">
-                <div class="flex items-center justify-between gap-1">
-                  <span class="text-[10px] font-bold uppercase tracking-wider ${item.id === s.id ? 'text-indigo-300' : 'text-slate-400'}">${esc(item.badge)}</span>
-                  <span class="text-[11px] font-mono font-bold text-emerald-400">${esc(fmtOdds(item.eval?.combined_odds || 1))}</span>
-                </div>
-                <div class="text-xs font-bold truncate mt-0.5">${esc(item.title)}</div>
-              </button>`
-          )
-          .join('')}
+              .map(
+                (item) => `
+                  <button type="button" data-sug-tab="${esc(item.id)}" class="px-3 py-2 rounded-xl text-left border transition ${
+                    item.id === s.id
+                      ? 'bg-indigo-500/20 border-indigo-400 text-white'
+                      : 'bg-card border-slate-800 text-slate-300 hover:border-slate-600'
+                  }">
+                    <div class="flex items-center justify-between gap-1">
+                      <span class="text-[10px] font-bold uppercase tracking-wider ${item.id === s.id ? 'text-indigo-300' : 'text-slate-400'}">${esc(item.badge)}</span>
+                      <span class="text-[11px] font-mono font-bold text-emerald-400">${esc(fmtOdds(item.eval?.combined_odds || 1))}</span>
+                    </div>
+                    <div class="text-xs font-bold truncate mt-0.5">${esc(item.title)}</div>
+                  </button>`
+              )
+              .join('')}
           </div>
         </div>
 
@@ -5615,7 +7316,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
               <p class="text-xs text-slate-400 mt-0.5">${esc(s.subtitle)}</p>
             </div>
             <div class="flex items-center gap-1.5">
-              ${(s.legs || []).length > 1 ? `<button id="sug-reroll-btn" type="button" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-xs font-bold transition">🔄 Re-Roll Unlocked</button>` : ''}
+              ${(s.legs || []).length > 1 ? '<button id="sug-reroll-btn" type="button" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-xs font-bold transition">🔄 Re-Roll Unlocked</button>' : ''}
               <div class="px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold font-mono">
                 ${s.confidence_score}% Confidence
               </div>
@@ -5638,30 +7339,32 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
 
           <div class="space-y-2">
             ${(s.legs || [])
-          .map(
-            (l, i) => {
-              const isLocked = lockedKeys.has(legKey(l));
-              return `
-              <div class="p-3 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} flex items-center justify-between gap-2 text-xs">
-                <div class="min-w-0">
-                  <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}</div>
-                  <div class="flex items-center gap-1.5 flex-wrap mt-0.5"><span class="font-bold text-white truncate">${i + 1}. ${esc(l.selection_label)}</span>${twoUpBadgeHtml(l.market)}</div>
-                  <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
-                </div>
-                <div class="flex items-center gap-2 shrink-0">
-                  <div class="text-right font-mono">
-                    <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
-                    <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
-                  </div>
-                  <div class="flex flex-col gap-1">
-                    <button type="button" data-lock-leg="${i}" title="${isLocked ? 'Unlock leg' : 'Lock leg'}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
-                    <button type="button" data-swap-leg="${i}" title="Swap this leg" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
-                  </div>
-                </div>
-              </div>`;
-            }
-          )
-          .join('')}
+              .map((l, i) => {
+                const isLocked = lockedKeys.has(legKey(l));
+                return `
+                  <div class="p-3 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} flex items-center justify-between gap-2 text-xs">
+                    <div class="min-w-0">
+                      <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}</div>
+                      <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+                        ${getBetTypeInfo(l.market).badgeHtml}
+                        <span class="font-bold text-white truncate">${i + 1}. ${esc(l.selection_label)}</span>
+                        ${twoUpBadgeHtml(l.market)}
+                      </div>
+                      <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                      <div class="text-right font-mono">
+                        <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
+                        <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
+                      </div>
+                      <div class="flex flex-col gap-1">
+                        <button type="button" data-lock-leg="${i}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
+                        <button type="button" data-swap-leg="${i}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
+                      </div>
+                    </div>
+                  </div>`;
+              })
+              .join('')}
           </div>
 
           <div class="p-3 rounded-xl bg-panel border border-slate-800 space-y-1.5">
@@ -5673,12 +7376,27 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
 
           <div class="flex flex-wrap gap-2 pt-1">
             <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">📋 Build on Bet365</button>
-            <button id="sug-load-slip-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Load to Slip</button>
-            <button id="sug-share-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold">📤 Share</button>
+            <button id="sug-mark-placed-btn" type="button" class="px-3 py-2.5 rounded-xl border text-xs font-bold transition ${
+              isPlaced
+                ? 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
+                : 'bg-slate-800 hover:bg-emerald-600/30 border-emerald-500/40 text-emerald-300'
+            }">${isPlaced ? '✅ Placed' : '✅ Mark Placed'}</button>
+            <button id="sug-load-slip-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold">🧾 Slip</button>
+            <button id="sug-share-btn" type="button" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold">📤</button>
             <button id="sug-save-draft-btn" type="button" class="px-3 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">💾 Save</button>
           </div>
         </div>
       `;
+
+      bindSharedModalEvents();
+
+      document.getElementById('preset-exclude-cb')?.addEventListener('change', async (e) => {
+        sb.excludeAlreadyBet = Boolean(e.target.checked);
+        persistSuggestCriteria();
+        res = await fetchPresets(sb.excludeAlreadyBet, sb.excludeScope);
+        syncPresetSelection();
+        renderModal();
+      });
 
       body.querySelectorAll('[data-risk-tier]').forEach((btn) =>
         btn.addEventListener('click', () => {
@@ -5688,7 +7406,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           if (nextPkg) activeKey = nextPkg.id;
           currentStake = getPkgStake(res.by_id?.[activeKey], nextTier);
           persistRisk(activeRisk);
-          renderPkg();
+          renderModal();
         })
       );
 
@@ -5696,7 +7414,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
         btn.addEventListener('click', () => {
           activeKey = btn.dataset.sugTab;
           currentStake = getPkgStake(res.by_id?.[activeKey], byRisk[activeRisk]);
-          renderPkg();
+          renderModal();
         })
       );
 
@@ -5708,7 +7426,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           const k = legKey(leg);
           if (lockedKeys.has(k)) lockedKeys.delete(k);
           else lockedKeys.add(k);
-          renderPkg();
+          renderModal();
         })
       );
 
@@ -5718,8 +7436,8 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
           const leg = s.legs?.[idx];
           if (!leg) return;
           lockedKeys.delete(legKey(leg));
-          if (swapLegAt(s, idx)) {
-            renderPkg();
+          if (swapLegInPkg(s, idx, { respectCriteria: false })) {
+            renderModal();
             showToast(`Swapped leg ${idx + 1} to ${s.legs[idx].selection_label}`);
           } else {
             showToast('No alternative matches available for swap right now', true);
@@ -5731,11 +7449,11 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
         let changed = 0;
         for (let i = 0; i < (s.legs || []).length; i += 1) {
           if (!lockedKeys.has(legKey(s.legs[i]))) {
-            if (swapLegAt(s, i)) changed += 1;
+            if (swapLegInPkg(s, i, { respectCriteria: false })) changed += 1;
           }
         }
         if (changed > 0) {
-          renderPkg();
+          renderModal();
           showToast(`Re-rolled ${changed} unlocked ${changed === 1 ? 'leg' : 'legs'}!`);
         } else {
           showToast('Unlock at least one leg to re-roll', true);
@@ -5745,11 +7463,26 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
       document.getElementById('sug-share-btn')?.addEventListener('click', () =>
         shareAccaSummary(s.legs, s.title)
       );
-
-      document.getElementById('sug-export-b365-btn').addEventListener('click', () =>
+      document.getElementById('sug-mark-placed-btn')?.addEventListener('click', async () => {
+        if (findLocalPlacedBetByLegs(s.legs)) {
+          unmarkPlacedBetByLegs(s.legs);
+          showToast('Unmarked placed bet');
+        } else {
+          await markBetAsPlaced(s.legs, s.title, currentStake);
+          showToast('Marked as placed — legs excluded from future builds!');
+        }
+        await refreshAlreadyData();
+        if (sb.excludeAlreadyBet) {
+          res = await fetchPresets(true, sb.excludeScope);
+          syncPresetSelection();
+        }
+        renderModal();
+        if (state.activeTab === 'value') renderValueTab();
+      });
+      document.getElementById('sug-export-b365-btn')?.addEventListener('click', () =>
         exportToBet365(s.legs, currentStake, s.title, '', 'suggest')
       );
-      document.getElementById('sug-load-slip-btn').addEventListener('click', () => {
+      document.getElementById('sug-load-slip-btn')?.addEventListener('click', () => {
         state.slip = s.legs.map((l) => ({ ...l }));
         state.slipStake = Number(currentStake || state.slipStake || 10);
         saveSlip();
@@ -5759,7 +7492,7 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
         if (state.activeTab === 'fixtures') renderFixturesTab();
         showToast(`Loaded "${s.title}" into your Tip Slip!`);
       });
-      document.getElementById('sug-save-draft-btn').addEventListener('click', async () => {
+      document.getElementById('sug-save-draft-btn')?.addEventListener('click', async () => {
         if (!state.activeUserId || Number(state.activeUserId) === 0) {
           showToast('Create your account first to save accumulator drafts!');
           openAuthModal('register');
@@ -5771,7 +7504,9 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
             body: JSON.stringify({ name: s.title, stake: currentStake, legs: s.legs }),
           });
           await loadDashboard(false);
+          await refreshAlreadyData();
           if (state.activeTab === 'acca') renderAccaTab();
+          renderModal();
           showToast(`Saved "${saved.saved_acca.name}" to your drafts!`);
         } catch (err) {
           showToast(err.message, true);
@@ -5779,7 +7514,26 @@ async function openSuggestModal(initialRiskOrKey = state.activeRiskLevel || 'hig
       });
     };
 
-    renderPkg();
+    const bindSharedModalEvents = () => {
+      body.querySelectorAll('[data-suggest-mode]').forEach((btn) =>
+        btn.addEventListener('click', async () => {
+          sb.mode = btn.dataset.suggestMode;
+          persistSuggestCriteria();
+          if (sb.mode === 'presets') {
+            res = await fetchPresets(sb.excludeAlreadyBet, sb.excludeScope);
+            syncPresetSelection();
+          }
+          renderModal();
+        })
+      );
+    };
+
+    const renderModal = () => {
+      if (sb.mode === 'presets') renderPresetsView();
+      else renderBuilderView();
+    };
+
+    renderModal();
   } catch (err) {
     body.innerHTML = `<div class="text-sm text-rose-400 py-6 text-center">${esc(err.message)}</div>`;
   }
@@ -5837,9 +7591,9 @@ function bindGlobalEvents() {
     authTabReg.addEventListener('click', () => renderAuthModalBody('register'));
   }
 
-  document.getElementById('open-suggest-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
-  document.getElementById('open-suggest-sidebar-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
-  document.getElementById('open-suggest-mobile-btn')?.addEventListener('click', () => openSuggestModal(state.activeRiskLevel || 'high'));
+  document.getElementById('open-suggest-btn')?.addEventListener('click', () => openSuggestModal());
+  document.getElementById('open-suggest-sidebar-btn')?.addEventListener('click', () => openSuggestModal());
+  document.getElementById('open-suggest-mobile-btn')?.addEventListener('click', () => openSuggestModal());
   document.getElementById('open-boost-sidebar-btn')?.addEventListener('click', () => openBoostCheckerModal());
   document.getElementById('open-boost-checker-btn')?.addEventListener('click', () => openBoostCheckerModal());
   document.getElementById('close-suggest-modal')?.addEventListener('click', () =>
