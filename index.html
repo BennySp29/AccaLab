@@ -4,8 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#060913" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AccaLab" />
   <title>AccaLab — Football Betting Assistant</title>
   <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
   <link rel="icon" href="./icon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -80,7 +85,7 @@
   <!-- Desktop Sidebar -->
   <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 glass-panel border-r border-slate-800/80 z-30">
     <div class="p-5 border-b border-slate-800/80 flex items-center gap-3">
-      <img src="./icon.svg" alt="AccaLab" class="w-9 h-9 rounded-xl ring-1 ring-emerald-500/30" />
+      <img src="./icon-192.png" alt="AccaLab" class="w-9 h-9 rounded-xl ring-1 ring-emerald-500/30" />
       <div>
         <h1 class="text-lg font-extrabold tracking-tight text-white">AccaLab</h1>
         <p class="text-xs font-medium text-emerald-400">EPL → League Two</p>
@@ -138,7 +143,7 @@
     <!-- Top Header Bar -->
     <header class="lg:sticky lg:top-0 z-20 glass-panel border-b border-slate-800/80 px-3 py-2 lg:px-4 lg:py-3 flex flex-wrap items-center justify-between gap-2 lg:gap-3">
       <div class="flex items-center gap-2 lg:hidden">
-        <img src="./icon.svg" alt="AccaLab" class="w-7 h-7 rounded-lg" />
+        <img src="./icon-192.png" alt="AccaLab" class="w-7 h-7 rounded-lg" />
         <span class="font-extrabold text-sm text-white">AccaLab</span>
       </div>
       <div id="kpi-strip" class="hidden lg:flex flex-wrap items-center gap-2 text-xs">
@@ -246,6 +251,6 @@
   <!-- Toast Banner -->
   <div id="toast" class="hidden fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium shadow-xl z-50"></div>
 
-  <script type="module" src="./static/app.js?v=a04367a9"></script>
+  <script type="module" src="./static/app.js?v=213c2ad8"></script>
 </body>
 </html>

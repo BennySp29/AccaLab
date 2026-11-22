@@ -225,11 +225,19 @@ BET_TYPE_FILTER_GROUPS: dict[str, frozenset[str]] = {
 
 def market_bet_type(market_code: str) -> dict[str, str]:
     """Return canonical bet-type metadata ({key, label}) for a market code."""
-    code = str(market_code or "").strip()
+    code = str(market_code or "").strip().upper()
     if code in MARKET_BET_TYPES:
         return dict(MARKET_BET_TYPES[code])
-    if code.startswith("COMBO_"):
-        return {"key": "combo", "label": "Bet Builder"}
+    if code.startswith("BB_") or code.startswith("COMBO_"):
+        return {"key": "bet_builder", "label": "Build a Bet"}
+    if code.startswith("DC_"):
+        return {"key": "double_chance", "label": "Double Chance"}
+    if code.startswith("TEAM_"):
+        return {"key": "team_goals", "label": "Team Goals"}
+    if code.startswith("CORN_"):
+        return {"key": "corners", "label": "Corners"}
+    if code.startswith("CARD_"):
+        return {"key": "cards", "label": "Cards"}
     return {"key": "other", "label": code or "Other"}
 
 

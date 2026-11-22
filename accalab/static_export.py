@@ -24,6 +24,7 @@ def export_static_site() -> dict[str, Any]:
     fixtures_res = client.get("/api/fixtures").get_json()
     fixtures = fixtures_res.get("fixtures", []) if fixtures_res else []
     value_res = client.get("/api/value-bets?min_edge=-25").get_json()
+    builders_res = client.get("/api/bet-builders?limit=40").get_json()
     presets_res = client.get("/api/acca/presets").get_json()
     suggest_res = client.get("/api/suggest-bet").get_json()
     leaderboard_res = client.get("/api/leaderboard").get_json()
@@ -59,6 +60,7 @@ def export_static_site() -> dict[str, Any]:
         "standings_by_div": standings_by_div,
         "fixture_details": fixture_details,
         "value_bets": (value_res or {}).get("opportunities", []),
+        "bet_builders": (builders_res or {}).get("builders", []),
         "acca_presets": (presets_res or {}).get("presets", []),
         "suggest_bet": suggest_res or {},
         "leaderboard": leaderboard_res or {},
@@ -110,6 +112,13 @@ def export_static_site() -> dict[str, Any]:
     icon_bytes = client.get("/icon.svg").data
     (BASE_DIR / "icon.svg").write_bytes(icon_bytes)
 
+    icon_180 = client.get("/apple-touch-icon.png").data
+    (BASE_DIR / "apple-touch-icon.png").write_bytes(icon_180)
+    icon_192 = client.get("/icon-192.png").data
+    (BASE_DIR / "icon-192.png").write_bytes(icon_192)
+    icon_512 = client.get("/icon-512.png").data
+    (BASE_DIR / "icon-512.png").write_bytes(icon_512)
+
     return {
         "generated_at": snapshot["generated_at"],
         "build_version": build_version,
@@ -123,6 +132,9 @@ def export_static_site() -> dict[str, Any]:
             "manifest.json",
             "sw.js",
             "icon.svg",
+            "apple-touch-icon.png",
+            "icon-192.png",
+            "icon-512.png",
             "static/app.js",
             "static/accalab-bet365.user.js",
             "static/snapshot.json",

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
+import struct
+import zlib
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, session
@@ -43,10 +47,14 @@ from accalab.value_engine import (
     build_acca_presets,
     build_bet365_export,
     build_bet_suggestions,
+    build_custom_bet_builders,
     build_custom_bets,
+    compute_team_prop_averages,
     devig_three_way,
     devig_two_way,
+    estimate_fixture_props,
     evaluate_acca,
+    find_bet_builder_tips,
     find_value_opportunities,
     get_user_already_bet_legs,
     is_fixture_upcoming,
@@ -55,6 +63,95 @@ from accalab.value_engine import (
     send_telegram_message,
     settle_bets,
 )
+
+
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+
+@lru_cache(maxsize=8)
+def render_app_icon_png(size: int = 180) -> bytes:
+    """Render an opaque anti-aliased RGB PNG matching AccaLab's SVG app icon (iOS PWA compatible)."""
+    px_size = max(32, min(1024, int(size)))
+    scale = 128.0 / px_size
+    aa = max(0.65, 0.85 * scale)
+    bg_r, bg_g, bg_b = 15, 23, 42
+
+    # Precompute polyline segment vectors for (40,78)->(58,46)->(72,68)->(88,42)
+    pts = ((40.0, 78.0), (58.0, 46.0), (72.0, 68.0), (88.0, 42.0))
+    segs = []
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        dx = x2 - x1
+        dy = y2 - y1
+        segs.append((x1, y1, dx, dy, 1.0 / (dx * dx + dy * dy)))
+
+    bg_px = bytes((bg_r, bg_g, bg_b))
+    bg_row = b"\x00" + bg_px * px_size
+    scanlines = bytearray()
+
+    for py in range(px_size):
+        vy = (py + 0.5) * scale
+        if vy < 14.0 or vy > 114.0:
+            scanlines.extend(bg_row)
+            continue
+
+        row = bytearray([0])
+        for px in range(px_size):
+            vx = (px + 0.5) * scale
+            if vx < 14.0 or vx > 114.0:
+                row.extend(bg_px)
+                continue
+
+            r, g, b = float(bg_r), float(bg_g), float(bg_b)
+
+            # 1. Emerald ring: circle center (64,64), radius 44, stroke-width 8 (#10b981)
+            d_ring = abs(math.hypot(vx - 64.0, vy - 64.0) - 44.0) - 4.0
+            if d_ring < aa:
+                a = 1.0 if d_ring <= -aa else max(0.0, min(1.0, 0.5 - d_ring / aa))
+                inv = 1.0 - a
+                r = r * inv + 16.0 * a
+                g = g * inv + 185.0 * a
+                b = b * inv + 129.0 * a
+
+            # 2. Trend polyline: rounded joints & caps, stroke-width 8 (#34d399)
+            min_d2 = 1e9
+            for x1, y1, dx, dy, inv_l2 in segs:
+                t = ((vx - x1) * dx + (vy - y1) * dy) * inv_l2
+                if t < 0.0:
+                    t = 0.0
+                elif t > 1.0:
+                    t = 1.0
+                cx = x1 + t * dx - vx
+                cy = y1 + t * dy - vy
+                d2 = cx * cx + cy * cy
+                if d2 < min_d2:
+                    min_d2 = d2
+            d_line = math.sqrt(min_d2) - 4.0
+            if d_line < aa:
+                a = 1.0 if d_line <= -aa else max(0.0, min(1.0, 0.5 - d_line / aa))
+                inv = 1.0 - a
+                r = r * inv + 52.0 * a
+                g = g * inv + 211.0 * a
+                b = b * inv + 153.0 * a
+
+            # 3. Gold peak dot: circle center (88,42), radius 6 (#fbbf24)
+            d_dot = math.hypot(vx - 88.0, vy - 42.0) - 6.0
+            if d_dot < aa:
+                a = 1.0 if d_dot <= -aa else max(0.0, min(1.0, 0.5 - d_dot / aa))
+                inv = 1.0 - a
+                r = r * inv + 251.0 * a
+                g = g * inv + 191.0 * a
+                b = b * inv + 36.0 * a
+
+            row.append(int(r + 0.5))
+            row.append(int(g + 0.5))
+            row.append(int(b + 0.5))
+        scanlines.extend(row)
+
+    ihdr = struct.pack(">IIBBBBB", px_size, px_size, 8, 2, 0, 0, 0)
+    idat = zlib.compress(bytes(scanlines), level=6)
+    return b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", ihdr) + _png_chunk(b"IDAT", idat) + _png_chunk(b"IEND", b"")
 
 
 def create_app() -> Flask:
@@ -234,6 +331,18 @@ def create_app() -> Flask:
         )
         return Response(svg, mimetype="image/svg+xml")
 
+    @app.route("/apple-touch-icon.png")
+    def apple_touch_icon() -> Response:
+        return Response(render_app_icon_png(180), mimetype="image/png")
+
+    @app.route("/icon-192.png")
+    def app_icon_192() -> Response:
+        return Response(render_app_icon_png(192), mimetype="image/png")
+
+    @app.route("/icon-512.png")
+    def app_icon_512() -> Response:
+        return Response(render_app_icon_png(512), mimetype="image/png")
+
     @app.route("/api/dashboard")
     def api_dashboard() -> Response:
         with db_session() as conn:
@@ -394,6 +503,7 @@ def create_app() -> Flask:
                 if upcoming_raw:
                     raw_rows = upcoming_raw
 
+            prop_stats = compute_team_prop_averages(conn)
             fixtures = []
             for d in raw_rows:
                 is_fav = d["home_team"] in fav_set or d["away_team"] in fav_set
@@ -408,6 +518,7 @@ def create_app() -> Flask:
                 d["top_scorelines"] = json.loads(d.pop("top_scorelines_json") or "[]")
                 d["tipster_consensus"] = json.loads(d.pop("tipster_consensus_json") or "{}")
                 d["best_edge"] = _fixture_best_edge(d)
+                d.update(estimate_fixture_props(d, prop_stats))
                 d["is_watched"] = is_watched
                 d["is_favourite_match"] = is_fav
                 fixtures.append(d)
@@ -743,6 +854,32 @@ def create_app() -> Flask:
         with db_session() as conn:
             user = _get_active_user(conn)
             return jsonify(build_custom_bets(conn, user, payload))
+
+    @app.route("/api/bet-builders")
+    def api_bet_builders() -> Response:
+        div = (request.args.get("div") or "").strip() or None
+        style = (request.args.get("style") or "").strip() or None
+        try:
+            limit = max(1, min(100, int(request.args.get("limit", "36"))))
+        except (TypeError, ValueError):
+            limit = 36
+        with db_session() as conn:
+            user = _get_active_user(conn)
+            builders = find_bet_builder_tips(
+                conn,
+                user,
+                div_filter=div,
+                style_filter=style,
+                limit=limit,
+            )
+            return jsonify({"builders": builders, "total": len(builders)})
+
+    @app.route("/api/suggest-bet/bet-builder", methods=["POST"])
+    def api_suggest_bet_builder() -> Response:
+        payload = request.get_json(silent=True) or {}
+        with db_session() as conn:
+            user = _get_active_user(conn)
+            return jsonify(build_custom_bet_builders(conn, user, payload))
 
     @app.route("/api/bet365/export", methods=["POST"])
     def api_bet365_export() -> Response:

@@ -1,5 +1,14 @@
-const CACHE_NAME = 'accalab-v3-a04367a9';
-const APP_SHELL = ['./', './index.html', './manifest.json', './static/app.js', './icon.svg'];
+const CACHE_NAME = 'accalab-v3-213c2ad8';
+const APP_SHELL = [
+  './',
+  './index.html',
+  './manifest.json',
+  './static/app.js',
+  './icon.svg',
+  './apple-touch-icon.png',
+  './icon-192.png',
+  './icon-512.png',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
