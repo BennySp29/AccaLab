@@ -65,6 +65,7 @@ const state = {
   valOfficialOnly: false,
   b365ChecklistSource: 'suggest',
   suggestBuilder: loadSavedSuggestCriteria(),
+  expandedTipKeys: new Set(),
   liveScoresByMatch: {},
   liveScoresUpdatedAt: null,
   charts: {},
@@ -1599,6 +1600,208 @@ function estimateTwoWayOddsClient(probYes, baseYes, alpha = 0.60, margin = 1.052
   ];
 }
 
+function getFallbackLegReasons(item) {
+  if (!item) return [];
+  const probPct =
+    item.model_prob_pct != null
+      ? Number(item.model_prob_pct)
+      : Number(item.model_prob || 0) * 100.0;
+  const odds = Number(item.odds || 0);
+  const fairOdds = item.fair_odds || (probPct > 0 ? 100.0 / probPct : 0);
+  const edge = Number(item.edge_pct || 0);
+  const out = [];
+  if (odds > 1.01 && probPct > 0) {
+    out.push(
+      `Value Edge: Model rates ${item.selection_label || item.market} at ${probPct.toFixed(1)}% (fair ${fmtOdds(fairOdds)}) vs ${fmtOdds(odds)} odds (${edge >= 0 ? '+' : ''}${edge.toFixed(1)}% edge).`
+    );
+  }
+  if (item.trust_badge) {
+    const roiTxt =
+      item.backtest_roi_pct != null
+        ? ` (${Number(item.backtest_roi_pct) >= 0 ? '+' : ''}${Number(item.backtest_roi_pct).toFixed(1)}% historical ROI)`
+        : '';
+    out.push(`Confidence Signal: Classified as ${item.trust_badge}${roiTxt}.`);
+  }
+  return out;
+}
+
+function buildSelectionReasonsClient(
+  row,
+  mCode,
+  selLabel,
+  mProb,
+  odds,
+  edgePct,
+  bt,
+  matchedNews,
+  mktSrc,
+  trustBadge,
+  { includeEmptyNewsNote = true } = {}
+) {
+  const lam = Number(row.lambda_home ?? 1.35);
+  const mu = Number(row.mu_away ?? 1.15);
+  const totXg = lam + mu;
+  const hElo = Number(row.home_elo || 1500);
+  const aElo = Number(row.away_elo || 1500);
+  const eloGap = hElo - aElo;
+  const hForm = row.home_form || 'N/A';
+  const aForm = row.away_form || 'N/A';
+  const hSotFor = Number(row.h_sot_for || 0);
+  const aSotFor = Number(row.a_sot_for || 0);
+  const fairOdds = 1.0 / Math.max(mProb, 0.01);
+  const priceTag = mktSrc === 'market_estimate' ? 'estimated ' : '';
+  const signEdge = `${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}%`;
+
+  const b1 =
+    edgePct >= 0
+      ? `Value Edge: Model rates ${selLabel} at ${(mProb * 100).toFixed(1)}% (fair ${fmtOdds(fairOdds)}) vs ${fmtOdds(odds)} ${priceTag}odds (${signEdge} edge).`
+      : `Model Probability: Rates ${selLabel} at ${(mProb * 100).toFixed(1)}% (fair ${fmtOdds(fairOdds)}) vs ${fmtOdds(odds)} ${priceTag}odds (${signEdge} vs market).`;
+
+  const eloStr = `${row.home_team} ${Math.round(hElo)} vs ${row.away_team} ${Math.round(aElo)}`;
+  const sotStr = hSotFor > 0 || aSotFor > 0 ? ` • SoT/game: ${hSotFor.toFixed(1)} vs ${aSotFor.toFixed(1)}` : '';
+  let b2 = '';
+  if (mCode === '1X2_H') {
+    const gapTxt = eloGap >= 15 ? `+${Math.round(eloGap)} home Elo edge` : `Elo gap ${eloGap >= 0 ? '+' : ''}${Math.round(eloGap)}`;
+    b2 = `Matchup & xG: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} (${gapTxt}; ${eloStr})${sotStr}.`;
+  } else if (mCode === '1X2_A') {
+    const awayAdv = -eloGap;
+    const gapTxt = awayAdv >= 15 ? `+${Math.round(awayAdv)} away Elo edge` : `Elo ${awayAdv >= 0 ? '+' : ''}${Math.round(awayAdv)}`;
+    b2 = `Matchup & xG: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} (${gapTxt}; ${eloStr})${sotStr}.`;
+  } else if (mCode === '1X2_D') {
+    b2 = `Tight Balance: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} with close Elo (${eloStr}, gap ${Math.round(Math.abs(eloGap))})${sotStr}.`;
+  } else if (mCode === 'BTTS_Y') {
+    b2 = `Attacking Output: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG (${totXg.toFixed(2)} total) supports both sides scoring${sotStr}.`;
+  } else if (mCode === 'BTTS_N') {
+    b2 = `Clean-Sheet Profile: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG points to at least one shutout (${eloStr})${sotStr}.`;
+  } else if (mCode.startsWith('OU_O')) {
+    const line = mCode.includes('15') ? '1.5' : mCode.includes('35') ? '3.5' : '2.5';
+    b2 = `Goal Expectancy: Combined ${totXg.toFixed(2)} xG (${lam.toFixed(2)} + ${mu.toFixed(2)}) favours Over ${line} goals${sotStr}.`;
+  } else {
+    const line = mCode.includes('15') ? '1.5' : mCode.includes('35') ? '3.5' : '2.5';
+    b2 = `Low-Scoring Profile: Combined ${totXg.toFixed(2)} xG (${lam.toFixed(2)} + ${mu.toFixed(2)}) leans Under ${line} goals${sotStr}.`;
+  }
+
+  let btDetail = '';
+  if (bt && bt.value_bets_count != null) {
+    btDetail = ` (${Number(bt.flat_roi_pct) >= 0 ? '+' : ''}${Number(bt.flat_roi_pct).toFixed(1)}% ROI over ${bt.value_bets_count} bets)`;
+  } else if (bt && bt.avg_clv_pct) {
+    btDetail = ` (+${Number(bt.avg_clv_pct).toFixed(1)}% avg CLV)`;
+  }
+  const b3 = `Form & Track Record: ${hForm} (H) vs ${aForm} (A) • ${trustBadge}${btDetail}.`;
+
+  const reasons = [b1, b2, b3];
+  if (matchedNews) {
+    reasons.push(`Team News: [${matchedNews.source}] ${matchedNews.title}`);
+  } else if (includeEmptyNewsNote) {
+    reasons.push('News Check: No disruptive late club headlines in BBC/Sky/Guardian feeds.');
+  }
+
+  const reasonStats = {
+    xg_home: roundNum(lam, 2),
+    xg_away: roundNum(mu, 2),
+    total_xg: roundNum(totXg, 2),
+    elo_home: Math.round(hElo),
+    elo_away: Math.round(aElo),
+    form_home: hForm,
+    form_away: aForm,
+    fair_odds: roundNum(fairOdds, 2),
+    trust_badge: trustBadge,
+  };
+  if (hSotFor > 0 || aSotFor > 0) {
+    reasonStats.sot_home = roundNum(hSotFor, 1);
+    reasonStats.sot_away = roundNum(aSotFor, 1);
+  }
+  if (bt && bt.flat_roi_pct != null) reasonStats.backtest_roi_pct = roundNum(Number(bt.flat_roi_pct), 1);
+  if (matchedNews) reasonStats.news_headline = `[${matchedNews.source}] ${matchedNews.title}`;
+
+  return { reasons, reason_stats: reasonStats };
+}
+
+function buildBetLevelReasonsClient(title, legs, ev, riskLevel, criteria = null, excludeAlreadyBet = false) {
+  if (!Array.isArray(legs) || !legs.length) return [];
+  const riskLabels = { low: 'Low Risk', medium: 'Balanced', high: 'High Risk', longshot: 'Longshot' };
+  const rLabel = riskLabels[riskLevel] || String(riskLevel || 'Balanced');
+  const distinctFixtures = new Set(legs.map((l) => canonicalMatchKeyClient(l) || `fid:${l.fixture_id}`)).size;
+  const combFrac = ev?.combined_odds_fractional || fmtOdds(ev?.combined_odds);
+  const combProb = Number(ev?.combined_model_prob_pct || 0);
+  const evPct = Number(ev?.expected_value_pct || 0);
+  const bestLeg = legs.reduce((best, cur) => (Number(cur.edge_pct || 0) > Number(best.edge_pct || 0) ? cur : best), legs[0]);
+
+  const out = [];
+  if (criteria && criteria.bet_type_summary) {
+    out.push(
+      `Criteria Match: ${rLabel} ${legs.length}-leg build focused on ${criteria.bet_type_summary} across ${distinctFixtures} distinct fixtures.`
+    );
+  } else {
+    out.push(
+      `Selection Strategy: ${title} (${rLabel}) combining ${legs.length} top-scoring ${legs.length === 1 ? 'leg' : 'legs'} across ${distinctFixtures} matches.`
+    );
+  }
+  out.push(
+    `Combined Math: ${combFrac} combined odds • ${combProb.toFixed(1)}% model win chance (${evPct >= 0 ? '+' : ''}${evPct.toFixed(1)}% expected value).`
+  );
+  const bestEdge = Number(bestLeg.edge_pct || 0);
+  out.push(
+    `Strongest Driver: ${bestLeg.selection_label} (${bestLeg.home_team} vs ${bestLeg.away_team}) leads at ${bestEdge >= 0 ? '+' : ''}${bestEdge.toFixed(1)}% edge.`
+  );
+
+  const twoUpCnt = legs.filter((l) => l.market === '1X2_H' || l.market === '1X2_A').length;
+  const notes = [];
+  if (excludeAlreadyBet) notes.push('screened out your active placed/saved/slip legs');
+  if (twoUpCnt > 0) notes.push(`${twoUpCnt}x 2-Up Early Payout eligible`);
+  if (legs.length >= 2) notes.push('Acca Boost qualifying leg structure');
+  if (notes.length) {
+    const first = notes[0].charAt(0).toUpperCase() + notes[0].slice(1);
+    out.push(`Bet Safeguards & Perks: ${first}${notes.length > 1 ? ` • ${notes.slice(1).join(' • ')}` : ''}.`);
+  }
+  return out;
+}
+
+function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
+  const bullets = Array.isArray(reasons) && reasons.length ? reasons : getFallbackLegReasons(opts.item);
+  const chips = [];
+  if (stats && stats.xg_home != null && stats.xg_away != null) {
+    chips.push(`xG ${Number(stats.xg_home).toFixed(2)}–${Number(stats.xg_away).toFixed(2)}`);
+  }
+  if (stats && stats.elo_home != null && stats.elo_away != null) {
+    chips.push(`Elo ${Math.round(stats.elo_home)} vs ${Math.round(stats.elo_away)}`);
+  }
+  if (stats && (Number(stats.sot_home) > 0 || Number(stats.sot_away) > 0)) {
+    chips.push(`SoT ${Number(stats.sot_home || 0).toFixed(1)} vs ${Number(stats.sot_away || 0).toFixed(1)}/g`);
+  }
+  if (stats && stats.form_home && stats.form_home !== 'N/A') {
+    chips.push(`Form ${stats.form_home} / ${stats.form_away || 'N/A'}`);
+  }
+  if (stats && stats.backtest_roi_pct != null) {
+    const roi = Number(stats.backtest_roi_pct);
+    chips.push(`BT ROI ${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`);
+  }
+
+  const formatBullet = (txt) => {
+    const raw = String(txt || '');
+    const idx = raw.indexOf(': ');
+    if (idx > 0 && idx <= 28) {
+      return `<span class="font-semibold text-cyan-200">${esc(raw.slice(0, idx + 1))}</span> ${esc(raw.slice(idx + 2))}`;
+    }
+    return esc(raw);
+  };
+
+  return `
+    <div class="${opts.containerClass || 'mt-2 p-2.5 rounded-xl bg-slate-950/70 border border-slate-700/80 space-y-2 text-[11px]'}">
+      ${opts.title ? `<div class="text-[10px] font-bold uppercase tracking-wider text-cyan-300">${esc(opts.title)}</div>` : ''}
+      ${chips.length
+        ? `<div class="flex flex-wrap gap-1.5">${chips
+            .map((c) => `<span class="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700/80 text-[10px] font-mono text-slate-200">${esc(c)}</span>`)
+            .join('')}</div>`
+        : ''}
+      ${bullets.length
+        ? `<ul class="space-y-1 text-slate-300 leading-relaxed list-disc pl-4">${bullets.map((r) => `<li>${formatBullet(r)}</li>`).join('')}</ul>`
+        : '<div class="text-slate-400">Reasoning based on Dixon-Coles match probabilities and latest market prices.</div>'}
+      ${opts.extraFooterHtml || ''}
+    </div>
+  `;
+}
+
 function buildAllFixtureCandidatesClient(gh, snap, user) {
   const bankroll = Number(user?.bankroll || 250);
   const kellyFrac = Number(user?.kelly_fraction || 0.25);
@@ -1624,6 +1827,10 @@ function buildAllFixtureCandidatesClient(gh, snap, user) {
     const rawSrc = String(r.odds_source || 'market_estimate');
     const hElo = Number(r.home_elo || 1500);
     const aElo = Number(r.away_elo || 1500);
+    const hSotFor = Number(r.h_sot_for || 0);
+    const hSotAg = Number(r.h_sot_ag || 0);
+    const aSotFor = Number(r.a_sot_for || 0);
+    const aSotAg = Number(r.a_sot_ag || 0);
     const hForm = r.home_form || 'N/A';
     const aForm = r.away_form || 'N/A';
     const matchedNews = newsByTeam.get(r.home_team) || newsByTeam.get(r.away_team) || null;
@@ -1684,9 +1891,11 @@ function buildAllFixtureCandidatesClient(gh, snap, user) {
       const btBonus = bt && bt.flat_roi_pct > 0 && bt.value_bets_count >= 10 ? 6.0 : bt && bt.avg_clv_pct > 0 ? 3.0 : 0.0;
       const offBonus = isOfficial ? 5.0 : 0.0;
       const eloGap = hElo - aElo;
+      const hSotDiff = hSotFor - hSotAg;
+      const aSotDiff = aSotFor - aSotAg;
       const aligned =
-        (mCode === '1X2_H' && eloGap >= 30) ||
-        (mCode === '1X2_A' && eloGap <= -30) ||
+        (mCode === '1X2_H' && eloGap >= 30 && hSotDiff >= aSotDiff) ||
+        (mCode === '1X2_A' && eloGap <= -30 && aSotDiff >= hSotDiff) ||
         (['OU_O15', 'OU_O25', 'OU_O35', 'BTTS_Y'].includes(mCode) && totXg >= 2.75) ||
         (['OU_U15', 'OU_U25', 'OU_U35', 'BTTS_N'].includes(mCode) && totXg <= 2.35) ||
         (mCode === '1X2_D' && Math.abs(eloGap) <= 35);
@@ -1694,6 +1903,19 @@ function buildAllFixtureCandidatesClient(gh, snap, user) {
       const confScore = Math.max(45, Math.min(98, Math.round(rawConf)));
       const ks = kellyStakeClient(mProb, odds, bankroll, kellyFrac);
       const btMeta = getBetTypeInfo(mCode);
+      const reasonBundle = buildSelectionReasonsClient(
+        r,
+        mCode,
+        selLabel,
+        mProb,
+        odds,
+        edgePct,
+        bt,
+        matchedNews,
+        mktSrc,
+        trustBadge,
+        { includeEmptyNewsNote: true }
+      );
 
       candidates.push({
         fixture_id: r.id,
@@ -1718,11 +1940,8 @@ function buildAllFixtureCandidatesClient(gh, snap, user) {
         odds_source: mktSrc,
         is_official: isOfficial,
         trust_badge: trustBadge,
-        reasons: [
-          `Model rates ${selLabel} at ${(mProb * 100).toFixed(1)}% (fair ${fmtOdds(1.0 / Math.max(mProb, 0.01))}) vs ${fmtOdds(odds)} odds (${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}% edge), xG ${lam.toFixed(2)}–${mu.toFixed(2)}.`,
-          `Elo ratings: ${r.home_team} ${Math.round(hElo)} vs ${r.away_team} ${Math.round(aElo)} • Form: ${hForm} vs ${aForm}.`,
-          matchedNews ? `Latest news: [${matchedNews.source}] ${matchedNews.title}` : `Trust: ${trustBadge}${bt ? ` (${bt.flat_roi_pct >= 0 ? '+' : ''}${bt.flat_roi_pct}% backtest ROI)` : ''}.`,
-        ],
+        reasons: reasonBundle.reasons,
+        reason_stats: reasonBundle.reason_stats,
       });
     }
   }
@@ -1961,6 +2180,10 @@ function buildCustomBetsClient(gh, snap, user, criteria = {}) {
       model_prob: l.model_prob,
       edge_pct: l.edge_pct,
       odds_source: l.odds_source,
+      confidence_score: l.confidence_score,
+      trust_badge: l.trust_badge,
+      reasons: Array.isArray(l.reasons) ? [...l.reasons] : getFallbackLegReasons(l),
+      reason_stats: l.reason_stats || null,
     }));
     const foldLabel = cleanLegs.length === 1 ? 'Single' : `${cleanLegs.length}-Fold`;
     const title = numBets > 1 ? `${btSummary} ${foldLabel} #${bIdx + 1}` : `${btSummary} ${foldLabel}`;
@@ -1974,6 +2197,13 @@ function buildCustomBetsClient(gh, snap, user, criteria = {}) {
         if (!reasons.includes(rsn)) reasons.push(rsn);
       }
     }
+    const criteriaMeta = {
+      bet_types: betTypesClean,
+      bet_type_summary: btSummary,
+      risk_level: riskLevel,
+      legs_count: legsCount,
+    };
+    const betReasons = buildBetLevelReasonsClient(title, cleanLegs, ev, riskLevel, criteriaMeta, excludeAlreadyBet);
     builtBets.push({
       id: `custom_${bIdx + 1}`,
       risk_level: riskLevel,
@@ -1985,8 +2215,9 @@ function buildCustomBetsClient(gh, snap, user, criteria = {}) {
       legs: cleanLegs,
       eval: ev,
       reasons: reasons.slice(0, 4),
+      bet_reasons: betReasons,
       bet365_export: buildBet365ExportClient(cleanLegs, betStake, title, '', snap.dashboard?.leagues),
-      criteria: { bet_types: betTypesClean, risk_level: riskLevel, legs_count: legsCount },
+      criteria: criteriaMeta,
     });
 
     if (bIdx === 0 && cleanLegs.length < legsCount) {
@@ -2026,6 +2257,26 @@ function buildStaticSuggestBet(gh, snap, user, options = {}) {
   const upcomingOpps = (snap.value_bets || []).filter(
     (o) => isItemUpcoming(o) && (!exclSets || !isLegExcludedClient(o, exclSets, excludeScope))
   );
+  const oppMap = new Map((snap.value_bets || []).map((o) => [`${o.fixture_id}:${o.market}`, o]));
+  const enrichLeg = (l) => {
+    const btMeta = getBetTypeInfo(l.market);
+    const ref = oppMap.get(`${l.fixture_id}:${l.market}`);
+    const legReasons =
+      Array.isArray(l.reasons) && l.reasons.length
+        ? l.reasons
+        : Array.isArray(ref?.reasons) && ref.reasons.length
+          ? [...ref.reasons]
+          : getFallbackLegReasons(l);
+    return {
+      ...l,
+      bet_type: l.bet_type || btMeta.key,
+      bet_type_label: l.bet_type_label || btMeta.label,
+      confidence_score: l.confidence_score ?? ref?.confidence_score,
+      trust_badge: l.trust_badge || ref?.trust_badge,
+      reasons: legReasons,
+      reason_stats: l.reason_stats || ref?.reason_stats || null,
+    };
+  };
   const toLeg = (o) => {
     const btMeta = getBetTypeInfo(o.market);
     return {
@@ -2045,6 +2296,10 @@ function buildStaticSuggestBet(gh, snap, user, options = {}) {
       model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
       edge_pct: o.edge_pct,
       odds_source: o.odds_source,
+      confidence_score: o.confidence_score,
+      trust_badge: o.trust_badge,
+      reasons: Array.isArray(o.reasons) && o.reasons.length ? [...o.reasons] : getFallbackLegReasons(o),
+      reason_stats: o.reason_stats || null,
     };
   };
 
@@ -2055,10 +2310,17 @@ function buildStaticSuggestBet(gh, snap, user, options = {}) {
         !pkg.legs.every(isItemUpcoming) ||
         (exclSets && pkg.legs.some((l) => isLegExcludedClient(l, exclSets, excludeScope)));
       if (!needsRefresh) {
-        pkg.legs = pkg.legs.map((l) => {
-          const btMeta = getBetTypeInfo(l.market);
-          return { ...l, bet_type: l.bet_type || btMeta.key, bet_type_label: l.bet_type_label || btMeta.label };
-        });
+        pkg.legs = pkg.legs.map(enrichLeg);
+        if (excludeAlreadyBet || !Array.isArray(pkg.bet_reasons) || !pkg.bet_reasons.length) {
+          pkg.bet_reasons = buildBetLevelReasonsClient(
+            pkg.title,
+            pkg.legs,
+            pkg.eval,
+            pkg.risk_level,
+            pkg.criteria || null,
+            excludeAlreadyBet
+          );
+        }
         return pkg;
       }
       const targetLen = pkg.legs.length;
@@ -2075,11 +2337,16 @@ function buildStaticSuggestBet(gh, snap, user, options = {}) {
       if (!kept.length) return pkg;
       const ev = evaluateAccaClient(kept, pkg.stake || 5);
       ev.combined_odds_fractional = fmtOdds(ev.combined_odds);
-      pkg.legs = kept.map((l) => {
-        const btMeta = getBetTypeInfo(l.market);
-        return { ...l, bet_type: l.bet_type || btMeta.key, bet_type_label: l.bet_type_label || btMeta.label };
-      });
+      pkg.legs = kept.map(enrichLeg);
       pkg.eval = ev;
+      pkg.bet_reasons = buildBetLevelReasonsClient(
+        pkg.title,
+        pkg.legs,
+        ev,
+        pkg.risk_level,
+        pkg.criteria || null,
+        excludeAlreadyBet
+      );
       pkg.bet365_export = buildBet365ExportClient(pkg.legs, pkg.stake || 5, pkg.title, '', snap.dashboard?.leagues);
       return pkg;
     };
@@ -2130,6 +2397,7 @@ function buildStaticSuggestBet(gh, snap, user, options = {}) {
           `Combined odds ${fmtOdds(ev.combined_odds)} with ${ev.combined_model_prob_pct}% model probability (${ev.expected_value_pct >= 0 ? '+' : ''}${ev.expected_value_pct}% EV).`,
           ...picked.map((l) => `${l.home_team} vs ${l.away_team}: ${l.selection_label} @ ${fmtOdds(l.odds)} (+${l.edge_pct}% EV).`),
         ].slice(0, 4),
+        bet_reasons: buildBetLevelReasonsClient('My Clubs Special', picked, ev, 'medium', null, excludeAlreadyBet),
         bet365_export: buildBet365ExportClient(picked, stake, 'My Clubs Special', '', snap.dashboard?.leagues),
       };
       if (base.by_risk?.medium) {
@@ -2367,12 +2635,15 @@ async function staticApi(path, opts = {}) {
       .map((o) => {
         const ks = kellyStakeClient(Number(o.model_prob_pct) / 100.0, o.odds, activeUser.bankroll, activeUser.kelly_fraction);
         const btMeta = getBetTypeInfo(o.market);
+        const reasons = Array.isArray(o.reasons) && o.reasons.length ? o.reasons : getFallbackLegReasons(o);
         return {
           ...o,
           bet_type: o.bet_type || btMeta.key,
           bet_type_label: o.bet_type_label || btMeta.label,
           kelly_pct: ks.kelly_pct,
           suggested_stake: ks.suggested_stake,
+          reasons,
+          reason_stats: o.reason_stats || null,
         };
       });
     return {
@@ -4541,8 +4812,10 @@ async function renderValueTab() {
             state.favouriteTeams.includes(o.away_team);
           const btInfo = getBetTypeInfo(o.market);
           const alreadyBet = alreadyData?.sets ? isLegExcludedClient(o, alreadyData.sets, 'market_family') : false;
+          const tipKey = `${o.fixture_id}:${o.market}`;
+          const isWhyOpen = state.expandedTipKeys.has(tipKey);
           return `
-              <tr class="border-b border-slate-800/70 hover:bg-slate-800/30 ${isFav ? 'bg-amber-500/5' : ''}">
+              <tr class="border-b ${isWhyOpen ? 'border-slate-800/30 bg-slate-800/25' : 'border-slate-800/70'} hover:bg-slate-800/30 ${isFav ? 'bg-amber-500/5' : ''}">
                 <td class="p-3">
                   <button type="button" data-open-preview="${o.fixture_id}" class="font-semibold text-white hover:text-emerald-300 text-left flex items-center gap-1.5 transition">
                     ${isFav ? '<span class="text-amber-300" title="Followed club">★</span>' : ''}
@@ -4566,12 +4839,28 @@ async function renderValueTab() {
                   <div class="text-[10px] text-slate-400">${esc(o.trust_badge)}</div>
                 </td>
                 <td class="p-3 text-right">
-                  ${(() => {
-                    const active = isInSlip(o.fixture_id, o.market);
-                    return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, league_name: o.league_name, match_date: o.match_date, kickoff_time: o.kickoff_time || '', home_team: o.home_team, away_team: o.away_team, market: o.market, bet_type: btInfo.key, bet_type_label: btInfo.label, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
-                  })()}
+                  <div class="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
+                    <button type="button" data-val-why="${esc(tipKey)}" aria-expanded="${isWhyOpen ? 'true' : 'false'}" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition ${isWhyOpen ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-cyan-300'}">💡 Why ${isWhyOpen ? '▴' : '▾'}</button>
+                    ${(() => {
+                      const active = isInSlip(o.fixture_id, o.market);
+                      return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, league_name: o.league_name, match_date: o.match_date, kickoff_time: o.kickoff_time || '', home_team: o.home_team, away_team: o.away_team, market: o.market, bet_type: btInfo.key, bet_type_label: btInfo.label, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
+                    })()}
+                  </div>
                 </td>
-              </tr>`;
+              </tr>${
+                isWhyOpen
+                  ? `<tr class="val-why-row bg-slate-950/60 border-b border-slate-800/80">
+                      <td colspan="8" class="px-4 py-3">
+                        ${renderReasoningDropdownHtml(o.reasons, o.reason_stats, {
+                          item: o,
+                          containerClass: 'p-3 rounded-xl bg-slate-900/90 border border-cyan-500/30 space-y-2 text-xs',
+                          title: `Why AccaLab picked ${o.selection_label}`,
+                          extraFooterHtml: `<div class="pt-1 flex justify-end"><button type="button" data-open-preview="${o.fixture_id}" class="text-[11px] font-bold text-cyan-300 hover:text-cyan-200 hover:underline">Match Preview →</button></div>`,
+                        })}
+                      </td>
+                    </tr>`
+                  : ''
+              }`;
         })
         .join('')
       : `<tr><td colspan="8" class="p-8 text-center text-slate-400 space-y-2"><div>No tips match this filter right now.</div>${minEdge !== '0' ? `<button id="val-show-zero-edge-btn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 font-semibold">Show Model Picks (0%+ Value)</button>` : ''}</td></tr>`
@@ -4611,6 +4900,15 @@ async function renderValueTab() {
     state.valMyPrefsOnly = e.target.checked;
     renderValueTab();
   });
+  document.querySelectorAll('[data-val-why]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const k = btn.dataset.valWhy;
+      if (!k) return;
+      if (state.expandedTipKeys.has(k)) state.expandedTipKeys.delete(k);
+      else state.expandedTipKeys.add(k);
+      renderValueTab();
+    })
+  );
   document.querySelectorAll('[data-open-preview]').forEach((btn) =>
     btn.addEventListener('click', () => openMatchPreview(Number(btn.dataset.openPreview)))
   );
@@ -6554,11 +6852,17 @@ async function openSuggestModal(optsOrRisk = null) {
         model_prob: roundNum(Number(o.model_prob_pct) / 100.0, 5),
         edge_pct: Number(o.edge_pct || 0),
         odds_source: o.odds_source,
+        confidence_score: o.confidence_score,
+        trust_badge: o.trust_badge,
+        reasons: Array.isArray(o.reasons) && o.reasons.length ? [...o.reasons] : getFallbackLegReasons(o),
+        reason_stats: o.reason_stats || null,
       };
     });
 
     const lockedKeys = new Set();
     const skippedSwapKeys = new Set();
+    const expandedBetReasons = new Set();
+    const expandedLegReasons = new Set();
     const legKey = (l) => `${canonicalMatchKeyClient(l) || Number(l.fixture_id)}:${l.market}`;
     const legMatchKey = (l) => canonicalMatchKeyClient(l) || `fid:${Number(l.fixture_id)}`;
 
@@ -6651,6 +6955,15 @@ async function openSuggestModal(optsOrRisk = null) {
       if (!replacement) return false;
       pkg.legs[swapIdx] = { ...replacement };
       pkg.eval = evaluateAccaClient(pkg.legs, Number(pkg.stake || currentStake || 10));
+      pkg.eval.combined_odds_fractional = fmtOdds(pkg.eval.combined_odds);
+      pkg.bet_reasons = buildBetLevelReasonsClient(
+        pkg.title,
+        pkg.legs,
+        pkg.eval,
+        pkg.risk_level,
+        pkg.criteria || null,
+        sb.excludeAlreadyBet
+      );
       return true;
     };
 
@@ -6845,31 +7158,49 @@ async function openSuggestModal(optsOrRisk = null) {
                       .map((l, lIdx) => {
                         const isLocked = lockedKeys.has(legKey(l));
                         const btInfo = getBetTypeInfo(l.market);
+                        const legWhyKey = `${b.id}:leg:${lIdx}`;
+                        const isLegWhyOpen = expandedLegReasons.has(legWhyKey);
                         return `
-                        <div class="p-2.5 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} flex items-center justify-between gap-2 text-xs">
-                          <div class="min-w-0">
-                            <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}${l.kickoff_time ? ` ${esc(l.kickoff_time)}` : ''}</div>
-                            <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
-                              ${btInfo.badgeHtml}
-                              <span class="font-bold text-white truncate">${lIdx + 1}. ${esc(l.selection_label)}</span>
-                              ${twoUpBadgeHtml(l.market)}
+                        <div class="p-2.5 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} space-y-2 text-xs">
+                          <div class="flex items-center justify-between gap-2">
+                            <div class="min-w-0">
+                              <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}${l.kickoff_time ? ` ${esc(l.kickoff_time)}` : ''}</div>
+                              <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+                                ${btInfo.badgeHtml}
+                                <span class="font-bold text-white truncate">${lIdx + 1}. ${esc(l.selection_label)}</span>
+                                ${twoUpBadgeHtml(l.market)}
+                              </div>
+                              <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                              <button type="button" data-cb-leg-why="${esc(legWhyKey)}" aria-expanded="${isLegWhyOpen ? 'true' : 'false'}" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition ${isLegWhyOpen ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-cyan-300'}">💡 Why? ${isLegWhyOpen ? '▴' : '▾'}</button>
                             </div>
-                            <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                            <div class="flex items-center gap-2 shrink-0">
+                              <div class="text-right font-mono">
+                                <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
+                                <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
+                              </div>
+                              <div class="flex flex-col gap-1">
+                                <button type="button" data-cb-lock="${bIdx}:${lIdx}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
+                                <button type="button" data-cb-swap="${bIdx}:${lIdx}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
+                              </div>
+                            </div>
                           </div>
-                          <div class="flex items-center gap-2 shrink-0">
-                            <div class="text-right font-mono">
-                              <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
-                              <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
-                            </div>
-                            <div class="flex flex-col gap-1">
-                              <button type="button" data-cb-lock="${bIdx}:${lIdx}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
-                              <button type="button" data-cb-swap="${bIdx}:${lIdx}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
-                            </div>
-                          </div>
+                          ${isLegWhyOpen ? renderReasoningDropdownHtml(l.reasons, l.reason_stats, { item: l }) : ''}
                         </div>`;
                       })
                       .join('')}
                   </div>
+
+                  ${(() => {
+                    const isBetWhyOpen = expandedBetReasons.has(b.id);
+                    return `
+                    <div class="rounded-xl bg-panel border border-slate-800 overflow-hidden">
+                      <button type="button" data-cb-bet-why="${esc(b.id)}" aria-expanded="${isBetWhyOpen ? 'true' : 'false'}" class="w-full px-3 py-2 flex items-center justify-between text-left text-[11px] font-bold uppercase tracking-wider text-cyan-300 hover:bg-slate-800/50 transition">
+                        <span>💡 Why AccaLab built this bet</span>
+                        <span class="font-mono text-xs">${isBetWhyOpen ? '▴ Hide' : '▾ Show'}</span>
+                      </button>
+                      ${isBetWhyOpen ? `<div class="px-3 pb-3 pt-1 border-t border-slate-800/80">${renderReasoningDropdownHtml(b.bet_reasons || b.reasons, null, { containerClass: 'space-y-1.5 text-xs' })}</div>` : ''}
+                    </div>`;
+                  })()}
 
                   <div class="flex flex-wrap gap-1.5 pt-1">
                     <button type="button" data-cb-b365="${bIdx}" class="flex-1 py-2 px-3 rounded-xl btn-bet365 text-xs font-extrabold">📋 Build on Bet365</button>
@@ -7109,6 +7440,24 @@ async function openSuggestModal(optsOrRisk = null) {
         renderModal();
       });
 
+      body.querySelectorAll('[data-cb-leg-why]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const k = btn.dataset.cbLegWhy;
+          if (!k) return;
+          if (expandedLegReasons.has(k)) expandedLegReasons.delete(k);
+          else expandedLegReasons.add(k);
+          renderModal();
+        })
+      );
+      body.querySelectorAll('[data-cb-bet-why]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const k = btn.dataset.cbBetWhy;
+          if (!k) return;
+          if (expandedBetReasons.has(k)) expandedBetReasons.delete(k);
+          else expandedBetReasons.add(k);
+          renderModal();
+        })
+      );
       body.querySelectorAll('[data-cb-remove]').forEach((btn) =>
         btn.addEventListener('click', () => {
           const idx = Number(btn.dataset.cbRemove);
@@ -7341,38 +7690,49 @@ async function openSuggestModal(optsOrRisk = null) {
             ${(s.legs || [])
               .map((l, i) => {
                 const isLocked = lockedKeys.has(legKey(l));
+                const legWhyKey = `${s.id}:leg:${i}`;
+                const isLegWhyOpen = expandedLegReasons.has(legWhyKey);
                 return `
-                  <div class="p-3 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} flex items-center justify-between gap-2 text-xs">
-                    <div class="min-w-0">
-                      <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}</div>
-                      <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
-                        ${getBetTypeInfo(l.market).badgeHtml}
-                        <span class="font-bold text-white truncate">${i + 1}. ${esc(l.selection_label)}</span>
-                        ${twoUpBadgeHtml(l.market)}
+                  <div class="p-3 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} space-y-2 text-xs">
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="min-w-0">
+                        <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}${l.kickoff_time ? ` ${esc(l.kickoff_time)}` : ''}</div>
+                        <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+                          ${getBetTypeInfo(l.market).badgeHtml}
+                          <span class="font-bold text-white truncate">${i + 1}. ${esc(l.selection_label)}</span>
+                          ${twoUpBadgeHtml(l.market)}
+                        </div>
+                        <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                        <button type="button" data-sug-leg-why="${esc(legWhyKey)}" aria-expanded="${isLegWhyOpen ? 'true' : 'false'}" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition ${isLegWhyOpen ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-cyan-300'}">💡 Why? ${isLegWhyOpen ? '▴' : '▾'}</button>
                       </div>
-                      <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                      <div class="flex items-center gap-2 shrink-0">
+                        <div class="text-right font-mono">
+                          <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
+                          <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
+                        </div>
+                        <div class="flex flex-col gap-1">
+                          <button type="button" data-lock-leg="${i}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
+                          <button type="button" data-swap-leg="${i}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
+                        </div>
+                      </div>
                     </div>
-                    <div class="flex items-center gap-2 shrink-0">
-                      <div class="text-right font-mono">
-                        <div class="text-sm font-extrabold text-emerald-400">@ ${esc(fmtOdds(l.odds))}</div>
-                        <div class="text-[10px] text-slate-400">${(Number(l.model_prob) * 100).toFixed(0)}% (${Number(l.edge_pct) >= 0 ? '+' : ''}${Number(l.edge_pct).toFixed(1)}% EV)</div>
-                      </div>
-                      <div class="flex flex-col gap-1">
-                        <button type="button" data-lock-leg="${i}" class="px-2 py-0.5 rounded text-[10px] font-semibold border transition ${isLocked ? 'bg-amber-500/20 border-amber-400 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}">${isLocked ? '🔒 Locked' : '🔓 Lock'}</button>
-                        <button type="button" data-swap-leg="${i}" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-cyan-600/30 border border-slate-700 text-cyan-300 transition">🔄 Swap</button>
-                      </div>
-                    </div>
+                    ${isLegWhyOpen ? renderReasoningDropdownHtml(l.reasons, l.reason_stats, { item: l }) : ''}
                   </div>`;
               })
               .join('')}
           </div>
 
-          <div class="p-3 rounded-xl bg-panel border border-slate-800 space-y-1.5">
-            <div class="text-[11px] font-bold uppercase tracking-wider text-cyan-300">Why AccaLab Picked This</div>
-            <ul class="space-y-1 text-xs text-slate-300 list-disc pl-4">
-              ${(s.reasons || []).map((r) => `<li>${esc(r)}</li>`).join('')}
-            </ul>
-          </div>
+          ${(() => {
+            const isSugBetWhyOpen = expandedBetReasons.has(s.id);
+            return `
+            <div class="rounded-xl bg-panel border border-slate-800 overflow-hidden">
+              <button type="button" id="sug-bet-why-btn" aria-expanded="${isSugBetWhyOpen ? 'true' : 'false'}" class="w-full px-3 py-2 flex items-center justify-between text-left text-[11px] font-bold uppercase tracking-wider text-cyan-300 hover:bg-slate-800/50 transition">
+                <span>💡 Why AccaLab picked this bet</span>
+                <span class="font-mono text-xs">${isSugBetWhyOpen ? '▴ Hide' : '▾ Show'}</span>
+              </button>
+              ${isSugBetWhyOpen ? `<div class="px-3 pb-3 pt-1 border-t border-slate-800/80">${renderReasoningDropdownHtml(s.bet_reasons || s.reasons, null, { containerClass: 'space-y-1.5 text-xs' })}</div>` : ''}
+            </div>`;
+          })()}
 
           <div class="flex flex-wrap gap-2 pt-1">
             <button id="sug-export-b365-btn" type="button" class="flex-1 py-2.5 px-4 rounded-xl btn-bet365 text-xs font-extrabold">📋 Build on Bet365</button>
@@ -7417,6 +7777,23 @@ async function openSuggestModal(optsOrRisk = null) {
           renderModal();
         })
       );
+
+      body.querySelectorAll('[data-sug-leg-why]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const k = btn.dataset.sugLegWhy;
+          if (!k) return;
+          if (expandedLegReasons.has(k)) expandedLegReasons.delete(k);
+          else expandedLegReasons.add(k);
+          renderModal();
+        })
+      );
+
+      document.getElementById('sug-bet-why-btn')?.addEventListener('click', () => {
+        if (!s?.id) return;
+        if (expandedBetReasons.has(s.id)) expandedBetReasons.delete(s.id);
+        else expandedBetReasons.add(s.id);
+        renderModal();
+      });
 
       body.querySelectorAll('[data-lock-leg]').forEach((btn) =>
         btn.addEventListener('click', () => {

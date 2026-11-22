@@ -113,6 +113,162 @@ def _market_tuples_for_fixture(row: dict[str, Any]) -> list[tuple[str, str, floa
     return items
 
 
+def _build_selection_reasons(
+    row: dict[str, Any],
+    m_code: str,
+    sel_label: str,
+    m_prob: float,
+    odds: float,
+    edge_pct: float,
+    bt: dict[str, Any] | None,
+    matched_news: list[dict[str, Any]],
+    mkt_src: str,
+    trust_badge: str,
+    include_empty_news_note: bool = True,
+) -> tuple[list[str], dict[str, Any]]:
+    """Build market-tailored reasoning bullets and compact stats for a selection."""
+    lam = float(row.get("lambda_home") if row.get("lambda_home") is not None else 1.35)
+    mu = float(row.get("mu_away") if row.get("mu_away") is not None else 1.15)
+    tot_xg = lam + mu
+    h_elo = float(row.get("home_elo") or 1500.0)
+    a_elo = float(row.get("away_elo") or 1500.0)
+    elo_gap = h_elo - a_elo
+    h_form = row.get("home_form") or "N/A"
+    a_form = row.get("away_form") or "N/A"
+    h_sot_for = float(row.get("h_sot_for") or 0.0)
+    a_sot_for = float(row.get("a_sot_for") or 0.0)
+    fair_odds = 1.0 / max(m_prob, 0.01)
+    is_est = mkt_src == "market_estimate"
+    price_tag = "estimated " if is_est else ""
+
+    if edge_pct >= 0:
+        b1 = (
+            f"Value Edge: Model rates {sel_label} at {m_prob*100:.1f}% "
+            f"(fair {decimal_to_fractional(fair_odds)}) vs {decimal_to_fractional(odds)} "
+            f"{price_tag}odds ({edge_pct:+.1f}% edge)."
+        )
+    else:
+        b1 = (
+            f"Model Probability: Rates {sel_label} at {m_prob*100:.1f}% "
+            f"(fair {decimal_to_fractional(fair_odds)}) vs {decimal_to_fractional(odds)} "
+            f"{price_tag}odds ({edge_pct:+.1f}% vs market)."
+        )
+
+    elo_str = f"{row['home_team']} {h_elo:.0f} vs {row['away_team']} {a_elo:.0f}"
+    sot_str = (
+        f" • SoT/game: {h_sot_for:.1f} vs {a_sot_for:.1f}"
+        if (h_sot_for > 0 or a_sot_for > 0)
+        else ""
+    )
+    if m_code == "1X2_H":
+        gap_txt = f"{elo_gap:+.0f} home Elo edge" if elo_gap >= 15 else f"Elo gap {elo_gap:+.0f}"
+        b2 = f"Matchup & xG: Projected xG {lam:.2f}–{mu:.2f} ({gap_txt}; {elo_str}){sot_str}."
+    elif m_code == "1X2_A":
+        gap_txt = f"{-elo_gap:+.0f} away Elo edge" if -elo_gap >= 15 else f"Elo {-elo_gap:+.0f}"
+        b2 = f"Matchup & xG: Projected xG {lam:.2f}–{mu:.2f} ({gap_txt}; {elo_str}){sot_str}."
+    elif m_code == "1X2_D":
+        b2 = f"Tight Balance: Projected xG {lam:.2f}–{mu:.2f} with close Elo ({elo_str}, gap {abs(elo_gap):.0f}){sot_str}."
+    elif m_code == "BTTS_Y":
+        b2 = f"Attacking Output: Projected {lam:.2f}–{mu:.2f} xG ({tot_xg:.2f} total) supports both sides scoring{sot_str}."
+    elif m_code == "BTTS_N":
+        b2 = f"Clean-Sheet Profile: Projected {lam:.2f}–{mu:.2f} xG points to at least one shutout ({elo_str}){sot_str}."
+    elif m_code.startswith("OU_O"):
+        line = "1.5" if "15" in m_code else ("3.5" if "35" in m_code else "2.5")
+        b2 = f"Goal Expectancy: Combined {tot_xg:.2f} xG ({lam:.2f} + {mu:.2f}) favours Over {line} goals{sot_str}."
+    else:
+        line = "1.5" if "15" in m_code else ("3.5" if "35" in m_code else "2.5")
+        b2 = f"Low-Scoring Profile: Combined {tot_xg:.2f} xG ({lam:.2f} + {mu:.2f}) leans Under {line} goals{sot_str}."
+
+    bt_detail = ""
+    if bt and bt.get("value_bets_count") is not None:
+        bt_detail = f" ({bt['flat_roi_pct']:+.1f}% ROI over {bt['value_bets_count']} bets)"
+    elif bt and bt.get("avg_clv_pct"):
+        bt_detail = f" (+{bt['avg_clv_pct']:.1f}% avg CLV)"
+    b3 = f"Form & Track Record: {h_form} (H) vs {a_form} (A) • {trust_badge}{bt_detail}."
+
+    reasons = [b1, b2, b3]
+    if matched_news:
+        reasons.append(f"Team News: [{matched_news[0]['source']}] {matched_news[0]['title']}")
+    elif include_empty_news_note:
+        reasons.append("News Check: No disruptive late club headlines in BBC/Sky/Guardian feeds.")
+
+    reason_stats: dict[str, Any] = {
+        "xg_home": round(lam, 2),
+        "xg_away": round(mu, 2),
+        "total_xg": round(tot_xg, 2),
+        "elo_home": round(h_elo),
+        "elo_away": round(a_elo),
+        "form_home": h_form,
+        "form_away": a_form,
+        "fair_odds": round(fair_odds, 2),
+        "trust_badge": trust_badge,
+    }
+    if h_sot_for > 0 or a_sot_for > 0:
+        reason_stats["sot_home"] = round(h_sot_for, 1)
+        reason_stats["sot_away"] = round(a_sot_for, 1)
+    if bt and bt.get("flat_roi_pct") is not None:
+        reason_stats["backtest_roi_pct"] = round(float(bt["flat_roi_pct"]), 1)
+    if matched_news:
+        reason_stats["news_headline"] = f"[{matched_news[0]['source']}] {matched_news[0]['title']}"
+
+    return reasons, reason_stats
+
+
+def _build_bet_level_reasons(
+    title: str,
+    legs: list[dict[str, Any]],
+    ev: dict[str, Any],
+    risk_level: str,
+    criteria: dict[str, Any] | None = None,
+    exclude_already_bet: bool = False,
+) -> list[str]:
+    """Generate whole-bet rationale bullets summarizing criteria fit, math, strongest leg & promos."""
+    if not legs:
+        return []
+    risk_labels = {
+        "low": "Low Risk",
+        "medium": "Balanced",
+        "high": "High Risk",
+        "longshot": "Longshot",
+    }
+    r_label = risk_labels.get(risk_level, risk_level.title())
+    distinct_fixtures = len({_canonical_match_key(l) or l.get("fixture_id") for l in legs})
+    comb_frac = ev.get("combined_odds_fractional") or decimal_to_fractional(ev.get("combined_odds"))
+    comb_prob = float(ev.get("combined_model_prob_pct") or 0.0)
+    ev_pct = float(ev.get("expected_value_pct") or 0.0)
+    best_leg = max(legs, key=lambda l: float(l.get("edge_pct") or 0.0))
+
+    bet_reasons: list[str] = []
+    if criteria and criteria.get("bet_type_summary"):
+        bet_reasons.append(
+            f"Criteria Match: {r_label} {len(legs)}-leg build focused on {criteria['bet_type_summary']} across {distinct_fixtures} distinct fixtures."
+        )
+    else:
+        bet_reasons.append(
+            f"Selection Strategy: {title} ({r_label}) combining {len(legs)} top-scoring {'leg' if len(legs) == 1 else 'legs'} across {distinct_fixtures} matches."
+        )
+
+    bet_reasons.append(
+        f"Combined Math: {comb_frac} combined odds • {comb_prob:.1f}% model win chance ({ev_pct:+.1f}% expected value)."
+    )
+    bet_reasons.append(
+        f"Strongest Driver: {best_leg['selection_label']} ({best_leg['home_team']} vs {best_leg['away_team']}) leads at {float(best_leg.get('edge_pct') or 0):+.1f}% edge."
+    )
+
+    two_up_count = sum(1 for l in legs if l.get("market") in ("1X2_H", "1X2_A"))
+    notes: list[str] = []
+    if exclude_already_bet:
+        notes.append("screened out your active placed/saved/slip legs")
+    if two_up_count > 0:
+        notes.append(f"{two_up_count}x 2-Up Early Payout eligible")
+    if len(legs) >= 2:
+        notes.append("Acca Boost qualifying leg structure")
+    if notes:
+        bet_reasons.append(f"Bet Safeguards & Perks: {notes[0][0].upper()}{notes[0][1:]}{(' • ' + ' • '.join(notes[1:])) if len(notes) > 1 else ''}.")
+
+    return bet_reasons
+
+
 def find_value_opportunities(
     conn: sqlite3.Connection,
     bankroll: float = 250.0,
@@ -126,9 +282,15 @@ def find_value_opportunities(
     sql = """
         SELECT f.*, p.prob_home, p.prob_draw, p.prob_away,
                p.prob_over25, p.prob_under25, p.prob_btts_yes, p.prob_btts_no,
-               p.lambda_home, p.mu_away, p.rho
+               p.lambda_home, p.mu_away, p.rho,
+               hr.elo AS home_elo, hr.form_last6 AS home_form,
+               hr.sot_for_pg AS h_sot_for, hr.sot_against_pg AS h_sot_ag,
+               ar.elo AS away_elo, ar.form_last6 AS away_form,
+               ar.sot_for_pg AS a_sot_for, ar.sot_against_pg AS a_sot_ag
         FROM upcoming_fixtures f
         JOIN predictions p ON p.fixture_id = f.id
+        LEFT JOIN team_ratings hr ON hr.team_name = f.home_team
+        LEFT JOIN team_ratings ar ON ar.team_name = f.away_team
         WHERE f.status = 'scheduled'
     """
     params: list[Any] = []
@@ -148,11 +310,18 @@ def find_value_opportunities(
     for b in conn.execute("SELECT * FROM backtest_results").fetchall():
         bt_map[(b["div"], b["market"])] = dict(b)
 
+    news_by_team: dict[str, list[dict[str, Any]]] = {}
+    for nr in conn.execute("SELECT title, source, url, matched_teams_json FROM news_items ORDER BY published_at DESC LIMIT 80").fetchall():
+        nd = dict(nr)
+        for team in json.loads(nd.get("matched_teams_json") or "[]"):
+            news_by_team.setdefault(team, []).append(nd)
+
     allowed_markets = expand_bet_type_filters(market_filter) if market_filter else None
     official_sources = {"bet365_official", "api_football_b365", "live_sportsbook", "user_manual"}
 
     opportunities: list[dict[str, Any]] = []
     for row in rows:
+        matched_news = (news_by_team.get(row["home_team"], []) + news_by_team.get(row["away_team"], []))[:1]
         for m_code, sel_label, m_prob, odds, fair_b_prob, mkt_odds_source in _market_tuples_for_fixture(row):
             if allowed_markets is not None and m_code not in allowed_markets:
                 continue
@@ -174,6 +343,19 @@ def find_value_opportunities(
                 else ("Positive CLV" if (bt and bt["avg_clv_pct"] > 0) else "Model Edge")
             )
             bt_meta = market_bet_type(m_code)
+            reasons, reason_stats = _build_selection_reasons(
+                row,
+                m_code,
+                sel_label,
+                float(m_prob),
+                float(odds),
+                edge_pct,
+                bt,
+                matched_news,
+                mkt_odds_source,
+                trust_badge,
+                include_empty_news_note=False,
+            )
 
             opportunities.append(
                 {
@@ -199,6 +381,8 @@ def find_value_opportunities(
                     "odds_source": mkt_odds_source,
                     "trust_badge": trust_badge,
                     "backtest_roi_pct": backtest_roi,
+                    "reasons": reasons,
+                    "reason_stats": reason_stats,
                 }
             )
 
@@ -1021,6 +1205,7 @@ def _build_suggestion_package(
     legs: list[dict[str, Any]],
     stake: float,
     extra: dict[str, Any] | None = None,
+    exclude_already_bet: bool = False,
 ) -> dict[str, Any]:
     avg_conf = int(round(sum(l["confidence_score"] for l in legs) / max(1, len(legs))))
     merged_reasons: list[str] = []
@@ -1051,10 +1236,23 @@ def _build_suggestion_package(
                 "model_prob": l["model_prob"],
                 "edge_pct": l["edge_pct"],
                 "odds_source": l["odds_source"],
+                "confidence_score": l.get("confidence_score"),
+                "trust_badge": l.get("trust_badge"),
+                "reasons": list(l.get("reasons") or []),
+                "reason_stats": l.get("reason_stats"),
             }
         )
     ev = evaluate_acca(clean_legs, stake=stake)
     ev["combined_odds_fractional"] = decimal_to_fractional(ev.get("combined_odds"))
+    criteria = (extra or {}).get("criteria") if extra else None
+    bet_reasons = _build_bet_level_reasons(
+        title=title,
+        legs=clean_legs,
+        ev=ev,
+        risk_level=risk_level,
+        criteria=criteria,
+        exclude_already_bet=exclude_already_bet,
+    )
     b365 = build_bet365_export(clean_legs, stake=stake, title=title)
     pkg: dict[str, Any] = {
         "id": pkg_id,
@@ -1067,6 +1265,7 @@ def _build_suggestion_package(
         "legs": clean_legs,
         "eval": ev,
         "reasons": merged_reasons[:4],
+        "bet_reasons": bet_reasons,
         "bet365_export": b365,
     }
     if extra:
@@ -1158,18 +1357,19 @@ def _build_scored_candidates(conn: sqlite3.Connection, user: dict[str, Any]) -> 
             conf_score = int(max(45, min(98, round(raw_conf))))
             _, k_stake = kelly_stake_amount(m_prob, odds, bankroll, kelly_frac)
             bt_meta = market_bet_type(m_code)
-
-            reasons = [
-                f"Model rates {sel_label} at {m_prob*100:.1f}% (fair {decimal_to_fractional(1.0/max(m_prob,0.01))}) vs {decimal_to_fractional(odds)} odds ({edge_pct:+.1f}% edge), xG {r['lambda_home']:.2f}–{r['mu_away']:.2f}.",
-                f"Elo & SoT: {r['home_team']} {h_elo:.0f} ({h_sot_for:.1f} SoT/g) vs {r['away_team']} {a_elo:.0f} ({a_sot_for:.1f} SoT/g).",
-                f"Form (Last 6): {h_form} vs {a_form} • {trust_badge}"
-                + (f" ({bt['flat_roi_pct']:+.1f}% backtest ROI)" if bt else ""),
-                (
-                    f"Latest team news: [{matched_news[0]['source']}] {matched_news[0]['title']}"
-                    if matched_news
-                    else "News check: No disruptive late club headlines in BBC/Sky/Guardian feeds."
-                ),
-            ]
+            reasons, reason_stats = _build_selection_reasons(
+                r,
+                m_code,
+                sel_label,
+                float(m_prob),
+                float(odds),
+                edge_pct,
+                bt,
+                matched_news,
+                mkt_src,
+                trust_badge,
+                include_empty_news_note=True,
+            )
 
             candidates.append(
                 {
@@ -1196,6 +1396,7 @@ def _build_scored_candidates(conn: sqlite3.Connection, user: dict[str, Any]) -> 
                     "is_official": is_official,
                     "trust_badge": trust_badge,
                     "reasons": reasons,
+                    "reason_stats": reason_stats,
                 }
             )
 
@@ -1243,7 +1444,16 @@ def build_bet_suggestions(
         legs: list[dict[str, Any]],
         stake: float,
     ) -> dict[str, Any]:
-        return _build_suggestion_package(pkg_id, risk_level, title, badge, subtitle, legs, stake)
+        return _build_suggestion_package(
+            pkg_id,
+            risk_level,
+            title,
+            badge,
+            subtitle,
+            legs,
+            stake,
+            exclude_already_bet=exclude_already_bet,
+        )
 
     def _pool_or_fallback(preferred: list[dict[str, Any]], needed: int, fallback_sorted: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if len({c["fixture_id"] for c in preferred}) >= needed:
@@ -1802,7 +2012,15 @@ def build_custom_bets(
             subtitle=subtitle,
             legs=picked,
             stake=bet_stake,
-            extra={"criteria": {"bet_types": bet_types_clean, "risk_level": risk_level, "legs_count": legs_count}},
+            extra={
+                "criteria": {
+                    "bet_types": bet_types_clean,
+                    "bet_type_summary": bt_summary,
+                    "risk_level": risk_level,
+                    "legs_count": legs_count,
+                }
+            },
+            exclude_already_bet=exclude_already_bet,
         )
         built_bets.append(pkg)
         if b_idx == 0 and len(picked) < legs_count:

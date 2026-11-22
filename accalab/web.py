@@ -370,7 +370,9 @@ def create_app() -> Flask:
                        p.prob_over25, p.prob_under25, p.prob_btts_yes, p.prob_btts_no,
                        p.top_scorelines_json, p.tipster_consensus_json, p.ai_summary_source,
                        hr.elo AS home_elo, hr.form_last6 AS home_form,
-                       ar.elo AS away_elo, ar.form_last6 AS away_form
+                       hr.sot_for_pg AS h_sot_for, hr.sot_against_pg AS h_sot_ag,
+                       ar.elo AS away_elo, ar.form_last6 AS away_form,
+                       ar.sot_for_pg AS a_sot_for, ar.sot_against_pg AS a_sot_ag
                 FROM upcoming_fixtures f
                 JOIN predictions p ON p.fixture_id = f.id
                 LEFT JOIN team_ratings hr ON hr.team_name = f.home_team
