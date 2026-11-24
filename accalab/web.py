@@ -20,12 +20,23 @@ from accalab.config import (
     GEMINI_API_KEY,
     LEAGUES,
     MARKET_LABELS,
+    RACING_REGIONS,
     SECRET_KEY,
     SUPABASE_ANON_KEY,
     SUPABASE_URL,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_DEFAULT_CHAT_ID,
     market_bet_type,
+)
+from accalab.racing_engine import (
+    RACING_MULTIPLES,
+    _enrich_runner_row,
+    build_custom_racing_bets,
+    build_racing_bet365_export,
+    build_racing_suggestions,
+    evaluate_racing_multiple,
+    find_racing_tips,
+    is_race_upcoming,
 )
 from accalab.db import (
     db_session,
@@ -427,6 +438,7 @@ def create_app() -> Flask:
                 leagues_counts[r["div"]] = leagues_counts.get(r["div"], 0) + 1
             integrations = {
                 "api_football_configured": bool(API_FOOTBALL_KEY),
+                "racing_feeds_mode": "free_public_no_key",
                 "gemini_configured": bool(GEMINI_API_KEY),
                 "telegram_configured": bool(TELEGRAM_BOT_TOKEN and (user.get("telegram_chat_id") or TELEGRAM_DEFAULT_CHAT_ID)),
                 "supabase_configured": bool(SUPABASE_URL and SUPABASE_ANON_KEY),
@@ -458,6 +470,73 @@ def create_app() -> Flask:
                     "odds_updated_at": odds_updated_at,
                 }
             )
+
+    FULL_TEAM_DISPLAY_NAMES: dict[str, str] = {
+        "Nott'm Forest": "Nottingham Forest",
+        "Sheffield Weds": "Sheffield Wednesday",
+        "Peterboro": "Peterborough United",
+        "Bristol Rvs": "Bristol Rovers",
+        "Man City": "Manchester City",
+        "Man United": "Manchester United",
+        "QPR": "Queens Park Rangers",
+        "West Brom": "West Bromwich Albion",
+        "Wolves": "Wolverhampton Wanderers",
+        "West Ham": "West Ham United",
+        "Tottenham": "Tottenham Hotspur",
+        "Brighton": "Brighton & Hove Albion",
+        "Newcastle": "Newcastle United",
+        "Leeds": "Leeds United",
+        "Leicester": "Leicester City",
+        "Ipswich": "Ipswich Town",
+        "Norwich": "Norwich City",
+        "Derby": "Derby County",
+        "Coventry": "Coventry City",
+        "Stoke": "Stoke City",
+        "Swansea": "Swansea City",
+        "Hull": "Hull City",
+        "Preston": "Preston North End",
+        "Blackburn": "Blackburn Rovers",
+        "Luton": "Luton Town",
+        "Plymouth": "Plymouth Argyle",
+        "Cardiff": "Cardiff City",
+        "Oxford": "Oxford United",
+        "Birmingham": "Birmingham City",
+        "Huddersfield": "Huddersfield Town",
+        "Bolton": "Bolton Wanderers",
+        "Charlton": "Charlton Athletic",
+        "Stockport": "Stockport County",
+        "Wycombe": "Wycombe Wanderers",
+        "Lincoln": "Lincoln City",
+        "Exeter": "Exeter City",
+        "Rotherham": "Rotherham United",
+        "Mansfield": "Mansfield Town",
+        "Wigan": "Wigan Athletic",
+        "Burton": "Burton Albion",
+        "Cambridge": "Cambridge United",
+        "Northampton": "Northampton Town",
+        "Shrewsbury": "Shrewsbury Town",
+        "Bradford": "Bradford City",
+        "Doncaster": "Doncaster Rovers",
+        "Crewe": "Crewe Alexandra",
+        "Grimsby": "Grimsby Town",
+        "Colchester": "Colchester United",
+        "Cheltenham": "Cheltenham Town",
+        "Swindon": "Swindon Town",
+        "Accrington": "Accrington Stanley",
+        "Tranmere": "Tranmere Rovers",
+        "Salford": "Salford City",
+        "Oldham": "Oldham Athletic",
+        "York": "York City",
+    }
+
+    def _team_matches_query(team_name: str, q: str) -> bool:
+        if not q:
+            return True
+        low = str(team_name or "").lower()
+        if q in low:
+            return True
+        full = FULL_TEAM_DISPLAY_NAMES.get(str(team_name or "").strip(), "").lower()
+        return bool(full and q in full)
 
     @app.route("/api/fixtures")
     def api_fixtures() -> Response:
@@ -512,7 +591,7 @@ def create_app() -> Flask:
                     continue
                 if div == "WATCHLIST" and not is_watched:
                     continue
-                if search and search not in d["home_team"].lower() and search not in d["away_team"].lower():
+                if search and not (_team_matches_query(d["home_team"], search) or _team_matches_query(d["away_team"], search)):
                     continue
                 d["league_name"] = LEAGUES.get(d["div"], {}).get("name", d["div"])
                 d["top_scorelines"] = json.loads(d.pop("top_scorelines_json") or "[]")
@@ -1527,6 +1606,304 @@ def create_app() -> Flask:
         )
         status = 200 if ok else 400
         return jsonify({"ok": ok, "message": info}), status
+
+    @app.route("/api/racing/overview")
+    def api_racing_overview() -> Response:
+        with db_session() as conn:
+            races = [dict(r) for r in conn.execute("SELECT * FROM racing_races ORDER BY race_date ASC, off_time ASC").fetchall()]
+            upcoming = [r for r in races if is_race_upcoming(r)]
+            active_races = upcoming or races
+            by_region: dict[str, int] = {}
+            meetings: set[tuple[str, str]] = set()
+            live_races = 0
+            for rc in active_races:
+                reg = rc["region_code"]
+                by_region[reg] = by_region.get(reg, 0) + 1
+                meetings.add((rc["race_date"], rc["course"]))
+                has_live = conn.execute(
+                    "SELECT 1 FROM racing_runners WHERE race_id = ? AND non_runner = 0 AND odds_source IN ('live_fixed', 'pmu_tote', 'user_manual') LIMIT 1",
+                    (rc["id"],),
+                ).fetchone()
+                if has_live:
+                    live_races += 1
+
+            runners_cnt = conn.execute("SELECT COUNT(*) AS c FROM racing_runners WHERE non_runner = 0").fetchone()["c"]
+            news = [
+                dict(r)
+                for r in conn.execute("SELECT * FROM racing_news ORDER BY published_at DESC LIMIT 16").fetchall()
+            ]
+            return jsonify(
+                {
+                    "counts": {
+                        "races_total": len(races),
+                        "upcoming_races": len(upcoming),
+                        "active_races": len(active_races),
+                        "meetings_count": len(meetings),
+                        "runners_count": int(runners_cnt or 0),
+                        "live_odds_races": live_races,
+                        "news_count": len(news),
+                    },
+                    "by_region": by_region,
+                    "regions": RACING_REGIONS,
+                    "multiples": RACING_MULTIPLES,
+                    "racing_feeds_mode": "free_public_no_key",
+                    "news": news,
+                    "generated_at": utc_now_iso(),
+                }
+            )
+
+    @app.route("/api/racing/cards")
+    def api_racing_cards() -> Response:
+        region = (request.args.get("region") or "").strip().upper()
+        day = (request.args.get("day") or "").strip().lower()
+        race_type = (request.args.get("race_type") or "").strip().lower()
+        search = (request.args.get("search") or "").strip().lower()
+        include_past = request.args.get("include_past") == "1"
+
+        with db_session() as conn:
+            rows = [
+                dict(r)
+                for r in conn.execute("SELECT * FROM racing_races ORDER BY race_date ASC, off_time ASC, course ASC").fetchall()
+            ]
+            upcoming_only = [r for r in rows if is_race_upcoming(r)]
+            if not include_past and not day and upcoming_only:
+                rows = upcoming_only
+
+            if day == "today":
+                from accalab.racing_engine import _uk_now
+                t_iso = _uk_now().strftime("%Y-%m-%d")
+                rows = [r for r in rows if r["race_date"] == t_iso]
+            elif day == "tomorrow":
+                from accalab.racing_engine import _uk_now
+                tm_iso = (_uk_now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                rows = [r for r in rows if r["race_date"] == tm_iso]
+
+            if region and region != "ALL":
+                if region in ("UK_IRE", "GB_IRE"):
+                    rows = [r for r in rows if r["region_code"] in ("GB", "IRE")]
+                else:
+                    rows = [r for r in rows if r["region_code"] == region]
+
+            if race_type and race_type != "all":
+                if race_type == "jumps":
+                    rows = [r for r in rows if str(r["race_type"] or "").lower() in ("hurdle", "chase", "jumps", "nh flat")]
+                else:
+                    rows = [r for r in rows if str(r["race_type"] or "").lower() == race_type]
+
+            races_out: list[dict[str, Any]] = []
+            meetings_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+            for rc in rows:
+                all_rn = [
+                    dict(x)
+                    for x in conn.execute(
+                        "SELECT * FROM racing_runners WHERE race_id = ? ORDER BY non_runner ASC, model_rating DESC, saddle_cloth ASC",
+                        (rc["id"],),
+                    ).fetchall()
+                ]
+                active_rn = [_enrich_runner_row(rc, x) for x in all_rn if not x["non_runner"]]
+                nr_count = sum(1 for x in all_rn if x["non_runner"])
+                if not active_rn:
+                    continue
+
+                if search:
+                    hay_race = f"{rc['course']} {rc['race_name']} {rc['country_name']}".lower()
+                    hay_rn = " ".join(f"{r['horse_name']} {r['jockey']} {r['trainer']}".lower() for r in active_rn)
+                    if search not in hay_race and search not in hay_rn:
+                        continue
+
+                reg_meta = RACING_REGIONS.get(rc["region_code"], RACING_REGIONS["INTL"])
+                top_pick = active_rn[0]
+                has_live = any(r["odds_source"] in ("live_fixed", "pmu_tote", "user_manual") for r in active_rn)
+                race_item = {
+                    **rc,
+                    "is_handicap": bool(rc["is_handicap"]),
+                    "is_upcoming": is_race_upcoming(rc),
+                    "region_flag": reg_meta["flag"],
+                    "region_short": reg_meta["short"],
+                    "place_terms_label": top_pick["place_terms_label"],
+                    "ew_eligible": top_pick["ew_eligible"],
+                    "non_runners_count": nr_count,
+                    "has_live_odds": has_live,
+                    "top_pick": {
+                        "runner_id": top_pick["runner_id"],
+                        "horse_name": top_pick["horse_name"],
+                        "model_rating": top_pick["model_rating"],
+                        "model_win_prob_pct": top_pick["model_win_prob_pct"],
+                        "odds": top_pick["odds"],
+                        "odds_fractional": top_pick["odds_fractional"],
+                        "win_edge_pct": top_pick["win_edge_pct"],
+                    },
+                    "runners": active_rn,
+                }
+                races_out.append(race_item)
+
+                m_key = (rc["race_date"], rc["course"], rc["region_code"])
+                if m_key not in meetings_map:
+                    meetings_map[m_key] = {
+                        "race_date": rc["race_date"],
+                        "course": rc["course"],
+                        "region_code": rc["region_code"],
+                        "region_flag": reg_meta["flag"],
+                        "country_name": rc["country_name"] or reg_meta["name"],
+                        "going": rc.get("going") or "",
+                        "surface": rc.get("surface") or "",
+                        "race_count": 0,
+                        "races": [],
+                    }
+                meetings_map[m_key]["race_count"] += 1
+                meetings_map[m_key]["races"].append(
+                    {
+                        "id": rc["id"],
+                        "off_time": rc["off_time"],
+                        "race_name": rc["race_name"],
+                        "race_type": rc["race_type"],
+                        "distance_text": rc.get("distance_text") or "",
+                        "going": rc.get("going") or "",
+                        "runners_count": len(active_rn),
+                        "places_paid": rc["places_paid"],
+                        "place_terms_label": top_pick["place_terms_label"],
+                        "status": rc["status"],
+                        "is_upcoming": race_item["is_upcoming"],
+                        "has_live_odds": has_live,
+                        "top_horse": top_pick["horse_name"],
+                        "top_odds_fractional": top_pick["odds_fractional"],
+                    }
+                )
+
+            meetings_list = sorted(meetings_map.values(), key=lambda m: (m["race_date"], m["races"][0]["off_time"] if m["races"] else "", m["course"]))
+            return jsonify({"meetings": meetings_list, "races": races_out, "total_races": len(races_out), "regions": RACING_REGIONS})
+
+    @app.route("/api/racing/race/<int:race_id>")
+    def api_racing_race_detail(race_id: int) -> tuple[Response, int] | Response:
+        with db_session() as conn:
+            rc_row = conn.execute("SELECT * FROM racing_races WHERE id = ?", (race_id,)).fetchone()
+            if not rc_row:
+                return jsonify({"error": "Race not found"}), 404
+            rc = dict(rc_row)
+            rn_rows = [
+                dict(x)
+                for x in conn.execute(
+                    "SELECT * FROM racing_runners WHERE race_id = ? ORDER BY non_runner ASC, model_rating DESC, saddle_cloth ASC",
+                    (race_id,),
+                ).fetchall()
+            ]
+            enriched = [_enrich_runner_row(rc, x) for x in rn_rows]
+            reg_meta = RACING_REGIONS.get(rc["region_code"], RACING_REGIONS["INTL"])
+            news = [
+                dict(n)
+                for n in conn.execute("SELECT * FROM racing_news ORDER BY published_at DESC LIMIT 8").fetchall()
+            ]
+            return jsonify(
+                {
+                    "race": {
+                        **rc,
+                        "is_handicap": bool(rc["is_handicap"]),
+                        "is_upcoming": is_race_upcoming(rc),
+                        "region_flag": reg_meta["flag"],
+                        "place_terms_label": enriched[0]["place_terms_label"] if enriched else "",
+                    },
+                    "runners": [r for r in enriched if not r["non_runner"]],
+                    "non_runners": [r for r in enriched if r["non_runner"]],
+                    "news": news,
+                }
+            )
+
+    @app.route("/api/racing/runner/<int:runner_id>/odds", methods=["POST"])
+    def api_racing_runner_odds(runner_id: int) -> tuple[Response, int] | Response:
+        data = request.get_json(silent=True) or {}
+        dec = parse_odds_value(data.get("odds"))
+        if not dec:
+            return jsonify({"error": "Enter valid fractional or decimal odds (e.g. 5/1 or 6.00)"}), 400
+        now = utc_now_iso()
+        with db_session() as conn:
+            rn = conn.execute("SELECT * FROM racing_runners WHERE id = ?", (runner_id,)).fetchone()
+            if not rn:
+                return jsonify({"error": "Runner not found"}), 404
+            rc = dict(conn.execute("SELECT * FROM racing_races WHERE id = ?", (rn["race_id"],)).fetchone())
+            p_win = float(rn["model_win_prob"] or 0.1)
+            p_plc = float(rn["model_place_prob"] or 0.3)
+            pf = float(rc.get("place_fraction") or 0.0)
+            ew_eligible = int(rc.get("places_paid") or 1) >= 2 and pf > 0
+            win_edge = (p_win * dec - 1.0) * 100.0
+            if ew_eligible:
+                plc_odds = 1.0 + (dec - 1.0) * pf
+                ew_edge = 0.5 * ((p_win * dec - 1.0) + (p_plc * plc_odds - 1.0)) * 100.0
+            else:
+                ew_edge = win_edge
+
+            conn.execute(
+                """
+                UPDATE racing_runners SET
+                    market_odds = ?, odds_source = 'user_manual',
+                    win_edge_pct = ?, ew_edge_pct = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (round(dec, 2), round(win_edge, 2), round(ew_edge, 2), now, runner_id),
+            )
+            updated_rn = dict(conn.execute("SELECT * FROM racing_runners WHERE id = ?", (runner_id,)).fetchone())
+            return jsonify({"ok": True, "runner": _enrich_runner_row(rc, updated_rn)})
+
+    @app.route("/api/racing/tips")
+    def api_racing_tips() -> Response:
+        region = (request.args.get("region") or "").strip() or None
+        bet_type = (request.args.get("bet_type") or "").strip() or None
+        day = (request.args.get("day") or "").strip() or None
+        race_type = (request.args.get("race_type") or "").strip() or None
+        try:
+            limit = max(1, min(160, int(request.args.get("limit", "60"))))
+        except (TypeError, ValueError):
+            limit = 60
+        with db_session() as conn:
+            user = _get_active_user(conn)
+            tips = find_racing_tips(
+                conn,
+                user=user,
+                region=region,
+                bet_type=bet_type,
+                day=day,
+                race_type=race_type,
+                limit=limit,
+            )
+            return jsonify({"tips": tips, "total": len(tips)})
+
+    @app.route("/api/racing/evaluate-multiple", methods=["POST"])
+    def api_racing_evaluate_multiple() -> Response:
+        payload = request.get_json(silent=True) or {}
+        legs = payload.get("legs") or []
+        structure = str(payload.get("structure") or "acca")
+        each_way = bool(payload.get("each_way"))
+        try:
+            unit_stake = float(payload.get("unit_stake", 1.0))
+        except (TypeError, ValueError):
+            unit_stake = 1.0
+        return jsonify(evaluate_racing_multiple(legs, structure=structure, each_way=each_way, unit_stake=unit_stake))
+
+    @app.route("/api/racing/suggest-bet")
+    def api_racing_suggest_bet() -> Response:
+        with db_session() as conn:
+            user = _get_active_user(conn)
+            return jsonify(build_racing_suggestions(conn, user=user))
+
+    @app.route("/api/racing/suggest-bet/build", methods=["POST"])
+    def api_racing_suggest_bet_build() -> Response:
+        payload = request.get_json(silent=True) or {}
+        with db_session() as conn:
+            user = _get_active_user(conn)
+            return jsonify(build_custom_racing_bets(conn, user=user, criteria=payload))
+
+    @app.route("/api/racing/bet365/export", methods=["POST"])
+    def api_racing_bet365_export() -> Response:
+        payload = request.get_json(silent=True) or {}
+        legs = payload.get("legs") or []
+        structure = str(payload.get("structure") or "acca")
+        each_way = bool(payload.get("each_way"))
+        try:
+            unit_stake = float(payload.get("unit_stake", 1.0))
+        except (TypeError, ValueError):
+            unit_stake = 1.0
+        title = str(payload.get("title") or "AccaLab Racing Bet").strip()
+        return jsonify(build_racing_bet365_export(legs, structure=structure, each_way=each_way, unit_stake=unit_stake, title=title))
 
     @app.route("/api/sync", methods=["POST"])
     def api_sync() -> Response:

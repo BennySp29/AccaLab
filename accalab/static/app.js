@@ -1,4 +1,5 @@
 // AccaLab Frontend PWA Application
+import { initRacingModule, racingStaticApi } from './racing.js';
 
 function loadSavedSuggestCriteria() {
   const fallback = {
@@ -88,6 +89,7 @@ function loadSavedBetBuilderCriteria() {
 }
 
 const state = {
+  activeSport: typeof localStorage !== 'undefined' && localStorage.getItem('accalab_active_sport') === 'racing' ? 'racing' : 'football',
   activeTab: 'fixtures',
   activeDiv: 'ALL',
   search: '',
@@ -346,6 +348,100 @@ function evaluateAccaClient(legs = [], stake = 10.0) {
     implied_prob_pct: roundNum(impliedProd * 100.0, 2),
     warnings,
   };
+}
+
+const FULL_TEAM_DISPLAY_NAMES = {
+  "Nott'm Forest": 'Nottingham Forest',
+  'Sheffield Weds': 'Sheffield Wednesday',
+  Peterboro: 'Peterborough United',
+  'Bristol Rvs': 'Bristol Rovers',
+  'Man City': 'Manchester City',
+  'Man United': 'Manchester United',
+  QPR: 'Queens Park Rangers',
+  'West Brom': 'West Bromwich Albion',
+  Wolves: 'Wolverhampton Wanderers',
+  'West Ham': 'West Ham United',
+  Tottenham: 'Tottenham Hotspur',
+  Brighton: 'Brighton & Hove Albion',
+  Newcastle: 'Newcastle United',
+  Leeds: 'Leeds United',
+  Leicester: 'Leicester City',
+  Ipswich: 'Ipswich Town',
+  Norwich: 'Norwich City',
+  Derby: 'Derby County',
+  Coventry: 'Coventry City',
+  Stoke: 'Stoke City',
+  Swansea: 'Swansea City',
+  Hull: 'Hull City',
+  Preston: 'Preston North End',
+  Blackburn: 'Blackburn Rovers',
+  Luton: 'Luton Town',
+  Plymouth: 'Plymouth Argyle',
+  Cardiff: 'Cardiff City',
+  Oxford: 'Oxford United',
+  Birmingham: 'Birmingham City',
+  Huddersfield: 'Huddersfield Town',
+  Bolton: 'Bolton Wanderers',
+  Charlton: 'Charlton Athletic',
+  Stockport: 'Stockport County',
+  Wycombe: 'Wycombe Wanderers',
+  Lincoln: 'Lincoln City',
+  Exeter: 'Exeter City',
+  Rotherham: 'Rotherham United',
+  Mansfield: 'Mansfield Town',
+  Wigan: 'Wigan Athletic',
+  Burton: 'Burton Albion',
+  Cambridge: 'Cambridge United',
+  Northampton: 'Northampton Town',
+  Shrewsbury: 'Shrewsbury Town',
+  Bradford: 'Bradford City',
+  Doncaster: 'Doncaster Rovers',
+  Crewe: 'Crewe Alexandra',
+  Grimsby: 'Grimsby Town',
+  Colchester: 'Colchester United',
+  Cheltenham: 'Cheltenham Town',
+  Swindon: 'Swindon Town',
+  Accrington: 'Accrington Stanley',
+  Tranmere: 'Tranmere Rovers',
+  Salford: 'Salford City',
+  Oldham: 'Oldham Athletic',
+  York: 'York City',
+};
+
+function displayTeamName(name) {
+  const cleaned = String(name || '').trim();
+  return FULL_TEAM_DISPLAY_NAMES[cleaned] || cleaned;
+}
+
+function displayMatchTitle(home, away, sep = 'vs') {
+  return `${displayTeamName(home)} ${sep} ${displayTeamName(away)}`;
+}
+
+const _FULL_TEAM_TOKEN_MAP = new Map();
+for (const [shortName, fullName] of Object.entries(FULL_TEAM_DISPLAY_NAMES)) {
+  _FULL_TEAM_TOKEN_MAP.set(fullName, fullName);
+  _FULL_TEAM_TOKEN_MAP.set(shortName, fullName);
+}
+const _FULL_TEAM_REGEX = new RegExp(
+  `(?<![A-Za-z0-9'])(?:${[..._FULL_TEAM_TOKEN_MAP.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')})(?![A-Za-z0-9'])`,
+  'g'
+);
+
+function displaySelectionLabel(text) {
+  const raw = String(text || '');
+  if (!raw) return '';
+  return raw.replace(_FULL_TEAM_REGEX, (m) => _FULL_TEAM_TOKEN_MAP.get(m) || m);
+}
+
+function teamMatchesQuery(name, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const raw = String(name || '').toLowerCase();
+  if (raw.includes(q)) return true;
+  return displayTeamName(name).toLowerCase().includes(q);
 }
 
 const B365_TEAM_SEARCH_NAMES = {
@@ -847,10 +943,10 @@ async function shareAccaSummary(legs = [], title = 'AccaLab Tips') {
   }
   const ev = evaluateAccaClient(legs, 10);
   const lines = [
-    `⚽ ${title} (${legs.length}-Fold @ ${fmtOdds(ev.combined_odds)})`,
+    `⚽ ${displaySelectionLabel(title)} (${legs.length}-Fold @ ${fmtOdds(ev.combined_odds)})`,
     `📊 Model Win Chance: ${ev.combined_model_prob_pct}% (${ev.expected_value_pct >= 0 ? '+' : ''}${ev.expected_value_pct}% Value)`,
     '',
-    ...legs.map((l, i) => `${i + 1}. ${l.home_team} vs ${l.away_team} — ${l.selection_label} @ ${fmtOdds(l.odds)}`),
+    ...legs.map((l, i) => `${i + 1}. ${displayMatchTitle(l.home_team, l.away_team)} — ${displaySelectionLabel(l.selection_label)} @ ${fmtOdds(l.odds)}`),
     '',
     'Built with AccaLab',
   ];
@@ -1888,7 +1984,10 @@ function buildBetLevelReasonsClient(title, legs, ev, riskLevel, criteria = null,
 }
 
 function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
-  const bullets = Array.isArray(reasons) && reasons.length ? reasons : getFallbackLegReasons(opts.item);
+  const isRacing = opts.sport === 'racing' || Boolean(stats && (stats.race_name || stats.model_rating != null || stats.place_terms_label));
+  const fmtText = (txt) => (isRacing ? String(txt || '') : displaySelectionLabel(txt));
+  const rawBullets = Array.isArray(reasons) && reasons.length ? reasons : getFallbackLegReasons(opts.item);
+  const bullets = rawBullets.map((r) => fmtText(r));
   const chips = [];
   if (stats && stats.xg_home != null && stats.xg_away != null) {
     chips.push(`xG ${Number(stats.xg_home).toFixed(2)}–${Number(stats.xg_away).toFixed(2)}`);
@@ -1912,6 +2011,24 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
   if (stats && Number(stats.exp_cards) > 0) {
     chips.push(`🟨 Exp ${Number(stats.exp_cards).toFixed(1)} Cards`);
   }
+  if (stats && stats.model_rating != null) {
+    chips.push(`Rating ${Number(stats.model_rating).toFixed(0)}/100`);
+  }
+  if (stats && stats.official_rating != null) {
+    chips.push(`Official Rating ${stats.official_rating}`);
+  }
+  if (stats && stats.weight_display) {
+    chips.push(`Weight ${stats.weight_display}`);
+  }
+  if (stats && stats.win_prob_pct != null) {
+    chips.push(`Win ${Number(stats.win_prob_pct).toFixed(1)}%`);
+  }
+  if (stats && stats.place_prob_pct != null) {
+    chips.push(`Place ${Number(stats.place_prob_pct).toFixed(1)}%`);
+  }
+  if (stats && stats.place_terms_label) {
+    chips.push(stats.place_terms_label);
+  }
 
   const formatBullet = (txt) => {
     const raw = String(txt || '');
@@ -1924,7 +2041,7 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
 
   return `
     <div class="${opts.containerClass || 'mt-2 p-2.5 rounded-xl bg-slate-950/70 border border-slate-700/80 space-y-2 text-[11px]'}">
-      ${opts.title ? `<div class="text-[10px] font-bold uppercase tracking-wider text-cyan-300">${esc(opts.title)}</div>` : ''}
+      ${opts.title ? `<div class="text-[10px] font-bold uppercase tracking-wider text-cyan-300 break-words leading-snug">${esc(fmtText(opts.title))}</div>` : ''}
       ${chips.length
         ? `<div class="flex flex-wrap gap-1.5">${chips
             .map((c) => `<span class="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700/80 text-[10px] font-mono text-slate-200">${esc(c)}</span>`)
@@ -1932,7 +2049,7 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
         : ''}
       ${bullets.length
         ? `<ul class="space-y-1 text-slate-300 leading-relaxed list-disc pl-4">${bullets.map((r) => `<li>${formatBullet(r)}</li>`).join('')}</ul>`
-        : '<div class="text-slate-400">Reasoning based on Dixon-Coles match probabilities and latest market prices.</div>'}
+        : `<div class="text-slate-400">${esc(opts.fallbackText || 'Reasoning based on Dixon-Coles match probabilities and latest market prices.')}</div>`}
       ${opts.extraFooterHtml || ''}
     </div>
   `;
@@ -3685,7 +3802,7 @@ async function staticApi(path, opts = {}) {
         const isWatched = watchedSet.has(f.id);
         if (div === 'MY_TEAMS' && !isFav && !isWatched) return false;
         if (div === 'WATCHLIST' && !isWatched) return false;
-        if (search && !f.home_team.toLowerCase().includes(search) && !f.away_team.toLowerCase().includes(search)) return false;
+        if (search && !(teamMatchesQuery(f.home_team, search) || teamMatchesQuery(f.away_team, search))) return false;
         return true;
       })
       .map((f) => ({
@@ -4489,6 +4606,9 @@ async function api(path, opts = {}) {
       cloudHandledPaths.has(pathname));
 
   if ((forceStatic || useCloudClient) && path.startsWith('/api/')) {
+    if (pathname.startsWith('/api/racing/')) {
+      return racingStaticApi(url, opts);
+    }
     return staticApi(url, opts);
   }
 
@@ -4500,7 +4620,7 @@ async function api(path, opts = {}) {
     const ct = res.headers.get('content-type') || '';
     if ((res.status === 404 || res.status === 405) && !ct.includes('application/json') && path.startsWith('/api/')) {
       window.__ACCALAB_STATIC__ = true;
-      return staticApi(url, opts);
+      return pathname.startsWith('/api/racing/') ? racingStaticApi(url, opts) : staticApi(url, opts);
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -4508,7 +4628,7 @@ async function api(path, opts = {}) {
   } catch (err) {
     if (path.startsWith('/api/') && err instanceof TypeError) {
       window.__ACCALAB_STATIC__ = true;
-      return staticApi(url, opts);
+      return pathname.startsWith('/api/racing/') ? racingStaticApi(url, opts) : staticApi(url, opts);
     }
     throw err;
   }
@@ -4517,7 +4637,9 @@ async function api(path, opts = {}) {
 function saveSlip(syncServer = true) {
   localStorage.setItem('accalab_slip', JSON.stringify(state.slip));
   localStorage.setItem('accalab_slip_stake', String(state.slipStake));
-  document.getElementById('slip-count-badge').textContent = String(state.slip.length);
+  if (state.activeSport !== 'racing') {
+    document.getElementById('slip-count-badge').textContent = String(state.slip.length);
+  }
   if (syncServer && state.dashboard) {
     api('/api/user/slip', {
       method: 'PUT',
@@ -4729,10 +4851,10 @@ async function renderSlip() {
       return `
       <div class="p-3 rounded-xl bg-card border border-slate-700/80 flex items-start justify-between gap-2">
         <div class="min-w-0 flex-1">
-          <div class="text-xs text-slate-400 truncate">${esc(leg.home_team)} vs ${esc(leg.away_team)}</div>
+          <div class="text-xs text-slate-400 break-words leading-snug">${esc(displayMatchTitle(leg.home_team, leg.away_team))}</div>
           <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
             ${getBetTypeInfo(leg.market).badgeHtml}
-            <span class="text-sm font-semibold text-white">${esc(leg.selection_label)}</span>
+            <span class="text-sm font-semibold text-white break-words leading-snug">${esc(displaySelectionLabel(leg.selection_label))}</span>
             ${twoUpBadgeHtml(leg.market)}
           </div>
           <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -4958,13 +5080,13 @@ async function loadDashboard(syncSlipFromServer = true) {
   if (authStatusEl) {
     if (!hasRealUser) {
       authStatusEl.textContent = 'No account yet • Click to set up';
-      authStatusEl.className = 'text-[11px] truncate text-amber-300';
+      authStatusEl.className = 'text-[11px] leading-snug text-amber-300';
     } else if (state.authenticated) {
       authStatusEl.textContent = 'Signed in • Cloud Synced ☁️';
-      authStatusEl.className = 'text-[11px] truncate text-emerald-400';
+      authStatusEl.className = 'text-[11px] leading-snug text-emerald-400';
     } else {
       authStatusEl.textContent = 'Member profile • Sign in';
-      authStatusEl.className = 'text-[11px] truncate text-amber-300';
+      authStatusEl.className = 'text-[11px] leading-snug text-amber-300';
     }
   }
 
@@ -4974,7 +5096,7 @@ async function loadDashboard(syncSlipFromServer = true) {
   }
   const openAuthMobileBtn = document.getElementById('open-auth-modal-mobile-btn');
   if (openAuthMobileBtn) {
-    openAuthMobileBtn.textContent = hasRealUser ? 'Account' : 'Set Up Account';
+    openAuthMobileBtn.textContent = hasRealUser ? 'Account' : 'Sign In';
   }
 
   const members = d.users || [];
@@ -5004,12 +5126,14 @@ async function loadDashboard(syncSlipFromServer = true) {
     badge.classList.add('hidden');
   }
 
-  document.getElementById('kpi-strip').innerHTML = `
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">⚽ Upcoming: <b class="text-white font-mono">${d.counts.upcoming_fixtures}</b></span>
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">💎 Top Tips: <b class="text-emerald-400 font-mono">${d.top_value_bets.length}</b></span>
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">★ Followed Clubs: <b class="text-amber-300 font-mono">${state.favouriteTeams.length}</b></span>
-    <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80 text-slate-300" title="Latest odds snapshot sync time">🕒 Odds: <b class="text-cyan-300 font-mono">${esc(formatRelativeFreshness(d.odds_updated_at || d.generated_at))}</b></span>
-  `;
+  if (state.activeSport !== 'racing') {
+    document.getElementById('kpi-strip').innerHTML = `
+      <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">⚽ Upcoming: <b class="text-white font-mono">${d.counts.upcoming_fixtures}</b></span>
+      <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">💎 Top Tips: <b class="text-emerald-400 font-mono">${d.top_value_bets.length}</b></span>
+      <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">★ Followed Clubs: <b class="text-amber-300 font-mono">${state.favouriteTeams.length}</b></span>
+      <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80 text-slate-300" title="Latest odds snapshot sync time">🕒 Odds: <b class="text-cyan-300 font-mono">${esc(formatRelativeFreshness(d.odds_updated_at || d.generated_at))}</b></span>
+    `;
+  }
 }
 
 // 1. MATCH PREVIEWS TAB
@@ -5052,10 +5176,10 @@ async function renderFixturesTab() {
           const best = f.best_edge || {};
           return `
             <div class="p-3 rounded-xl bg-surface/90 border border-slate-800 flex items-center justify-between gap-2">
-              <div class="min-w-0">
+              <div class="min-w-0 flex-1">
                 <div class="text-[10px] text-emerald-400 font-semibold">${esc(f.league_name)} • ${esc(f.match_date)}</div>
-                <div class="text-xs font-bold text-white truncate mt-0.5">${esc(f.home_team)} vs ${esc(f.away_team)}</div>
-                <div class="text-[11px] text-slate-400 mt-0.5">${best.edge_pct >= 3 ? `💎 ${esc(best.label)} (+${best.edge_pct}%)` : `Home ${(f.prob_home * 100).toFixed(0)}% • Draw ${(f.prob_draw * 100).toFixed(0)}% • Away ${(f.prob_away * 100).toFixed(0)}%`}</div>
+                <div class="text-xs font-bold text-white break-words leading-snug mt-0.5">${esc(displayMatchTitle(f.home_team, f.away_team))}</div>
+                <div class="text-[11px] text-slate-400 mt-0.5 break-words">${best.edge_pct >= 3 ? `💎 ${esc(displaySelectionLabel(best.label))} (+${best.edge_pct}%)` : `Home ${(f.prob_home * 100).toFixed(0)}% • Draw ${(f.prob_draw * 100).toFixed(0)}% • Away ${(f.prob_away * 100).toFixed(0)}%`}</div>
               </div>
               <button data-open-preview="${f.id}" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600 text-[11px] font-semibold text-white">Open</button>
             </div>`;
@@ -5102,17 +5226,17 @@ async function renderFixturesTab() {
       }
         </div>
         <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div class="space-y-1 min-w-0">
-            <div class="text-base md:text-lg font-extrabold text-white truncate">
+          <div class="space-y-1 min-w-0 flex-1">
+            <div class="text-base md:text-lg font-extrabold text-white break-words leading-snug">
               ${fs.legs.length === 1
-        ? `${esc(fs.legs[0].selection_label)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds || fs.legs[0].odds)}</span> <span class="text-xs font-medium text-slate-300 ml-1">(${esc(fs.legs[0].home_team)} vs ${esc(fs.legs[0].away_team)})</span>`
-        : `${esc(fs.title)} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds)}</span>`
+        ? `${esc(displaySelectionLabel(fs.legs[0].selection_label))} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds || fs.legs[0].odds)}</span> <span class="text-xs font-medium text-slate-300 ml-1">(${esc(displayMatchTitle(fs.legs[0].home_team, fs.legs[0].away_team))})</span>`
+        : `${esc(displaySelectionLabel(fs.title))} <span class="text-emerald-400 font-mono">@ ${fmtOdds(fs.eval?.combined_odds)}</span>`
       }
             </div>
-            <div class="text-xs text-slate-300 truncate">
+            <div class="text-xs text-slate-300 break-words leading-snug">
               ${fs.legs.length === 1
-        ? esc((fs.reasons && fs.reasons[0]) || fs.subtitle)
-        : fs.legs.map((l) => `${l.selection_label} (${fmtOdds(l.odds)})`).join(' • ')
+        ? esc(displaySelectionLabel((fs.reasons && fs.reasons[0]) || fs.subtitle))
+        : fs.legs.map((l) => `${displaySelectionLabel(l.selection_label)} (${fmtOdds(l.odds)})`).join(' • ')
       }
             </div>
           </div>
@@ -5128,12 +5252,11 @@ async function renderFixturesTab() {
   main.innerHTML = `
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
       <div>
-        <h2 class="text-xl font-extrabold tracking-tight text-white">Upcoming English Match Previews</h2>
-        <p class="text-xs text-slate-400 mt-0.5">Win probabilities, score predictions &amp; smart picks • <span class="text-cyan-300">🕒 Odds updated ${esc(formatRelativeFreshness())}</span></p>
+        <h2 class="text-xl font-extrabold tracking-tight text-white">Upcoming English Football</h2>
+        <p class="text-xs text-slate-400 mt-0.5">Win chances, predicted scores &amp; quick bets • <span class="text-cyan-300">🕒 Odds updated ${esc(formatRelativeFreshness())}</span></p>
       </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <button type="button" data-open-boost-checker="1" class="px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-extrabold whitespace-nowrap transition">⚡ Check a Bet365 Boost</button>
-        <input id="fixture-search" type="search" value="${esc(state.search)}" placeholder="Search club..." class="w-full md:w-64 bg-panel border border-slate-700/80 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+      <div class="flex items-center gap-2 w-full md:w-auto">
+        <input id="fixture-search" type="search" value="${esc(state.search)}" placeholder="Search any club..." class="w-full md:w-64 bg-panel border border-slate-700/80 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
       </div>
     </div>
 
@@ -5178,6 +5301,8 @@ async function renderFixturesTab() {
           const inH = isInSlip(f.id, '1X2_H');
           const inD = isInSlip(f.id, '1X2_D');
           const inA = isInSlip(f.id, '1X2_A');
+          const homeDisp = displayTeamName(f.home_team);
+          const awayDisp = displayTeamName(f.away_team);
           const oddsBtnCls = (on) =>
             on
               ? 'quick-leg py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400 text-emerald-100 ring-1 ring-emerald-400/40 transition'
@@ -5185,8 +5310,8 @@ async function renderFixturesTab() {
           return `
           <div class="bg-panel card-hover border ${isFavMatch ? 'border-amber-500/45' : 'border-slate-800/90'} hover:border-emerald-500/40 rounded-2xl p-4 flex flex-col justify-between gap-3">
             <div>
-              <div class="flex items-center justify-between gap-2 text-xs">
-                <span class="font-semibold text-emerald-400 truncate">${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')}</span>
+              <div class="flex flex-wrap items-center justify-between gap-1.5 text-xs">
+                <span class="font-semibold text-emerald-400 break-words leading-snug">${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')}</span>
                 <div class="flex items-center gap-1.5 shrink-0">
                   ${fixtureKickoffWindowBadge(f)}
                   <button data-watch-fid="${f.id}" title="Save to Watchlist" class="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition ${isWatched
@@ -5196,30 +5321,30 @@ async function renderFixturesTab() {
                   ${oddsBadge(f.odds_source)}
                 </div>
               </div>
-              <div class="mt-2.5 flex items-center justify-between gap-2">
+              <div class="mt-2.5 grid grid-cols-[1fr_auto_1fr] items-start gap-2">
                 <div class="min-w-0">
-                  <div class="font-bold text-white truncate flex items-center gap-1">
-                    <button data-fav-team="${esc(f.home_team)}" title="Follow ${esc(f.home_team)}" class="text-xs leading-none ${homeFav ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'}">${homeFav ? '★' : '☆'}</button>
-                    <span class="truncate">${esc(f.home_team)}</span>
+                  <div class="font-bold text-white text-sm flex items-start gap-1 leading-snug">
+                    <button data-fav-team="${esc(f.home_team)}" title="Follow ${esc(homeDisp)}" class="text-xs leading-none shrink-0 mt-0.5 ${homeFav ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'}">${homeFav ? '★' : '☆'}</button>
+                    <span class="break-words leading-snug">${esc(homeDisp)}</span>
                   </div>
-                  <div class="mt-1">${formBadges(f.home_form)}</div>
+                  <div class="mt-1.5">${formBadges(f.home_form)}</div>
                 </div>
-                <div class="text-xs font-bold text-slate-500 px-2">vs</div>
+                <div class="text-xs font-bold text-slate-500 pt-0.5">vs</div>
                 <div class="min-w-0 text-right">
-                  <div class="font-bold text-white truncate flex items-center justify-end gap-1">
-                    <span class="truncate">${esc(f.away_team)}</span>
-                    <button data-fav-team="${esc(f.away_team)}" title="Follow ${esc(f.away_team)}" class="text-xs leading-none ${awayFav ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'}">${awayFav ? '★' : '☆'}</button>
+                  <div class="font-bold text-white text-sm flex items-start justify-end gap-1 leading-snug">
+                    <span class="break-words leading-snug">${esc(awayDisp)}</span>
+                    <button data-fav-team="${esc(f.away_team)}" title="Follow ${esc(awayDisp)}" class="text-xs leading-none shrink-0 mt-0.5 ${awayFav ? 'text-amber-300' : 'text-slate-600 hover:text-amber-300'}">${awayFav ? '★' : '☆'}</button>
                   </div>
-                  <div class="mt-1 flex justify-end gap-1">${formBadges(f.away_form)}</div>
+                  <div class="mt-1.5 flex justify-end gap-1">${formBadges(f.away_form)}</div>
                 </div>
               </div>
 
               <!-- Probability Bar -->
               <div class="mt-3">
                 <div class="flex justify-between text-[11px] text-slate-400 mb-1 font-mono">
-                  <span>H ${(f.prob_home * 100).toFixed(0)}%</span>
-                  <span>D ${(f.prob_draw * 100).toFixed(0)}%</span>
-                  <span>A ${(f.prob_away * 100).toFixed(0)}%</span>
+                  <span>Home ${(f.prob_home * 100).toFixed(0)}%</span>
+                  <span>Draw ${(f.prob_draw * 100).toFixed(0)}%</span>
+                  <span>Away ${(f.prob_away * 100).toFixed(0)}%</span>
                 </div>
                 <div class="h-2 rounded-full overflow-hidden flex bg-slate-800">
                   <div style="width:${f.prob_home * 100}%" class="bg-emerald-500"></div>
@@ -5245,9 +5370,9 @@ async function renderFixturesTab() {
               </div>
             </div>
 
-            <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2 text-xs">
-              <div class="${hasEdge ? 'text-emerald-400 font-semibold' : 'text-slate-400'}">
-                ${hasEdge ? `💎 Top Pick: ${esc(best.label)} (+${best.edge_pct}% value)` : `Expected Goals ${f.lambda_home.toFixed(1)}–${f.mu_away.toFixed(1)} • Over 2.5: ${(f.prob_over25 * 100).toFixed(0)}%`}
+            <div class="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div class="${hasEdge ? 'text-emerald-400 font-semibold' : 'text-slate-400'} break-words">
+                ${hasEdge ? `💎 Top Pick: ${esc(displaySelectionLabel(best.label))} (+${best.edge_pct}% value)` : `Expected Goals ${f.lambda_home.toFixed(1)}–${f.mu_away.toFixed(1)} • Over 2.5: ${(f.prob_over25 * 100).toFixed(0)}%`}
               </div>
               <div class="flex items-center gap-1.5 shrink-0">
                 <button type="button" data-open-boost-fid="${f.id}" class="px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 font-semibold transition" title="Test a Bet365 Boost on this match">⚡ Boost</button>
@@ -5349,10 +5474,12 @@ async function renderFixturesTab() {
 }
 
 function buildMatchInsightsHtml(f, d, customSummary = '', customSource = '') {
+  const homeDisp = displayTeamName(f.home_team);
+  const awayDisp = displayTeamName(f.away_team);
   const outcomes = [
-    { label: `${f.home_team} win`, prob: Number(f.prob_home || 0) },
+    { label: `${homeDisp} win`, prob: Number(f.prob_home || 0) },
     { label: 'Draw', prob: Number(f.prob_draw || 0) },
-    { label: `${f.away_team} win`, prob: Number(f.prob_away || 0) },
+    { label: `${awayDisp} win`, prob: Number(f.prob_away || 0) },
   ].sort((a, b) => b.prob - a.prob);
   const topOutcome = outcomes[0];
 
@@ -5377,9 +5504,9 @@ function buildMatchInsightsHtml(f, d, customSummary = '', customSource = '') {
   const bestMarket = pricedMarkets[0];
   const bestAngleText = bestMarket
     ? bestMarket.edge_pct >= 1
-      ? `<b class="text-emerald-300">${esc(bestMarket.label)}</b> at <span class="font-mono text-white">${fmtOdds(bestMarket.b365_odds)}</span> (<span class="text-emerald-300">+${Number(bestMarket.edge_pct).toFixed(1)}% edge</span> vs ${Number(bestMarket.model_prob_pct).toFixed(0)}% win chance)`
-      : `No strong value edge — closest line is <b class="text-white">${esc(bestMarket.label)}</b> at <span class="font-mono text-white">${fmtOdds(bestMarket.b365_odds)}</span>`
-    : 'Awaiting bookmaker odds for edge comparison';
+      ? `<b class="text-emerald-300">${esc(displaySelectionLabel(bestMarket.label))}</b> at <span class="font-mono text-white">${fmtOdds(bestMarket.b365_odds)}</span> (<span class="text-emerald-300">+${Number(bestMarket.edge_pct).toFixed(1)}% value</span> vs ${Number(bestMarket.model_prob_pct).toFixed(0)}% win chance)`
+      : `No strong value edge — closest line is <b class="text-white">${esc(displaySelectionLabel(bestMarket.label))}</b> at <span class="font-mono text-white">${fmtOdds(bestMarket.b365_odds)}</span>`
+    : 'Awaiting bookmaker odds for value comparison';
 
   const lam = Number(f.lambda_home || 0);
   const mu = Number(f.mu_away || 0);
@@ -5391,7 +5518,7 @@ function buildMatchInsightsHtml(f, d, customSummary = '', customSource = '') {
   const as = d.away_split || { w: 0, d: 0, l: 0 };
   const lastH2h = Array.isArray(d.h2h) && d.h2h.length ? d.h2h[0] : null;
   const h2hSummary = lastH2h
-    ? ` • Last H2H: ${esc(lastH2h.home_team)} ${lastH2h.fthg}–${lastH2h.ftag} ${esc(lastH2h.away_team)}`
+    ? ` • Last H2H: ${esc(displayTeamName(lastH2h.home_team))} ${lastH2h.fthg}–${lastH2h.ftag} ${esc(displayTeamName(lastH2h.away_team))}`
     : '';
 
   const aiSource = customSource || f.ai_summary_source || '';
@@ -5417,7 +5544,7 @@ function buildMatchInsightsHtml(f, d, customSummary = '', customSource = '') {
       </li>
       <li class="flex items-start gap-2.5">
         <span class="shrink-0">📈</span>
-        <span><b class="text-white">Form &amp; History:</b> ${esc(f.home_team)} home ${hs.w}W-${hs.d}D-${hs.l}L vs ${esc(f.away_team)} away ${as.w}W-${as.d}D-${as.l}L${h2hSummary}</span>
+        <span><b class="text-white">Form &amp; History:</b> ${esc(homeDisp)} home ${hs.w}W-${hs.d}D-${hs.l}L vs ${esc(awayDisp)} away ${as.w}W-${as.d}D-${as.l}L${h2hSummary}</span>
       </li>
     </ul>
     ${extraBlock}
@@ -5429,6 +5556,8 @@ function computeMatchComboMarkets(f) {
   const mu = Math.max(0.25, Number(f.mu_away || 1.15));
   const rho = Number(f.rho ?? -0.04);
   const maxGoals = 7;
+  const homeDisp = displayTeamName(f.home_team);
+  const awayDisp = displayTeamName(f.away_team);
 
   const poissonVec = (rate) => {
     const out = [Math.exp(-rate)];
@@ -5481,13 +5610,13 @@ function computeMatchComboMarkets(f) {
 
   const norm = total > 0 ? total : 1.0;
   const defs = [
-    ['COMBO_H_O25', `${f.home_team} to Win & Over 2.5 Goals`],
-    ['COMBO_H_BTTS', `${f.home_team} to Win & BTTS Yes`],
+    ['COMBO_H_O25', `${homeDisp} to Win & Over 2.5 Goals`],
+    ['COMBO_H_BTTS', `${homeDisp} to Win & BTTS Yes`],
     ['COMBO_O25_BTTS', 'Over 2.5 Goals & BTTS Yes'],
-    ['COMBO_H_WIN_NIL', `${f.home_team} to Win to Nil`],
-    ['COMBO_A_O25', `${f.away_team} to Win & Over 2.5 Goals`],
-    ['COMBO_A_BTTS', `${f.away_team} to Win & BTTS Yes`],
-    ['COMBO_A_WIN_NIL', `${f.away_team} to Win to Nil`],
+    ['COMBO_H_WIN_NIL', `${homeDisp} to Win to Nil`],
+    ['COMBO_A_O25', `${awayDisp} to Win & Over 2.5 Goals`],
+    ['COMBO_A_BTTS', `${awayDisp} to Win & BTTS Yes`],
+    ['COMBO_A_WIN_NIL', `${awayDisp} to Win to Nil`],
   ];
 
   return defs
@@ -5509,8 +5638,10 @@ async function openMatchPreview(fixtureId) {
 
   const d = await api(`/api/fixture/${fixtureId}`);
   const f = d.fixture;
+  const homeDisp = displayTeamName(f.home_team);
+  const awayDisp = displayTeamName(f.away_team);
   document.getElementById('modal-league-tag').textContent = `${f.league_name} • ${f.match_date} ${f.kickoff_time || ''} • ${f.venue || ''}`;
-  document.getElementById('modal-match-title').textContent = `${f.home_team} vs ${f.away_team}`;
+  document.getElementById('modal-match-title').textContent = `${homeDisp} vs ${awayDisp}`;
 
   const isWatched = state.watchedIds.includes(f.id);
   const homeFav = state.favouriteTeams.includes(f.home_team);
@@ -5520,7 +5651,7 @@ async function openMatchPreview(fixtureId) {
     ...comboMarkets,
     ...(d.markets || []).map((m) => ({
       market: m.market,
-      label: m.label,
+      label: displaySelectionLabel(m.label),
       prob: Math.max(0.005, Number(m.model_prob_pct || 0) / 100.0),
       prob_pct: Number(m.model_prob_pct || 0),
       fair_odds: Number(m.fair_odds || 2.0),
@@ -5550,7 +5681,7 @@ async function openMatchPreview(fixtureId) {
       (t) => `
       <tr class="${t.team_name === f.home_team || t.team_name === f.away_team ? 'bg-emerald-500/15 font-semibold text-white' : 'text-slate-300'} border-b border-slate-800/70">
         <td class="py-1.5 px-2">${t.pos}</td>
-        <td class="py-1.5 px-2">${esc(t.team_name)}</td>
+        <td class="py-1.5 px-2">${esc(displayTeamName(t.team_name))}</td>
         <td class="py-1.5 px-2 text-center">${t.matches_played}</td>
         <td class="py-1.5 px-2 text-center">${t.gd >= 0 ? '+' : ''}${t.gd}</td>
         <td class="py-1.5 px-2 text-center font-bold">${t.points}</td>
@@ -5570,11 +5701,11 @@ async function openMatchPreview(fixtureId) {
         <button type="button" data-modal-fav="${esc(f.home_team)}" class="px-3 py-1.5 rounded-lg border font-semibold transition ${homeFav
         ? 'bg-amber-500/20 border-amber-400 text-amber-200'
         : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-      }">${homeFav ? '★ Following' : '☆ Follow'} ${esc(f.home_team)}</button>
+      }">${homeFav ? '★ Following' : '☆ Follow'} ${esc(homeDisp)}</button>
         <button type="button" data-modal-fav="${esc(f.away_team)}" class="px-3 py-1.5 rounded-lg border font-semibold transition ${awayFav
         ? 'bg-amber-500/20 border-amber-400 text-amber-200'
         : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-      }">${awayFav ? '★ Following' : '☆ Follow'} ${esc(f.away_team)}</button>
+      }">${awayFav ? '★ Following' : '☆ Follow'} ${esc(awayDisp)}</button>
       </div>
       <div class="flex flex-wrap items-center gap-1.5">
         ${fixtureKickoffWindowBadge(f)}
@@ -5593,7 +5724,7 @@ async function openMatchPreview(fixtureId) {
         ${(f.tipster_consensus?.signals || [])
       .map(
         (s) =>
-          `<span class="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-[11px]"><b class="text-slate-300">${esc(s.name)}:</b> <span class="text-emerald-300">${esc(s.pick)}</span> <span class="text-slate-400">(${esc(s.detail)})</span></span>`
+          `<span class="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-[11px]"><b class="text-slate-300">${esc(s.name)}:</b> <span class="text-emerald-300">${esc(displaySelectionLabel(s.pick))}</span> <span class="text-slate-400">(${esc(s.detail)})</span></span>`
       )
       .join('')}
       </div>
@@ -5620,9 +5751,10 @@ async function openMatchPreview(fixtureId) {
             ${d.markets
       .map((m) => {
         const edgeCls = m.edge_pct >= 3 ? 'text-emerald-400 font-bold' : m.edge_pct >= 0 ? 'text-amber-300' : 'text-slate-400';
+        const dispMarketLabel = displaySelectionLabel(m.label);
         return `
               <tr class="border-b border-slate-800/60">
-                <td class="py-2 pr-2 font-medium text-white"><div class="flex items-center gap-1.5 flex-wrap">${getBetTypeInfo(m.market).badgeHtml}<span>${esc(m.label)}</span>${twoUpBadgeHtml(m.market)}</div></td>
+                <td class="py-2 pr-2 font-medium text-white"><div class="flex items-center gap-1.5 flex-wrap">${getBetTypeInfo(m.market).badgeHtml}<span>${esc(dispMarketLabel)}</span>${twoUpBadgeHtml(m.market)}</div></td>
                 <td class="py-2 px-2 text-right">${m.model_prob_pct}%</td>
                 <td class="py-2 px-2 text-right font-mono">${fmtOdds(m.fair_odds)}</td>
                 <td class="py-2 px-2 text-right font-mono font-bold text-white">${m.b365_odds ? fmtOdds(m.b365_odds) : '—'}</td>
@@ -5665,7 +5797,7 @@ async function openMatchPreview(fixtureId) {
             return `
           <div class="p-3 rounded-xl bg-panel border border-slate-800 flex flex-col justify-between gap-2">
             <div class="flex items-start justify-between gap-2">
-              <div class="text-xs font-semibold text-white leading-snug">${esc(c.label)}</div>
+              <div class="text-xs font-semibold text-white leading-snug break-words">${esc(c.label)}</div>
               ${recBadge}
             </div>
             <div class="flex items-center justify-between gap-2 text-[11px]">
@@ -5690,7 +5822,7 @@ async function openMatchPreview(fixtureId) {
             </optgroup>
             <optgroup label="Single Match Markets">
               ${(d.markets || [])
-                .map((m) => `<option value="${esc(m.market)}">${esc(m.label)} (${m.model_prob_pct}% • Min ${fmtOdds(m.fair_odds)})</option>`)
+                .map((m) => `<option value="${esc(m.market)}">${esc(displaySelectionLabel(m.label))} (${m.model_prob_pct}% • Min ${fmtOdds(m.fair_odds)})</option>`)
                 .join('')}
             </optgroup>
           </select>
@@ -5707,13 +5839,13 @@ async function openMatchPreview(fixtureId) {
         <h4 class="font-bold text-white text-sm">Home/Away Form &amp; Shot Metrics</h4>
         <div class="grid grid-cols-2 gap-3 pt-1">
           <div>
-            <div class="font-semibold text-emerald-400">${esc(f.home_team)} (Home)</div>
+            <div class="font-semibold text-emerald-400 break-words leading-snug">${esc(homeDisp)} (Home)</div>
             <div class="text-slate-300 mt-1">Last 6 Home: ${d.home_split.w}W-${d.home_split.d}D-${d.home_split.l}L</div>
             <div class="text-slate-400">GF/GA: ${d.home_split.avg_gf} / ${d.home_split.avg_ga} per game</div>
             <div class="text-slate-400">Season SoT/g: ${d.home_rating.sot_for_pg ?? '—'} vs ${d.home_rating.sot_against_pg ?? '—'}</div>
           </div>
           <div>
-            <div class="font-semibold text-sky-400">${esc(f.away_team)} (Away)</div>
+            <div class="font-semibold text-sky-400 break-words leading-snug">${esc(awayDisp)} (Away)</div>
             <div class="text-slate-300 mt-1">Last 6 Away: ${d.away_split.w}W-${d.away_split.d}D-${d.away_split.l}L</div>
             <div class="text-slate-400">GF/GA: ${d.away_split.avg_gf} / ${d.away_split.avg_ga} per game</div>
             <div class="text-slate-400">Season SoT/g: ${d.away_rating.sot_for_pg ?? '—'} vs ${d.away_rating.sot_against_pg ?? '—'}</div>
@@ -5725,7 +5857,7 @@ async function openMatchPreview(fixtureId) {
       ? d.h2h
         .map(
           (h) =>
-            `<div class="text-slate-400 flex justify-between"><span>${esc(h.match_date)}</span><span class="text-slate-200">${esc(h.home_team)} ${h.fthg}–${h.ftag} ${esc(h.away_team)}</span></div>`
+            `<div class="text-slate-400 flex justify-between gap-2"><span>${esc(h.match_date)}</span><span class="text-slate-200 text-right break-words">${esc(displayTeamName(h.home_team))} ${h.fthg}–${h.ftag} ${esc(displayTeamName(h.away_team))}</span></div>`
         )
         .join('')
       : '<div class="text-slate-500">No league H2H in 24/25–26/27 dataset.</div>'
@@ -5921,10 +6053,9 @@ async function renderValueTab() {
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
       <div>
         <h2 class="text-xl font-bold text-white">💎 Top Match Tips</h2>
-        <p class="text-xs text-slate-400">Single-market model value picks &amp; Same-Game Build a Bets • <span class="text-cyan-300">🕒 Odds updated ${esc(formatRelativeFreshness())}</span></p>
+        <p class="text-xs text-slate-400">Single-market model picks &amp; Same-Game Build a Bets • <span class="text-cyan-300">🕒 Odds updated ${esc(formatRelativeFreshness())}</span></p>
       </div>
       <div class="flex flex-wrap items-center gap-2 text-xs">
-        <button type="button" data-open-boost-checker="1" class="px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 font-semibold transition">⚡ Check Boost</button>
         <select id="val-div-filter" class="bg-panel border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
           <option value="">All Leagues</option>
           <option value="E0" ${div === 'E0' ? 'selected' : ''}>Premier League</option>
@@ -6052,20 +6183,20 @@ async function renderValueTab() {
                 const edgeVal = Number(b.est_edge_pct ?? b.edge_pct ?? 0);
                 const edgePos = edgeVal >= 0;
                 const legBreakdowns = (b.legs || [])
-                  .map((sl) => `<div class="text-[11px] text-slate-300 flex items-center justify-between gap-2"><span>• ${esc(sl.selection_label)}</span><span class="font-mono text-slate-400">${sl.model_prob_pct}%</span></div>`)
+                  .map((sl) => `<div class="text-[11px] text-slate-300 flex items-center justify-between gap-2"><span class="break-words">• ${esc(displaySelectionLabel(sl.selection_label))}</span><span class="font-mono text-slate-400 shrink-0">${sl.model_prob_pct}%</span></div>`)
                   .join('');
                 return `
                   <div class="p-4 rounded-2xl bg-card border ${isPlaced ? 'border-emerald-500/60' : isFav ? 'border-amber-500/50' : 'border-slate-800'} space-y-3 card-hover">
                     <div class="flex flex-wrap items-start justify-between gap-2">
-                      <div class="min-w-0">
+                      <div class="min-w-0 flex-1">
                         <div class="flex flex-wrap items-center gap-1.5">
                           <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 border border-indigo-400/40 text-indigo-200">${esc(b.style_label || 'Build a Bet')}</span>
                           ${alreadyBet ? '<span class="px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-400/40 text-indigo-200 text-[10px] font-semibold">✓ Already Bet</span>' : ''}
                           ${isPlaced ? '<span class="px-1.5 py-0.5 rounded bg-emerald-500 text-slate-950 text-[10px] font-bold">✅ Placed</span>' : ''}
                         </div>
-                        <button type="button" data-open-preview="${b.fixture_id}" class="font-extrabold text-sm text-white hover:text-emerald-300 text-left flex items-center gap-1.5 mt-1 transition">
-                          ${isFav ? '<span class="text-amber-300" title="Followed club">★</span>' : ''}
-                          <span>${esc(b.home_team)} vs ${esc(b.away_team)}</span>
+                        <button type="button" data-open-preview="${b.fixture_id}" class="font-extrabold text-sm text-white hover:text-emerald-300 text-left flex items-start gap-1.5 mt-1 transition break-words leading-snug">
+                          ${isFav ? '<span class="text-amber-300 shrink-0" title="Followed club">★</span>' : ''}
+                          <span class="break-words leading-snug">${esc(displayMatchTitle(b.home_team, b.away_team))}</span>
                         </button>
                         <div class="text-[11px] text-slate-400">${esc(b.league_name)} • ${esc(b.match_date)}${b.kickoff_time ? ` ${esc(b.kickoff_time)}` : ''}</div>
                       </div>
@@ -6084,9 +6215,9 @@ async function renderValueTab() {
                           const btInfo = getBetTypeInfo(sl.market);
                           return `
                             <div class="px-2.5 py-1.5 rounded-xl bg-panel/90 border border-slate-800/80 flex items-center justify-between gap-2 text-xs">
-                              <div class="flex items-center gap-1.5 min-w-0">
+                              <div class="flex items-center gap-1.5 flex-wrap min-w-0">
                                 ${btInfo.badgeHtml}
-                                <span class="font-semibold text-white truncate">${esc(sl.selection_label)}</span>
+                                <span class="font-semibold text-white break-words leading-snug">${esc(displaySelectionLabel(sl.selection_label))}</span>
                                 ${twoUpBadgeHtml(sl.market)}
                               </div>
                               <span class="font-mono text-[11px] text-slate-400 shrink-0">${Number(sl.model_prob_pct || 0).toFixed(0)}% hit</span>
@@ -6182,7 +6313,7 @@ async function renderValueTab() {
           unmarkPlacedBetByLegs(legs);
           showToast('Unmarked placed Build a Bet');
         } else {
-          await markBetAsPlaced(legs, `${b.home_team} vs ${b.away_team} — Build a Bet`, b.stake || 10);
+          await markBetAsPlaced(legs, `${displayMatchTitle(b.home_team, b.away_team)} — Build a Bet`, b.stake || 10);
           showToast('Marked as placed — Build a Bet excluded from future builds!');
         }
         renderValueTab();
@@ -6209,6 +6340,36 @@ async function renderValueTab() {
     : data.opportunities || [];
   const opps = baseOpps.filter((o) => matchesKickoffFilter(o, state.kickoffFilter));
 
+  const tipViewModels = opps.map((o) => {
+    const isFav = state.favouriteTeams.includes(o.home_team) || state.favouriteTeams.includes(o.away_team);
+    const btInfo = getBetTypeInfo(o.market);
+    const alreadyBet = alreadyData?.sets ? isLegExcludedClient(o, alreadyData.sets, 'market_family') : false;
+    const tipKey = `${o.fixture_id}:${o.market}`;
+    const isWhyOpen = state.expandedTipKeys.has(tipKey);
+    const active = isInSlip(o.fixture_id, o.market);
+    const matchTitleDisp = displayMatchTitle(o.home_team, o.away_team);
+    const selDisp = displaySelectionLabel(o.selection_label);
+    const legPayload = esc(
+      JSON.stringify({
+        fixture_id: o.fixture_id,
+        div: o.div,
+        league_name: o.league_name,
+        match_date: o.match_date,
+        kickoff_time: o.kickoff_time || '',
+        home_team: o.home_team,
+        away_team: o.away_team,
+        market: o.market,
+        bet_type: btInfo.key,
+        bet_type_label: btInfo.label,
+        selection_label: o.selection_label,
+        odds: o.odds,
+        model_prob: o.model_prob_pct / 100,
+      })
+    );
+    const addBtnHtml = `<button data-val-leg='${legPayload}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
+    return { o, isFav, btInfo, alreadyBet, tipKey, isWhyOpen, matchTitleDisp, selDisp, addBtnHtml };
+  });
+
   main.innerHTML = `
     ${headerHtml}
 
@@ -6224,7 +6385,73 @@ async function renderValueTab() {
       ).join('')}
     </div>
 
-    <div class="bg-panel border border-slate-800 rounded-2xl overflow-x-auto">
+    <!-- Mobile Card View (no horizontal table scroll on phones) -->
+    <div class="md:hidden space-y-3">
+      ${tipViewModels.length
+        ? tipViewModels
+            .map(({ o, isFav, btInfo, alreadyBet, tipKey, isWhyOpen, matchTitleDisp, selDisp, addBtnHtml }) => `
+              <div class="p-4 rounded-2xl bg-card border ${isFav ? 'border-amber-500/45' : 'border-slate-800'} space-y-3 text-xs">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0 flex-1">
+                    <button type="button" data-open-preview="${o.fixture_id}" class="font-extrabold text-sm text-white hover:text-emerald-300 text-left break-words leading-snug transition">
+                      ${isFav ? '<span class="text-amber-300" title="Followed club">★ </span>' : ''}${esc(matchTitleDisp)}
+                    </button>
+                    <div class="text-[11px] text-slate-400 mt-0.5">${esc(o.league_name)} • ${esc(o.match_date)}${o.kickoff_time ? ` ${esc(o.kickoff_time)}` : ''}</div>
+                  </div>
+                  <div class="shrink-0">${btInfo.badgeHtml}</div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="text-sm font-bold text-emerald-300 break-words leading-snug">${esc(selDisp)}</span>
+                  ${twoUpBadgeHtml(o.market)}
+                  ${alreadyBet ? '<span class="px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-400/40 text-indigo-200 text-[10px] font-semibold">✓ Already Bet</span>' : ''}
+                </div>
+
+                <div class="grid grid-cols-3 gap-2 p-2.5 rounded-xl bg-panel border border-slate-800 text-center">
+                  <div>
+                    <div class="text-[10px] text-slate-400">Odds</div>
+                    <div class="font-mono font-extrabold text-sm text-white">${fmtOdds(o.odds)}</div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] text-slate-400">Win Chance</div>
+                    <div class="font-mono font-bold text-sm text-white">${o.model_prob_pct}% <span class="text-[10px] font-normal text-slate-400">(${fmtOdds(o.fair_odds)})</span></div>
+                  </div>
+                  <div>
+                    <div class="text-[10px] text-slate-400">Value</div>
+                    <div class="font-mono font-extrabold text-sm text-emerald-400">+${o.edge_pct}%</div>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    ${oddsBadge(o.odds_source)}
+                    <span class="text-slate-400">${esc(o.trust_badge)}</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-1.5 pt-0.5">
+                  <button type="button" data-val-why="${esc(tipKey)}" aria-expanded="${isWhyOpen ? 'true' : 'false'}" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition ${isWhyOpen ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-cyan-300'}">💡 Why ${isWhyOpen ? '▴' : '▾'}</button>
+                  <div class="flex-1 flex justify-end gap-1.5">
+                    <button type="button" data-open-preview="${o.fixture_id}" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold">Preview →</button>
+                    ${addBtnHtml}
+                  </div>
+                </div>
+
+                ${isWhyOpen
+                  ? renderReasoningDropdownHtml(o.reasons, o.reason_stats, {
+                      item: o,
+                      containerClass: 'p-3 rounded-xl bg-slate-900/90 border border-cyan-500/30 space-y-2 text-xs',
+                      title: `Why AccaLab picked ${selDisp}`,
+                    })
+                  : ''}
+              </div>`
+            )
+            .join('')
+        : `<div class="p-8 rounded-2xl bg-panel border border-slate-800 text-center text-slate-400 space-y-2 text-xs"><div>No tips match this filter right now.</div>${minEdge !== '0' ? `<button id="val-show-zero-edge-mob-btn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 font-semibold">Show Model Picks (0%+ Value)</button>` : ''}</div>`}
+    </div>
+
+    <!-- Desktop Table View -->
+    <div class="hidden md:block bg-panel border border-slate-800 rounded-2xl overflow-x-auto">
       <table class="w-full text-xs text-left">
         <thead class="text-slate-400 border-b border-slate-800 bg-slate-900/60">
           <tr>
@@ -6239,29 +6466,21 @@ async function renderValueTab() {
           </tr>
         </thead>
         <tbody>
-          ${opps.length
-      ? opps
-        .map((o) => {
-          const isFav =
-            state.favouriteTeams.includes(o.home_team) ||
-            state.favouriteTeams.includes(o.away_team);
-          const btInfo = getBetTypeInfo(o.market);
-          const alreadyBet = alreadyData?.sets ? isLegExcludedClient(o, alreadyData.sets, 'market_family') : false;
-          const tipKey = `${o.fixture_id}:${o.market}`;
-          const isWhyOpen = state.expandedTipKeys.has(tipKey);
-          return `
+          ${tipViewModels.length
+      ? tipViewModels
+        .map(({ o, isFav, btInfo, alreadyBet, tipKey, isWhyOpen, matchTitleDisp, selDisp, addBtnHtml }) => `
               <tr class="border-b ${isWhyOpen ? 'border-slate-800/30 bg-slate-800/25' : 'border-slate-800/70'} hover:bg-slate-800/30 ${isFav ? 'bg-amber-500/5' : ''}">
                 <td class="p-3">
-                  <button type="button" data-open-preview="${o.fixture_id}" class="font-semibold text-white hover:text-emerald-300 text-left flex items-center gap-1.5 transition">
-                    ${isFav ? '<span class="text-amber-300" title="Followed club">★</span>' : ''}
-                    <span>${esc(o.home_team)} vs ${esc(o.away_team)}</span>
+                  <button type="button" data-open-preview="${o.fixture_id}" class="font-semibold text-white hover:text-emerald-300 text-left flex items-start gap-1.5 transition break-words leading-snug">
+                    ${isFav ? '<span class="text-amber-300 shrink-0" title="Followed club">★</span>' : ''}
+                    <span class="break-words">${esc(matchTitleDisp)}</span>
                   </button>
                   <div class="text-[11px] text-slate-400">${esc(o.league_name)} • ${esc(o.match_date)}${o.kickoff_time ? ` ${esc(o.kickoff_time)}` : ''}</div>
                 </td>
                 <td class="p-3 whitespace-nowrap">${btInfo.badgeHtml}</td>
                 <td class="p-3 font-medium text-emerald-300">
                   <div class="flex items-center gap-1.5 flex-wrap">
-                    <span>${esc(o.selection_label)}</span>
+                    <span class="break-words">${esc(selDisp)}</span>
                     ${twoUpBadgeHtml(o.market)}
                     ${alreadyBet ? '<span class="px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-400/40 text-indigo-200 text-[10px] font-semibold">✓ Already Bet</span>' : ''}
                   </div>
@@ -6276,10 +6495,7 @@ async function renderValueTab() {
                 <td class="p-3 text-right">
                   <div class="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                     <button type="button" data-val-why="${esc(tipKey)}" aria-expanded="${isWhyOpen ? 'true' : 'false'}" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition ${isWhyOpen ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-cyan-300'}">💡 Why ${isWhyOpen ? '▴' : '▾'}</button>
-                    ${(() => {
-                      const active = isInSlip(o.fixture_id, o.market);
-                      return `<button data-val-leg='${esc(JSON.stringify({ fixture_id: o.fixture_id, div: o.div, league_name: o.league_name, match_date: o.match_date, kickoff_time: o.kickoff_time || '', home_team: o.home_team, away_team: o.away_team, market: o.market, bet_type: btInfo.key, bet_type_label: btInfo.label, selection_label: o.selection_label, odds: o.odds, model_prob: o.model_prob_pct / 100 }))}' class="val-add-leg px-3 py-1.5 rounded-lg font-semibold transition ${active ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">${active ? '✓ In Slip' : '+ Slip'}</button>`;
-                    })()}
+                    ${addBtnHtml}
                   </div>
                 </td>
               </tr>${
@@ -6289,14 +6505,13 @@ async function renderValueTab() {
                         ${renderReasoningDropdownHtml(o.reasons, o.reason_stats, {
                           item: o,
                           containerClass: 'p-3 rounded-xl bg-slate-900/90 border border-cyan-500/30 space-y-2 text-xs',
-                          title: `Why AccaLab picked ${o.selection_label}`,
+                          title: `Why AccaLab picked ${selDisp}`,
                           extraFooterHtml: `<div class="pt-1 flex justify-end"><button type="button" data-open-preview="${o.fixture_id}" class="text-[11px] font-bold text-cyan-300 hover:text-cyan-200 hover:underline">Match Preview →</button></div>`,
                         })}
                       </td>
                     </tr>`
                   : ''
-              }`;
-        })
+              }`)
         .join('')
       : `<tr><td colspan="8" class="p-8 text-center text-slate-400 space-y-2"><div>No tips match this filter right now.</div>${minEdge !== '0' ? `<button id="val-show-zero-edge-btn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 font-semibold">Show Model Picks (0%+ Value)</button>` : ''}</td></tr>`
     }
@@ -6313,6 +6528,10 @@ async function renderValueTab() {
     })
   );
   document.getElementById('val-show-zero-edge-btn')?.addEventListener('click', () => {
+    state.valMinEdge = '0';
+    renderValueTab();
+  });
+  document.getElementById('val-show-zero-edge-mob-btn')?.addEventListener('click', () => {
     state.valMinEdge = '0';
     renderValueTab();
   });
@@ -6369,11 +6588,11 @@ async function renderAccaTab() {
             .map(
               (l) => `
                 <div class="p-2 rounded-lg bg-card border border-slate-700/70 text-xs flex justify-between gap-2">
-                  <div>
-                    <div class="text-slate-400">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
-                    <div class="flex items-center gap-1.5 flex-wrap mt-0.5">${getBetTypeInfo(l.market).badgeHtml}<span class="font-semibold text-white">${esc(l.selection_label)}</span></div>
+                  <div class="min-w-0">
+                    <div class="text-slate-400 break-words leading-snug">${esc(displayMatchTitle(l.home_team, l.away_team))}</div>
+                    <div class="flex items-center gap-1.5 flex-wrap mt-0.5">${getBetTypeInfo(l.market).badgeHtml}<span class="font-semibold text-white break-words leading-snug">${esc(displaySelectionLabel(l.selection_label))}</span></div>
                   </div>
-                  <div class="text-right font-mono">
+                  <div class="text-right font-mono shrink-0">
                     <div class="text-emerald-400 font-bold">${fmtOdds(l.odds)}</div>
                     <div class="text-[10px] text-slate-400">${(l.model_prob * 100).toFixed(0)}%</div>
                   </div>
@@ -6415,9 +6634,9 @@ async function renderAccaTab() {
           (a) => `
                 <div class="p-3.5 rounded-xl bg-card card-hover border border-slate-800 flex flex-col justify-between gap-2.5 text-xs">
                   <div>
-                    <div class="flex items-center justify-between gap-2">
-                      <span class="font-bold text-white truncate">${esc(a.name)}</span>
-                      <span class="px-2 py-0.5 rounded-full font-bold ${a.ev_pct >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">${a.ev_pct >= 0 ? '+' : ''}${Number(a.ev_pct).toFixed(1)}% EV</span>
+                    <div class="flex items-start justify-between gap-2">
+                      <span class="font-bold text-white break-words leading-snug">${esc(displaySelectionLabel(a.name))}</span>
+                      <span class="px-2 py-0.5 rounded-full font-bold shrink-0 ${a.ev_pct >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">${a.ev_pct >= 0 ? '+' : ''}${Number(a.ev_pct).toFixed(1)}% Value</span>
                     </div>
                     <div class="text-[11px] text-slate-400 mt-1">${(a.legs || []).length} legs • Combined <b class="text-emerald-400 font-mono">${fmtOdds(a.combined_odds)}</b> • Saved ${esc((a.created_at || '').slice(0, 10))}</div>
                     <div class="mt-2 space-y-1.5">
@@ -6425,7 +6644,7 @@ async function renderAccaTab() {
               .map(
                 (l) => {
                   const lst = evaluateLegLiveStatus(l);
-                  return `<div class="text-[11px] text-slate-300 flex items-center justify-between gap-2"><span class="truncate">${esc(l.selection_label)} (${esc(l.home_team)} vs ${esc(l.away_team)})</span><span class="flex items-center gap-1.5 shrink-0">${lst ? lst.html : ''}<span class="font-mono text-slate-400">@ ${fmtOdds(l.odds)}</span></span></div>`;
+                  return `<div class="text-[11px] text-slate-300 flex items-start justify-between gap-2"><span class="break-words leading-snug">${esc(displaySelectionLabel(l.selection_label))} (${esc(displayMatchTitle(l.home_team, l.away_team))})</span><span class="flex items-center gap-1.5 shrink-0">${lst ? lst.html : ''}<span class="font-mono text-slate-400">@ ${fmtOdds(l.odds)}</span></span></div>`;
                 }
               )
               .join('')}
@@ -6615,7 +6834,7 @@ async function renderTrackerTab() {
                 <td class="p-3 text-slate-400">${esc(b.placed_at.slice(0, 10))}</td>
                 <td class="p-3">
                   <span class="uppercase text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 mr-1">${esc(b.bet_type)}</span>
-                  ${b.legs.map((l) => `<span class="text-white">${esc(l.home_team)} v ${esc(l.away_team)} (${esc(l.selection_label)})</span>`).join('<br/>')}
+                  ${b.legs.map((l) => `<span class="text-white">${esc(displayMatchTitle(l.home_team, l.away_team, 'v'))} (${esc(displaySelectionLabel(l.selection_label))})</span>`).join('<br/>')}
                 </td>
                 <td class="p-3 text-right font-mono">${fmtOdds(b.combined_odds)}</td>
                 <td class="p-3 text-right">${fmtGbp(b.stake)}</td>
@@ -6872,9 +7091,10 @@ async function renderSettingsTab() {
     ? (newsRes.news || []).filter(
       (n) =>
         (n.matched_teams || []).some((t) => state.favouriteTeams.includes(t)) ||
-        state.favouriteTeams.some((ft) =>
-          String(n.title || '').toLowerCase().includes(ft.toLowerCase())
-        )
+        state.favouriteTeams.some((ft) => {
+          const titleLow = String(n.title || '').toLowerCase();
+          return titleLow.includes(ft.toLowerCase()) || titleLow.includes(displayTeamName(ft).toLowerCase());
+        })
     )
     : newsRes.news || [];
 
@@ -6943,6 +7163,7 @@ async function renderSettingsTab() {
           <div class="pt-3 space-y-2">
             <div class="font-bold text-cyan-300 uppercase tracking-wide text-[11px]">🛡️ API Quota Protection &amp; Smart Cache Health</div>
             <div class="flex justify-between"><span class="text-slate-400">Core Football &amp; News Feeds:</span><b class="text-emerald-400">Unlimited (Football-Data + RSS)</b></div>
+            <div class="flex justify-between"><span class="text-slate-400">Horse Racing Feeds:</span><b class="text-emerald-400">Free Public Feeds (TAB/Entain Live + PMU + BBC RSS — No Card/Key)</b></div>
             <div class="flex justify-between"><span class="text-slate-400">30-Min Sync Cache:</span><b class="${d.quota?.cache_active ? 'text-emerald-400' : 'text-slate-300'}">${d.quota?.cache_active ? 'Active (zero wasted calls)' : 'Ready for refresh'}</b></div>
             <div class="flex justify-between"><span class="text-slate-400">API-Football Budget (6h Cache):</span><b class="font-mono text-white">${d.quota?.api_football?.used_today ?? d.counts.api_football_calls_today} / ${d.quota?.api_football?.daily_limit ?? 100} used (${d.quota?.api_football?.remaining ?? 100} left)</b></div>
             <div class="flex justify-between"><span class="text-slate-400">Gemini AI Summary Guard:</span><b class="font-mono text-white">${d.quota?.gemini_ai?.used_today ?? 0} / ${d.quota?.gemini_ai?.daily_limit ?? 60} (${d.integrations.gemini_configured ? 'Active' : 'Built-in Engine'})</b></div>
@@ -6989,8 +7210,8 @@ async function renderSettingsTab() {
         .map(
           (n) => `
                 <a href="${esc(n.url)}" target="_blank" rel="noopener" class="p-3 rounded-xl bg-card border border-slate-800 hover:border-slate-600 block">
-                  <div class="flex justify-between text-[10px] text-emerald-400 font-semibold"><span>${esc(n.source)}</span><span>${esc((n.matched_teams || []).join(', '))}</span></div>
-                  <div class="font-semibold text-white mt-1">${esc(n.title)}</div>
+                  <div class="flex flex-wrap justify-between gap-1 text-[10px] text-emerald-400 font-semibold"><span>${esc(n.source)}</span><span>${esc((n.matched_teams || []).map((t) => displayTeamName(t)).join(', '))}</span></div>
+                  <div class="font-semibold text-white mt-1 break-words leading-snug">${esc(n.title)}</div>
                 </a>`
         )
         .join('')
@@ -7007,7 +7228,7 @@ async function renderSettingsTab() {
       ['E0', 'E1', 'E2', 'E3']
         .map((div) => {
           const teams = (allTeamsByLeague[div] || []).filter(
-            (t) => !query || t.toLowerCase().includes(query)
+            (t) => teamMatchesQuery(t, query)
           );
           if (!teams.length) return '';
           return `
@@ -7020,7 +7241,7 @@ async function renderSettingsTab() {
                 return `<button type="button" data-pref-team="${esc(t)}" class="px-2.5 py-1 rounded-full text-[11px] border transition ${on
                     ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-semibold'
                     : 'bg-card border-slate-700 text-slate-300 hover:border-slate-500'
-                  }">${on ? '★ ' : ''}${esc(t)}</button>`;
+                  }">${on ? '★ ' : ''}${esc(displayTeamName(t))}</button>`;
               })
               .join('')}
               </div>
@@ -7122,7 +7343,8 @@ async function triggerSync(withBacktest = false, force = false) {
     if (res.summary.cached) {
       showToast('Data fresh from 30m Smart Cache — bets settled & zero API quota spent!');
     } else {
-      showToast(`Synced ${res.summary.counts.historical_matches} matches & ${res.summary.counts.upcoming_fixtures} upcoming fixtures!`);
+      const rCnt = res.summary.counts?.racing_races || 0;
+      showToast(`Synced ${res.summary.counts.historical_matches} matches, ${res.summary.counts.upcoming_fixtures} fixtures & ${rCnt} races!`);
     }
   } catch (err) {
     showToast(`Sync error: ${err.message}`, true);
@@ -7141,6 +7363,9 @@ async function renderActiveTab() {
     btn.className = `nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] ${active ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`;
   });
 
+  if (state.activeTab === 'racing_cards') return getRacing().renderRacingCardsTab();
+  if (state.activeTab === 'racing_tips') return getRacing().renderRacingTipsTab();
+  if (state.activeTab === 'racing_multiples') return getRacing().renderRacingMultiplesTab();
   if (state.activeTab === 'fixtures') return renderFixturesTab();
   if (state.activeTab === 'value') return renderValueTab();
   if (state.activeTab === 'acca') return renderAccaTab();
@@ -7490,21 +7715,21 @@ function renderB365CouponBox(leg) {
   const mutedCls = 'bg-slate-900/90 text-slate-500 border border-slate-800/80';
 
   const cell = (title, sub, active) => `
-    <div class="p-2 rounded-lg text-center transition ${active ? activeCls : mutedCls}">
-      <div class="flex items-center justify-center gap-1 text-[10px] uppercase tracking-wider">
-        <span class="truncate font-bold">${esc(title)}</span>
-        ${active ? '<span class="px-1 py-0.2 rounded bg-amber-300 text-slate-950 text-[9px] font-black leading-tight">TAP</span>' : ''}
+    <div class="p-2 rounded-lg text-center transition min-w-0 ${active ? activeCls : mutedCls}">
+      <div class="flex items-center justify-center flex-wrap gap-1 text-[10px] uppercase tracking-wider">
+        <span class="font-bold break-words leading-tight">${esc(title)}</span>
+        ${active ? '<span class="px-1 py-0.2 rounded bg-amber-300 text-slate-950 text-[9px] font-black leading-tight shrink-0">TAP</span>' : ''}
       </div>
-      <div class="text-xs font-mono mt-0.5 truncate">${active ? `@ ${esc(oddsTxt)}` : esc(sub || '—')}</div>
+      <div class="text-xs font-mono mt-0.5 break-words">${active ? `@ ${esc(oddsTxt)}` : esc(sub || '—')}</div>
     </div>`;
 
   let gridHtml = '';
   if (mkt === '1X2_H' || mkt === '1X2_D' || mkt === '1X2_A') {
     gridHtml = `
       <div class="grid grid-cols-3 gap-1.5">
-        ${cell(`1: ${leg.home_team || 'Home'}`, 'Home', mkt === '1X2_H')}
+        ${cell(`1: ${displayTeamName(leg.home_team) || 'Home'}`, 'Home', mkt === '1X2_H')}
         ${cell('X: Draw', 'Draw', mkt === '1X2_D')}
-        ${cell(`2: ${leg.away_team || 'Away'}`, 'Away', mkt === '1X2_A')}
+        ${cell(`2: ${displayTeamName(leg.away_team) || 'Away'}`, 'Away', mkt === '1X2_A')}
       </div>`;
   } else if (mkt === 'OU_O15' || mkt === 'OU_U15') {
     gridHtml = `
@@ -7535,7 +7760,7 @@ function renderB365CouponBox(leg) {
       <div class="p-2.5 rounded-lg flex items-center justify-between gap-2 ${activeCls}">
         <div class="flex items-center gap-1.5 min-w-0 text-xs">
           <span class="px-1.5 py-0.5 rounded bg-amber-300 text-slate-950 text-[9px] font-black uppercase shrink-0">TAP</span>
-          <span class="truncate">${esc(leg?.b365_selection_name || leg?.selection_label || mkt)}</span>
+          <span class="break-words leading-snug">${esc(displaySelectionLabel(leg?.b365_selection_name || leg?.selection_label || mkt))}</span>
         </div>
         <span class="text-xs font-mono shrink-0">@ ${esc(oddsTxt)}</span>
       </div>`;
@@ -7606,8 +7831,8 @@ function renderBet365HandoffModal(exp, legs, stake, title) {
           ${groupHeader}
           <div class="p-3.5 rounded-2xl border space-y-2.5 text-xs transition ${cardCls}">
             <div class="flex flex-wrap items-start justify-between gap-2">
-              <div class="min-w-0">
-                <div class="text-sm font-extrabold text-white truncate">${esc(l.home_team)} v ${esc(l.away_team)}</div>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-extrabold text-white break-words leading-snug">${esc(displayMatchTitle(l.home_team, l.away_team, 'v'))}</div>
                 <div class="flex flex-wrap items-center gap-1.5 mt-0.5 text-[11px] text-slate-400">
                   <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 font-semibold">${esc(l.league_name || 'English Football')}</span>
                   ${dateTime ? `<span class="font-mono">${esc(dateTime)}</span>` : ''}
@@ -7925,7 +8150,7 @@ async function openBoostCheckerModal(initialFixtureId = null, initialMarket = ''
         const cbProb = Math.max(0.01, Math.min(0.95, Number(customBuilder.joint_prob || 0.25)));
         combos.unshift({
           market: cbMkt,
-          label: `🏗️ Build a Bet: ${customBuilder.selection_label}`,
+          label: `🏗️ Build a Bet: ${displaySelectionLabel(customBuilder.selection_label)}`,
           prob: cbProb,
           prob_pct: roundNum(cbProb * 100.0, 1),
           fair_odds: roundNum(Number(customBuilder.fair_odds || 1.0 / cbProb), 2),
@@ -7934,9 +8159,9 @@ async function openBoostCheckerModal(initialFixtureId = null, initialMarket = ''
         });
       }
       const singles = [
-        ['1X2_H', `${f.home_team} Win`, f.prob_home, f.b365h],
+        ['1X2_H', `${displayTeamName(f.home_team)} Win`, f.prob_home, f.b365h],
         ['1X2_D', 'Draw', f.prob_draw, f.b365d],
-        ['1X2_A', `${f.away_team} Win`, f.prob_away, f.b365a],
+        ['1X2_A', `${displayTeamName(f.away_team)} Win`, f.prob_away, f.b365a],
         ['OU_O25', 'Over 2.5 Goals', f.prob_over25, f.b365_over25],
         ['OU_U25', 'Under 2.5 Goals', f.prob_under25, f.b365_under25],
         ['BTTS_Y', 'BTTS Yes', f.prob_btts_yes, f.b365_btts_yes],
@@ -7961,8 +8186,8 @@ async function openBoostCheckerModal(initialFixtureId = null, initialMarket = ''
       if (!q) return fixtures;
       return fixtures.filter(
         (f) =>
-          String(f.home_team || '').toLowerCase().includes(q) ||
-          String(f.away_team || '').toLowerCase().includes(q) ||
+          teamMatchesQuery(f.home_team, q) ||
+          teamMatchesQuery(f.away_team, q) ||
           String(f.league_name || '').toLowerCase().includes(q)
       );
     };
@@ -7997,7 +8222,7 @@ async function openBoostCheckerModal(initialFixtureId = null, initialMarket = ''
       fixSelEl.innerHTML = filtered
         .map(
           (f) =>
-            `<option value="${f.id}" ${Number(f.id) === Number(selectedFixId) ? 'selected' : ''}>${esc(f.home_team)} vs ${esc(f.away_team)} (${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')})</option>`
+            `<option value="${f.id}" ${Number(f.id) === Number(selectedFixId) ? 'selected' : ''}>${esc(displayMatchTitle(f.home_team, f.away_team))} (${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')})</option>`
         )
         .join('');
       return fixtures.find((f) => Number(f.id) === Number(selectedFixId)) || filtered[0];
@@ -8019,9 +8244,9 @@ async function openBoostCheckerModal(initialFixtureId = null, initialMarket = ''
       matchAreaEl.innerHTML = `
         <div class="p-4 rounded-2xl bg-card border border-amber-500/35 space-y-3 text-xs">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <div>
+            <div class="min-w-0">
               <div class="text-[11px] font-bold text-amber-300">${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')}</div>
-              <div class="text-base font-extrabold text-white mt-0.5">${esc(f.home_team)} vs ${esc(f.away_team)}</div>
+              <div class="text-base font-extrabold text-white mt-0.5 break-words leading-snug">${esc(displayMatchTitle(f.home_team, f.away_team))}</div>
             </div>
             <div class="flex flex-wrap items-center gap-1.5">
               ${koBadge}
@@ -8041,7 +8266,7 @@ async function openBoostCheckerModal(initialFixtureId = null, initialMarket = ''
                       ? 'bg-amber-500/15 border-amber-400 text-white'
                       : 'bg-panel border-slate-800 text-slate-300 hover:border-slate-600'
                   }">
-                    <div class="font-semibold truncate">${esc(c.label)}</div>
+                    <div class="font-semibold break-words leading-snug">${esc(c.label)}</div>
                     <div class="text-[11px] text-slate-400 mt-0.5">Win Chance <b class="text-white">${c.prob_pct}%</b> • Min Boost <b class="font-mono text-amber-300">&gt; ${fmtOdds(c.fair_odds)}</b></div>
                   </button>`
                 )
@@ -8538,8 +8763,8 @@ async function openSuggestModal(optsOrRisk = null) {
                     <div class="min-w-0 flex items-center gap-1.5 flex-wrap">
                       ${srcBadge(l.source)}
                       ${getBetTypeInfo(l.market).badgeHtml}
-                      <span class="font-semibold text-white truncate">${esc(l.selection_label)}</span>
-                      <span class="text-slate-400 truncate">(${esc(l.home_team)} vs ${esc(l.away_team)})</span>
+                      <span class="font-semibold text-white break-words leading-snug">${esc(displaySelectionLabel(l.selection_label))}</span>
+                      <span class="text-slate-400 break-words leading-snug">(${esc(displayMatchTitle(l.home_team, l.away_team))})</span>
                     </div>
                     ${l.placedId ? `<button type="button" data-unmark-placed-id="${esc(l.placedId)}" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-rose-600/30 text-slate-300 shrink-0" title="Remove placed bet">✕</button>` : ''}
                   </div>`
@@ -8608,14 +8833,14 @@ async function openSuggestModal(optsOrRisk = null) {
                 return `
                 <div class="p-4 rounded-2xl bg-card border ${isPlaced ? 'border-emerald-500/60' : 'border-slate-800'} space-y-3">
                   <div class="flex flex-wrap items-start justify-between gap-2">
-                    <div class="min-w-0">
+                    <div class="min-w-0 flex-1">
                       <div class="flex flex-wrap items-center gap-1.5">
                         <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 border border-emerald-400/40 text-emerald-300">Bet #${bIdx + 1}</span>
                         <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 border border-indigo-400/40 text-indigo-200">${esc(b.badge)}</span>
                         ${isPlaced ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-slate-950">✅ Placed</span>' : ''}
                       </div>
-                      <h3 class="text-base font-extrabold text-white mt-1">${esc(b.title)}</h3>
-                      <p class="text-xs text-slate-400">${esc(b.subtitle)}</p>
+                      <h3 class="text-base font-extrabold text-white mt-1 break-words leading-snug">${esc(displaySelectionLabel(b.title))}</h3>
+                      <p class="text-xs text-slate-400 break-words leading-snug">${esc(displaySelectionLabel(b.subtitle))}</p>
                     </div>
                     <div class="flex items-center gap-1.5 shrink-0">
                       ${(b.legs || []).length > 1 ? `<button type="button" data-cb-reroll="${bIdx}" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-xs font-bold">🔄 Re-Roll</button>` : ''}
@@ -8647,15 +8872,15 @@ async function openSuggestModal(optsOrRisk = null) {
                         const isLegWhyOpen = expandedLegReasons.has(legWhyKey);
                         return `
                         <div class="p-2.5 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} space-y-2 text-xs">
-                          <div class="flex items-center justify-between gap-2">
-                            <div class="min-w-0">
+                          <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0 flex-1">
                               <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}${l.kickoff_time ? ` ${esc(l.kickoff_time)}` : ''}</div>
                               <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
                                 ${btInfo.badgeHtml}
-                                <span class="font-bold text-white truncate">${lIdx + 1}. ${esc(l.selection_label)}</span>
+                                <span class="font-bold text-white break-words leading-snug">${lIdx + 1}. ${esc(displaySelectionLabel(l.selection_label))}</span>
                                 ${twoUpBadgeHtml(l.market)}
                               </div>
-                              <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                              <div class="text-[11px] text-slate-400 break-words leading-snug mt-0.5">${esc(displayMatchTitle(l.home_team, l.away_team))}</div>
                               <button type="button" data-cb-leg-why="${esc(legWhyKey)}" aria-expanded="${isLegWhyOpen ? 'true' : 'false'}" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition ${isLegWhyOpen ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-cyan-300'}">💡 Why? ${isLegWhyOpen ? '▴' : '▾'}</button>
                             </div>
                             <div class="flex items-center gap-2 shrink-0">
@@ -9104,7 +9329,7 @@ async function openSuggestModal(optsOrRisk = null) {
                       <span class="text-[10px] font-bold uppercase tracking-wider ${item.id === s.id ? 'text-indigo-300' : 'text-slate-400'}">${esc(item.badge)}</span>
                       <span class="text-[11px] font-mono font-bold text-emerald-400">${esc(fmtOdds(item.eval?.combined_odds || 1))}</span>
                     </div>
-                    <div class="text-xs font-bold truncate mt-0.5">${esc(item.title)}</div>
+                    <div class="text-xs font-bold break-words leading-snug mt-0.5">${esc(displaySelectionLabel(item.title))}</div>
                   </button>`
               )
               .join('')}
@@ -9113,11 +9338,11 @@ async function openSuggestModal(optsOrRisk = null) {
 
         <div class="p-4 rounded-2xl bg-card border border-slate-800 space-y-3">
           <div class="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h3 class="text-base font-extrabold text-white">${esc(s.title)}</h3>
-              <p class="text-xs text-slate-400 mt-0.5">${esc(s.subtitle)}</p>
+            <div class="min-w-0 flex-1">
+              <h3 class="text-base font-extrabold text-white break-words leading-snug">${esc(displaySelectionLabel(s.title))}</h3>
+              <p class="text-xs text-slate-400 mt-0.5 break-words">${esc(displaySelectionLabel(s.subtitle))}</p>
             </div>
-            <div class="flex items-center gap-1.5">
+            <div class="flex items-center gap-1.5 shrink-0">
               ${(s.legs || []).length > 1 ? '<button id="sug-reroll-btn" type="button" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-xs font-bold transition">🔄 Re-Roll Unlocked</button>' : ''}
               <div class="px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold font-mono">
                 ${s.confidence_score}% Confidence
@@ -9147,15 +9372,15 @@ async function openSuggestModal(optsOrRisk = null) {
                 const isLegWhyOpen = expandedLegReasons.has(legWhyKey);
                 return `
                   <div class="p-3 rounded-xl bg-surface/80 border ${isLocked ? 'border-amber-400/60' : 'border-slate-700/80'} space-y-2 text-xs">
-                    <div class="flex items-center justify-between gap-2">
-                      <div class="min-w-0">
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0 flex-1">
                         <div class="text-[11px] text-emerald-400 font-semibold">${esc(l.league_name)} • ${esc(l.match_date)}${l.kickoff_time ? ` ${esc(l.kickoff_time)}` : ''}</div>
                         <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
                           ${getBetTypeInfo(l.market).badgeHtml}
-                          <span class="font-bold text-white truncate">${i + 1}. ${esc(l.selection_label)}</span>
+                          <span class="font-bold text-white break-words leading-snug">${i + 1}. ${esc(displaySelectionLabel(l.selection_label))}</span>
                           ${twoUpBadgeHtml(l.market)}
                         </div>
-                        <div class="text-[11px] text-slate-400 truncate">${esc(l.home_team)} vs ${esc(l.away_team)}</div>
+                        <div class="text-[11px] text-slate-400 break-words leading-snug mt-0.5">${esc(displayMatchTitle(l.home_team, l.away_team))}</div>
                         <button type="button" data-sug-leg-why="${esc(legWhyKey)}" aria-expanded="${isLegWhyOpen ? 'true' : 'false'}" class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition ${isLegWhyOpen ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-cyan-300'}">💡 Why? ${isLegWhyOpen ? '▴' : '▾'}</button>
                       </div>
                       <div class="flex items-center gap-2 shrink-0">
@@ -9408,8 +9633,8 @@ async function openSuggestModal(optsOrRisk = null) {
         const filtered = q
           ? modalFixtures.filter(
               (f) =>
-                String(f.home_team || '').toLowerCase().includes(q) ||
-                String(f.away_team || '').toLowerCase().includes(q) ||
+                teamMatchesQuery(f.home_team, q) ||
+                teamMatchesQuery(f.away_team, q) ||
                 String(f.league_name || '').toLowerCase().includes(q)
             )
           : modalFixtures;
@@ -9417,7 +9642,7 @@ async function openSuggestModal(optsOrRisk = null) {
           `<option value="AUTO" ${bb.fixtureId === 'AUTO' ? 'selected' : ''}>✨ Auto-Pick Best Matches (All Upcoming)</option>`,
           ...filtered.map(
             (f) =>
-              `<option value="${f.id}" ${String(bb.fixtureId) === String(f.id) ? 'selected' : ''}>${esc(f.home_team)} vs ${esc(f.away_team)} (${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')})</option>`
+              `<option value="${f.id}" ${String(bb.fixtureId) === String(f.id) ? 'selected' : ''}>${esc(displayMatchTitle(f.home_team, f.away_team))} (${esc(f.league_name)} • ${esc(f.match_date)} ${esc(f.kickoff_time || '')})</option>`
           ),
         ].join('');
       };
@@ -9436,13 +9661,13 @@ async function openSuggestModal(optsOrRisk = null) {
                 return `
                   <div class="p-4 rounded-2xl bg-card border ${isPlaced ? 'border-emerald-500/60' : 'border-slate-800'} space-y-3">
                     <div class="flex flex-wrap items-start justify-between gap-2">
-                      <div class="min-w-0">
+                      <div class="min-w-0 flex-1">
                         <div class="flex flex-wrap items-center gap-1.5">
                           <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 border border-emerald-400/40 text-emerald-300">Build a Bet #${bIdx + 1}</span>
                           <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 border border-indigo-400/40 text-indigo-200">${esc(b.style_label || 'Build a Bet')}</span>
                           ${isPlaced ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-slate-950">✅ Placed</span>' : ''}
                         </div>
-                        <button type="button" data-bb-preview="${b.fixture_id}" class="text-base font-extrabold text-white hover:text-emerald-300 text-left mt-1 transition">${esc(b.home_team)} vs ${esc(b.away_team)}</button>
+                        <button type="button" data-bb-preview="${b.fixture_id}" class="text-base font-extrabold text-white hover:text-emerald-300 text-left mt-1 break-words leading-snug transition">${esc(displayMatchTitle(b.home_team, b.away_team))}</button>
                         <div class="text-xs text-slate-400">${esc(b.league_name)} • ${esc(b.match_date)}${b.kickoff_time ? ` ${esc(b.kickoff_time)}` : ''} • ${b.legs_count || (b.legs || []).length} same-game legs</div>
                       </div>
                       <div class="flex items-center gap-1.5 shrink-0">
@@ -9465,11 +9690,11 @@ async function openSuggestModal(optsOrRisk = null) {
                           const isLegWhyOpen = expandedLegReasons.has(legWhyKey);
                           return `
                             <div class="p-2.5 rounded-xl bg-surface/80 border border-slate-700/80 space-y-2 text-xs">
-                              <div class="flex items-center justify-between gap-2">
-                                <div class="min-w-0">
+                              <div class="flex items-start justify-between gap-2">
+                                <div class="min-w-0 flex-1">
                                   <div class="flex items-center gap-1.5 flex-wrap">
                                     ${btInfo.badgeHtml}
-                                    <span class="font-bold text-white truncate">${lIdx + 1}. ${esc(sl.selection_label)}</span>
+                                    <span class="font-bold text-white break-words leading-snug">${lIdx + 1}. ${esc(displaySelectionLabel(sl.selection_label))}</span>
                                     ${twoUpBadgeHtml(sl.market)}
                                   </div>
                                   <div class="text-[11px] text-slate-400 mt-0.5">${esc(sl.b365_market_name || 'Bet Builder')}</div>
@@ -9843,7 +10068,93 @@ function closeAllOverlays(exceptId = '') {
   }
 }
 
+let _racingInstance = null;
+function getRacing() {
+  if (!_racingInstance) {
+    _racingInstance = initRacingModule({
+      esc,
+      fmtOdds,
+      parseOddsInput,
+      fmtGbp,
+      roundNum,
+      showToast,
+      renderReasoningDropdownHtml,
+      closeAllOverlays,
+      openInBet365Tab,
+      state,
+      api,
+      renderActiveTab,
+      onSlipUpdated: (cnt) => {
+        if (state.activeSport === 'racing') {
+          const bEl = document.getElementById('slip-count-badge');
+          if (bEl) bEl.textContent = String(cnt);
+        }
+      },
+    });
+  }
+  return _racingInstance;
+}
+
+function switchSport(sport, resetTab = true) {
+  state.activeSport = sport === 'racing' ? 'racing' : 'football';
+  try {
+    localStorage.setItem('accalab_active_sport', state.activeSport);
+  } catch (_) {}
+  const isRacing = state.activeSport === 'racing';
+
+  document.querySelectorAll('[data-sport-btn]').forEach((btn) => {
+    const on = btn.dataset.sportBtn === state.activeSport;
+    btn.className = `sport-switch-btn py-1.5 px-2.5 rounded-lg transition flex items-center justify-center gap-1.5 ${
+      on ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'text-slate-400 hover:text-white border border-transparent'
+    }`;
+  });
+
+  document.getElementById('desktop-nav-football')?.classList.toggle('hidden', isRacing);
+  document.getElementById('desktop-nav-racing')?.classList.toggle('hidden', !isRacing);
+  document.getElementById('mobile-nav')?.classList.toggle('hidden', isRacing);
+  document.getElementById('mobile-nav-racing')?.classList.toggle('hidden', !isRacing);
+
+  const subEl = document.getElementById('brand-subtitle');
+  if (subEl) subEl.textContent = isRacing ? 'UK, Ireland & Intl Racing' : 'Premier League → League Two';
+  const bSide = document.getElementById('open-boost-sidebar-label');
+  if (bSide) bSide.textContent = isRacing ? '⚡ Check Racing Price' : '⚡ Check a Bet365 Boost';
+  const bHdr = document.getElementById('open-boost-header-label');
+  if (bHdr) bHdr.textContent = isRacing ? 'Price' : 'Boost';
+
+  const slipBadge = document.getElementById('slip-count-badge');
+  if (slipBadge) {
+    slipBadge.textContent = String(isRacing ? getRacing().getSlipCount() : state.slip.length);
+  }
+  getRacing().syncBadges();
+
+  if (resetTab) {
+    state.activeTab = isRacing ? 'racing_cards' : 'fixtures';
+  }
+  if (isRacing) {
+    getRacing().refreshOverview();
+  } else if (state.dashboard) {
+    const d = state.dashboard;
+    const kpiEl = document.getElementById('kpi-strip');
+    if (kpiEl && d.counts) {
+      kpiEl.innerHTML = `
+        <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">⚽ Upcoming: <b class="text-white font-mono">${d.counts.upcoming_fixtures}</b></span>
+        <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">💎 Top Tips: <b class="text-emerald-400 font-mono">${d.top_value_bets.length}</b></span>
+        <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80">★ Followed Clubs: <b class="text-amber-300 font-mono">${state.favouriteTeams.length}</b></span>
+        <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700/80 text-slate-300" title="Latest odds snapshot sync time">🕒 Odds: <b class="text-cyan-300 font-mono">${esc(formatRelativeFreshness(d.odds_updated_at || d.generated_at))}</b></span>
+      `;
+    }
+  }
+}
+
 function bindGlobalEvents() {
+  document.querySelectorAll('[data-sport-btn]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      closeAllOverlays();
+      switchSport(btn.dataset.sportBtn, true);
+      renderActiveTab();
+    })
+  );
+
   document.querySelectorAll('[data-tab]').forEach((btn) =>
     btn.addEventListener('click', () => {
       closeAllOverlays();
@@ -9887,11 +10198,20 @@ function bindGlobalEvents() {
     authTabReg.addEventListener('click', () => renderAuthModalBody('register'));
   }
 
-  document.getElementById('open-suggest-btn')?.addEventListener('click', () => openSuggestModal());
-  document.getElementById('open-suggest-sidebar-btn')?.addEventListener('click', () => openSuggestModal());
-  document.getElementById('open-suggest-mobile-btn')?.addEventListener('click', () => openSuggestModal());
-  document.getElementById('open-boost-sidebar-btn')?.addEventListener('click', () => openBoostCheckerModal());
-  document.getElementById('open-boost-checker-btn')?.addEventListener('click', () => openBoostCheckerModal());
+  const openSuggestForSport = () => {
+    if (state.activeSport === 'racing') getRacing().openSuggestModal();
+    else openSuggestModal();
+  };
+  const openCheckerForSport = () => {
+    if (state.activeSport === 'racing') getRacing().openPriceCheckerModal();
+    else openBoostCheckerModal();
+  };
+  document.getElementById('open-suggest-btn')?.addEventListener('click', openSuggestForSport);
+  document.getElementById('open-suggest-sidebar-btn')?.addEventListener('click', openSuggestForSport);
+  document.getElementById('open-suggest-mobile-btn')?.addEventListener('click', openSuggestForSport);
+  document.getElementById('open-suggest-mobile-racing-btn')?.addEventListener('click', () => getRacing().openSuggestModal());
+  document.getElementById('open-boost-sidebar-btn')?.addEventListener('click', openCheckerForSport);
+  document.getElementById('open-boost-checker-btn')?.addEventListener('click', openCheckerForSport);
   document.getElementById('close-suggest-modal')?.addEventListener('click', () =>
     document.getElementById('suggest-modal').classList.add('hidden')
   );
@@ -9901,6 +10221,12 @@ function bindGlobalEvents() {
     document.getElementById('preview-modal').classList.add('hidden')
   );
   document.getElementById('open-slip-btn').addEventListener('click', () => {
+    if (state.activeSport === 'racing') {
+      closeAllOverlays();
+      state.activeTab = 'racing_multiples';
+      renderActiveTab();
+      return;
+    }
     closeAllOverlays('slip-drawer');
     renderSlip();
     document.getElementById('slip-drawer').classList.remove('hidden');
@@ -9966,6 +10292,7 @@ async function boot() {
   bindGlobalEvents();
   await loadDashboard(true);
   saveSlip(false);
+  switchSport(state.activeSport, true);
   await renderActiveTab();
   if (!(state.dashboard?.users || []).length) {
     openAuthModal('register');

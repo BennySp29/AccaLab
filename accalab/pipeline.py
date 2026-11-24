@@ -20,6 +20,8 @@ from accalab.ingest import (
     ingest_upcoming_fixtures,
 )
 from accalab.modeling import run_model_and_predictions, run_walk_forward_backtest
+from accalab.racing_ingest import ingest_racing_data
+from accalab.racing_model import score_and_predict_races
 from accalab.value_engine import generate_value_alerts, settle_bets
 
 
@@ -30,6 +32,8 @@ def _sync_counts(conn) -> dict[str, int]:
         "team_ratings": conn.execute("SELECT COUNT(*) AS c FROM team_ratings").fetchone()["c"],
         "news_items": conn.execute("SELECT COUNT(*) AS c FROM news_items").fetchone()["c"],
         "backtest_rows": conn.execute("SELECT COUNT(*) AS c FROM backtest_results").fetchone()["c"],
+        "racing_races": conn.execute("SELECT COUNT(*) AS c FROM racing_races").fetchone()["c"],
+        "racing_runners": conn.execute("SELECT COUNT(*) AS c FROM racing_runners WHERE non_runner=0").fetchone()["c"],
     }
 
 
@@ -41,8 +45,9 @@ def run_full_sync(run_backtest: bool = True, force: bool = False) -> dict[str, A
         scheduled_cnt = conn.execute(
             "SELECT COUNT(*) AS c FROM upcoming_fixtures WHERE status='scheduled'"
         ).fetchone()["c"]
+        racing_cnt = conn.execute("SELECT COUNT(*) AS c FROM racing_races").fetchone()["c"]
 
-        if not force and scheduled_cnt > 0 and is_within_cache_window(last_sync, minutes=30):
+        if not force and scheduled_cnt > 0 and racing_cnt > 0 and is_within_cache_window(last_sync, minutes=30):
             settled_cnt = settle_bets(conn)
             alerts_cnt = generate_value_alerts(conn)
             return {
@@ -52,18 +57,28 @@ def run_full_sync(run_backtest: bool = True, force: bool = False) -> dict[str, A
                 "upcoming": {"cached": True},
                 "news": {"cached": True},
                 "model": {"cached": True},
+                "racing": {"cached": True},
                 "settled_bets": settled_cnt,
                 "new_alerts": alerts_cnt,
                 "backtest_computed": 0,
                 "counts": _sync_counts(conn),
             }
 
+        racing_ingest_res: dict[str, Any] = {}
         with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20.0) as client:
             hist_res = ingest_football_data_csvs(conn, client=client)
             up_res = ingest_upcoming_fixtures(conn, client=client)
             news_res = ingest_news_feeds(conn, client=client)
+            try:
+                racing_ingest_res = ingest_racing_data(conn, client=client)
+            except Exception as exc:
+                racing_ingest_res = {"error": str(exc)}
 
         model_res = run_model_and_predictions(conn)
+        try:
+            racing_model_res = score_and_predict_races(conn)
+        except Exception as exc:
+            racing_model_res = {"error": str(exc)}
         settled_cnt = settle_bets(conn)
 
         bt_res: list[dict[str, Any]] = []
@@ -98,6 +113,7 @@ def run_full_sync(run_backtest: bool = True, force: bool = False) -> dict[str, A
         "upcoming": up_res,
         "news": news_res,
         "model": model_res,
+        "racing": {"ingest": racing_ingest_res, "model": racing_model_res},
         "settled_bets": settled_cnt,
         "new_alerts": alerts_cnt,
         "backtest_computed": len(bt_res),

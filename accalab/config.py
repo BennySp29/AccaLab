@@ -73,6 +73,19 @@ NEWS_FEEDS = [
     ("The Guardian", "https://www.theguardian.com/football/rss"),
 ]
 
+RACING_REGIONS: dict[str, dict[str, str]] = {
+    "GB": {"code": "GB", "name": "Great Britain", "flag": "🇬🇧", "short": "UK"},
+    "IRE": {"code": "IRE", "name": "Ireland", "flag": "🇮🇪", "short": "IRE"},
+    "FR": {"code": "FR", "name": "France", "flag": "🇫🇷", "short": "FR"},
+    "US": {"code": "US", "name": "United States", "flag": "🇺🇸", "short": "USA"},
+    "AU": {"code": "AU", "name": "Australia", "flag": "🇦🇺", "short": "AUS"},
+    "INTL": {"code": "INTL", "name": "International", "flag": "🌍", "short": "INTL"},
+}
+
+RACING_NEWS_FEEDS = [
+    ("BBC Sport Racing", "https://feeds.bbci.co.uk/sport/horse-racing/rss.xml"),
+]
+
 # Maps external feed / news names -> football-data.co.uk canonical team names
 TEAM_ALIASES: dict[str, str] = {
     # Premier League (E0)

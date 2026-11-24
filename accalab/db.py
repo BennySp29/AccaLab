@@ -273,6 +273,89 @@ CREATE TABLE IF NOT EXISTS saved_accas (
     ev_pct REAL NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS racing_races (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_key TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    external_id TEXT DEFAULT '',
+    region_code TEXT NOT NULL,
+    country_name TEXT NOT NULL DEFAULT '',
+    course TEXT NOT NULL,
+    race_date TEXT NOT NULL,
+    off_time TEXT NOT NULL,
+    off_timestamp_utc TEXT DEFAULT '',
+    race_name TEXT NOT NULL,
+    race_type TEXT NOT NULL DEFAULT 'Flat',
+    race_class TEXT DEFAULT '',
+    is_handicap INTEGER NOT NULL DEFAULT 0,
+    distance_text TEXT DEFAULT '',
+    distance_meters INTEGER DEFAULT 0,
+    going TEXT DEFAULT '',
+    surface TEXT DEFAULT '',
+    prize_text TEXT DEFAULT '',
+    runners_count INTEGER NOT NULL DEFAULT 0,
+    places_paid INTEGER NOT NULL DEFAULT 3,
+    place_fraction REAL NOT NULL DEFAULT 0.2,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_racing_races_date_region ON racing_races(race_date, region_code);
+
+CREATE TABLE IF NOT EXISTS racing_runners (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_id INTEGER NOT NULL REFERENCES racing_races(id) ON DELETE CASCADE,
+    runner_key TEXT NOT NULL,
+    saddle_cloth INTEGER DEFAULT 0,
+    draw INTEGER,
+    horse_name TEXT NOT NULL,
+    age INTEGER,
+    sex TEXT DEFAULT '',
+    weight_lbs INTEGER,
+    weight_display TEXT DEFAULT '',
+    official_rating INTEGER,
+    jockey TEXT DEFAULT '',
+    trainer TEXT DEFAULT '',
+    owner TEXT DEFAULT '',
+    form_string TEXT DEFAULT '',
+    form_direction TEXT NOT NULL DEFAULT 'rtl',
+    days_since_run INTEGER,
+    headgear TEXT DEFAULT '',
+    career_runs INTEGER DEFAULT 0,
+    career_wins INTEGER DEFAULT 0,
+    career_places INTEGER DEFAULT 0,
+    career_earnings REAL DEFAULT 0.0,
+    silk_url TEXT DEFAULT '',
+    is_debutant INTEGER NOT NULL DEFAULT 0,
+    non_runner INTEGER NOT NULL DEFAULT 0,
+    finish_pos INTEGER,
+    market_odds REAL,
+    odds_source TEXT NOT NULL DEFAULT 'model_tissue',
+    model_rating REAL NOT NULL DEFAULT 50.0,
+    model_win_prob REAL NOT NULL DEFAULT 0.0,
+    model_place_prob REAL NOT NULL DEFAULT 0.0,
+    fair_win_odds REAL NOT NULL DEFAULT 0.0,
+    fair_place_odds REAL NOT NULL DEFAULT 0.0,
+    win_edge_pct REAL NOT NULL DEFAULT 0.0,
+    ew_edge_pct REAL NOT NULL DEFAULT 0.0,
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    reason_stats_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    UNIQUE(race_id, runner_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_racing_runners_race ON racing_runners(race_id);
+
+CREATE TABLE IF NOT EXISTS racing_news (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -351,6 +434,10 @@ def get_api_quota_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     af_used = get_provider_calls_today(conn, "api_football")
     gem_used = get_provider_calls_today(conn, "gemini_flash")
     last_sync_at = get_last_provider_call_iso(conn, "core_sync", status_code=200)
+    last_racing_at = (
+        get_last_provider_call_iso(conn, "entain_public", status_code=200)
+        or get_last_provider_call_iso(conn, "pmu_public", status_code=200)
+    )
     return {
         "core_feeds": {
             "status": "unlimited",
@@ -370,5 +457,10 @@ def get_api_quota_summary(conn: sqlite3.Connection) -> dict[str, Any]:
             "daily_limit": 60,
             "remaining": max(0, 60 - gem_used),
             "fallback": "Built-in Analyst Engine (Unlimited)",
+        },
+        "racing_feeds": {
+            "status": "free_public_no_key",
+            "last_sync_at": last_racing_at,
+            "label": "Free Public Feeds (TAB/Entain + PMU + BBC RSS • No Card/Key)",
         },
     }

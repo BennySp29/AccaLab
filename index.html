@@ -88,7 +88,18 @@
       <img src="./icon-192.png" alt="AccaLab" class="w-9 h-9 rounded-xl ring-1 ring-emerald-500/30" />
       <div>
         <h1 class="text-lg font-extrabold tracking-tight text-white">AccaLab</h1>
-        <p class="text-xs font-medium text-emerald-400">EPL → League Two</p>
+        <p id="brand-subtitle" class="text-xs font-medium text-emerald-400">Premier League → League Two</p>
+      </div>
+    </div>
+
+    <div id="sport-switcher-desktop" class="px-3 pt-3">
+      <div class="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-950 border border-slate-800/90 text-xs font-bold">
+        <button type="button" data-sport-btn="football" class="sport-switch-btn py-1.5 px-2 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition flex items-center justify-center gap-1.5">
+          <span>⚽</span><span>Football</span>
+        </button>
+        <button type="button" data-sport-btn="racing" class="sport-switch-btn py-1.5 px-2 rounded-lg text-slate-400 hover:text-white border border-transparent transition flex items-center justify-center gap-1.5">
+          <span>🏇</span><span>Racing</span>
+        </button>
       </div>
     </div>
 
@@ -97,24 +108,41 @@
         <span>✨ Suggest a Bet</span>
       </button>
       <button id="open-boost-sidebar-btn" type="button" class="w-full mt-2 py-2 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-extrabold flex items-center justify-center gap-2 transition">
-        <span>⚡ Check a Bet365 Boost</span>
+        <span id="open-boost-sidebar-label">⚡ Check a Bet365 Boost</span>
       </button>
     </div>
 
     <nav id="desktop-nav" class="flex-1 p-3 space-y-1 overflow-y-auto">
-      <button data-tab="fixtures" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium bg-emerald-500/15 text-emerald-400">
-        <span>⚽</span><span>Matches &amp; Previews</span>
-      </button>
-      <button data-tab="value" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>💎</span><span>Top Match Tips</span>
-      </button>
-      <button data-tab="acca" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span>🧮</span><span>Acca Builder</span>
-      </button>
-      <button data-tab="settings" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
-        <span class="flex items-center gap-3"><span>⭐</span><span>Clubs &amp; Settings</span></span>
-        <span id="sidebar-alert-badge" class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
-      </button>
+      <div id="desktop-nav-football" class="space-y-1">
+        <button data-tab="fixtures" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium bg-emerald-500/15 text-emerald-400">
+          <span>⚽</span><span>Matches</span>
+        </button>
+        <button data-tab="value" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+          <span>💎</span><span>Top Tips</span>
+        </button>
+        <button data-tab="acca" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+          <span>🧮</span><span>Acca Builder</span>
+        </button>
+        <button data-tab="settings" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+          <span class="flex items-center gap-3"><span>⭐</span><span>Clubs &amp; Settings</span></span>
+          <span id="sidebar-alert-badge" class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
+        </button>
+      </div>
+      <div id="desktop-nav-racing" class="hidden space-y-1">
+        <button data-tab="racing_cards" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+          <span>🏇</span><span>Daily Races</span>
+        </button>
+        <button data-tab="racing_tips" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+          <span>💎</span><span>Top Racing Tips</span>
+        </button>
+        <button data-tab="racing_multiples" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+          <span class="flex items-center gap-3"><span>🎟️</span><span>Multiples &amp; Slip</span></span>
+          <span id="racing-nav-slip-badge" class="hidden text-xs bg-emerald-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
+        </button>
+        <button data-tab="settings" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+          <span>⭐</span><span>Settings</span>
+        </button>
+      </div>
     </nav>
 
     <div class="p-4 border-t border-slate-800/80 space-y-3">
@@ -122,8 +150,8 @@
         <div class="flex items-center gap-2 min-w-0">
           <span id="sidebar-avatar" class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-slate-950 bg-emerald-400 shrink-0">G</span>
           <div class="min-w-0">
-            <div id="sidebar-username" class="text-xs font-bold text-white truncate">Guest</div>
-            <div id="sidebar-auth-status" class="text-[10px] text-amber-300">No account yet • Click to set up</div>
+            <div id="sidebar-username" class="text-xs font-bold text-white break-words leading-snug">Guest</div>
+            <div id="sidebar-auth-status" class="text-[10px] text-amber-300 leading-snug">No account yet • Click to set up</div>
           </div>
         </div>
         <button id="open-auth-modal-btn" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-emerald-300 shrink-0">Set Up Account</button>
@@ -141,26 +169,37 @@
   <!-- Main Content -->
   <div class="flex-1 lg:pl-64 flex flex-col min-h-screen">
     <!-- Top Header Bar -->
-    <header class="lg:sticky lg:top-0 z-20 glass-panel border-b border-slate-800/80 px-3 py-2 lg:px-4 lg:py-3 flex flex-wrap items-center justify-between gap-2 lg:gap-3">
-      <div class="flex items-center gap-2 lg:hidden">
-        <img src="./icon-192.png" alt="AccaLab" class="w-7 h-7 rounded-lg" />
-        <span class="font-extrabold text-sm text-white">AccaLab</span>
+    <header class="lg:sticky lg:top-0 z-20 glass-panel border-b border-slate-800/80 px-3 py-2 lg:px-4 lg:py-3 flex flex-col gap-2 lg:gap-0">
+      <div class="flex items-center justify-between gap-2 w-full">
+        <div class="flex items-center gap-2 lg:hidden shrink-0">
+          <img src="./icon-192.png" alt="AccaLab" class="w-7 h-7 rounded-lg" />
+          <span class="font-extrabold text-sm text-white tracking-tight">AccaLab</span>
+        </div>
+        <div id="kpi-strip" class="hidden lg:flex flex-wrap items-center gap-2 text-xs">
+          <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700 text-slate-300">Loading stats...</span>
+        </div>
+        <div class="flex items-center gap-1.5 sm:gap-2">
+          <button id="open-suggest-btn" class="hidden lg:flex px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold items-center gap-1.5 shadow-md shadow-emerald-500/20 transition">
+            <span>✨ Suggest Bet</span>
+          </button>
+          <button id="open-boost-checker-btn" type="button" class="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-extrabold flex items-center gap-1 transition">
+            <span>⚡</span><span class="hidden sm:inline">Check</span><span id="open-boost-header-label">Boost</span>
+          </button>
+          <select id="user-switcher-mobile" class="hidden lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
+          <button id="open-auth-modal-mobile-btn" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Sign In</button>
+          <button id="open-slip-btn" class="relative px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shrink-0">
+            <span>🧾</span><span class="hidden sm:inline">Bet </span><span>Slip</span>
+            <span id="slip-count-badge" class="bg-slate-950/80 text-emerald-300 px-1.5 py-0.5 rounded-full text-[11px] font-mono">0</span>
+          </button>
+        </div>
       </div>
-      <div id="kpi-strip" class="hidden lg:flex flex-wrap items-center gap-2 text-xs">
-        <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700 text-slate-300">Loading stats...</span>
-      </div>
-      <div class="flex items-center gap-2">
-        <button id="open-suggest-btn" class="hidden lg:flex px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold items-center gap-1.5 shadow-md shadow-emerald-500/20 transition">
-          <span>✨ Suggest Bet</span>
+
+      <div id="sport-switcher-mobile" class="lg:hidden grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-950 border border-slate-800/90 text-xs font-bold w-full">
+        <button type="button" data-sport-btn="football" class="sport-switch-btn py-1.5 px-2.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition flex items-center justify-center gap-1.5">
+          <span>⚽</span><span>Football</span>
         </button>
-        <button id="open-boost-checker-btn" type="button" class="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-extrabold flex items-center gap-1 transition">
-          <span>⚡</span><span class="hidden sm:inline">Check</span><span>Boost</span>
-        </button>
-        <select id="user-switcher-mobile" class="hidden lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
-        <button id="open-auth-modal-mobile-btn" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Set Up Account</button>
-        <button id="open-slip-btn" class="relative px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
-          <span>🧾 Bet Slip</span>
-          <span id="slip-count-badge" class="bg-slate-950/80 text-emerald-300 px-1.5 py-0.5 rounded-full text-[11px] font-mono">0</span>
+        <button type="button" data-sport-btn="racing" class="sport-switch-btn py-1.5 px-2.5 rounded-lg text-slate-400 hover:text-white border border-transparent transition flex items-center justify-center gap-1.5">
+          <span>🏇</span><span>Horse Racing</span>
         </button>
       </div>
     </header>
@@ -188,7 +227,28 @@
       <span class="text-base leading-none">🧮</span><span class="mt-0.5">Acca</span>
     </button>
     <button data-tab="settings" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
-      <span class="text-base leading-none">⭐</span><span class="mt-0.5">Clubs</span>
+      <span class="text-base leading-none">⚙️</span><span class="mt-0.5">Settings</span>
+    </button>
+  </nav>
+
+  <!-- Mobile Bottom Navigation (Racing Mode) -->
+  <nav id="mobile-nav-racing" class="hidden lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 grid grid-cols-5 items-center px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30">
+    <button data-tab="racing_cards" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-emerald-400">
+      <span class="text-base leading-none">🏇</span><span class="mt-0.5">Races</span>
+    </button>
+    <button data-tab="racing_tips" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
+      <span class="text-base leading-none">💎</span><span class="mt-0.5">Tips</span>
+    </button>
+    <div class="flex justify-center">
+      <button id="open-suggest-mobile-racing-btn" type="button" class="flex flex-col items-center justify-center -mt-3.5 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
+        <span class="text-base leading-none">✨</span><span class="mt-0.5">Suggest</span>
+      </button>
+    </div>
+    <button data-tab="racing_multiples" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
+      <span class="text-base leading-none">🎟️</span><span class="mt-0.5">Slip</span>
+    </button>
+    <button data-tab="settings" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
+      <span class="text-base leading-none">⚙️</span><span class="mt-0.5">Settings</span>
     </button>
   </nav>
 
@@ -251,6 +311,6 @@
   <!-- Toast Banner -->
   <div id="toast" class="hidden fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium shadow-xl z-50"></div>
 
-  <script type="module" src="./static/app.js?v=213c2ad8"></script>
+  <script type="module" src="./static/app.js?v=ba7f5ba2"></script>
 </body>
 </html>

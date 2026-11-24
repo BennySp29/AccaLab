@@ -1,9 +1,10 @@
-const CACHE_NAME = 'accalab-v3-213c2ad8';
+const CACHE_NAME = 'accalab-v3-ba7f5ba2';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
   './static/app.js',
+  './static/racing.js',
   './icon.svg',
   './apple-touch-icon.png',
   './icon-192.png',
