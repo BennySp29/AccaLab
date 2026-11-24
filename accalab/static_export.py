@@ -84,7 +84,7 @@ def export_static_site() -> dict[str, Any]:
     # Separate lazy-loaded Horse Racing snapshot so Football snapshot.json remains compact & fast
     racing_overview = client.get("/api/racing/overview").get_json() or {}
     racing_cards_res = client.get("/api/racing/cards").get_json() or {}
-    racing_tips_res = client.get("/api/racing/tips?limit=120").get_json() or {}
+    racing_tips_res = client.get("/api/racing/tips?limit=400").get_json() or {}
     racing_suggest_res = client.get("/api/racing/suggest-bet").get_json() or {}
     parent_redundant_keys = (
         "race_key", "region_code", "region_flag", "country_name", "course",

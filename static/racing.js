@@ -341,6 +341,33 @@ function setStorageSafe(key, val) {
   } catch {}
 }
 
+const RACING_DATE_PRESETS = [
+  ['all', 'All Upcoming'],
+  ['today', 'Today'],
+  ['tomorrow', 'Tomorrow'],
+  ['next_2', 'Next 2 Days'],
+  ['next_3', 'Next 3 Days'],
+  ['custom', 'Custom Range'],
+];
+
+function cleanIsoDateClient(val) {
+  const s = String(val || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s)) return '';
+  const iso = s.slice(0, 10);
+  const dt = new Date(`${iso}T12:00:00Z`);
+  if (Number.isNaN(dt.getTime()) || dt.toISOString().slice(0, 10) !== iso) return '';
+  return iso;
+}
+
+function formatShortRacingDate(iso) {
+  const clean = cleanIsoDateClient(iso);
+  if (!clean) return String(iso || '');
+  const dt = new Date(`${clean}T12:00:00Z`);
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${days[dt.getUTCDay()]} ${dt.getUTCDate()} ${months[dt.getUTCMonth()]}`;
+}
+
 function ukNowInfo(nowDate = new Date()) {
   const year = nowDate.getUTCFullYear();
   const mar31 = new Date(Date.UTC(year, 2, 31, 1, 0, 0));
@@ -351,9 +378,11 @@ function ukNowInfo(nowDate = new Date()) {
   const ukDt = new Date(nowDate.getTime() + (isBst ? 3600000 : 0));
   const iso = ukDt.toISOString();
   const tomDt = new Date(ukDt.getTime() + 86400000);
+  const day2Dt = new Date(ukDt.getTime() + 2 * 86400000);
   return {
     todayIso: iso.slice(0, 10),
     tomorrowIso: tomDt.toISOString().slice(0, 10),
+    dayPlus2Iso: day2Dt.toISOString().slice(0, 10),
     hhmm: iso.slice(11, 16),
   };
 }
@@ -556,17 +585,49 @@ function scoreRacingRiskClient(tip, riskLevel) {
   return rating * 0.7 + edge * 0.9 + plcP * 0.5 + winP * 0.55 - Math.max(0, winO - 10) * 1.8;
 }
 
-function filterRacesClient(races = [], { region = '', day = '', raceType = '', search = '', includePast = false } = {}) {
-  const { todayIso, tomorrowIso } = ukNowInfo();
+function filterRacesClient(
+  races = [],
+  { region = '', day = '', dateFrom = '', dateTo = '', raceType = '', search = '', includePast = false, fallbackToMatched = false } = {}
+) {
+  const { todayIso, tomorrowIso, dayPlus2Iso } = ukNowInfo();
   let list = [...races];
   const reg = String(region || '').trim().toUpperCase();
   const d = String(day || '').trim().toLowerCase();
+  let dFrom = cleanIsoDateClient(dateFrom);
+  let dTo = cleanIsoDateClient(dateTo);
+  if (dFrom && dTo && dFrom > dTo) {
+    [dFrom, dTo] = [dTo, dFrom];
+  }
+  const explicitDate = cleanIsoDateClient(d);
   const rt = String(raceType || '').trim().toLowerCase();
   const q = String(search || '').trim().toLowerCase();
 
-  if (d === 'today') list = list.filter((r) => r.race_date === todayIso);
-  else if (d === 'tomorrow') list = list.filter((r) => r.race_date === tomorrowIso);
-  else if (!includePast) {
+  let matched = null;
+  if (dFrom || dTo) {
+    matched = list.filter((r) => {
+      const rd = String(r.race_date || '').slice(0, 10);
+      return (!dFrom || rd >= dFrom) && (!dTo || rd <= dTo);
+    });
+  } else if (d === 'today') {
+    matched = list.filter((r) => r.race_date === todayIso);
+  } else if (d === 'tomorrow') {
+    matched = list.filter((r) => r.race_date === tomorrowIso);
+  } else if (d === 'next_2' || d === '2d') {
+    matched = list.filter((r) => r.race_date >= todayIso && r.race_date <= tomorrowIso);
+  } else if (d === 'next_3' || d === '3d') {
+    matched = list.filter((r) => r.race_date >= todayIso && r.race_date <= dayPlus2Iso);
+  } else if (explicitDate) {
+    matched = list.filter((r) => r.race_date === explicitDate);
+  }
+
+  if (matched !== null) {
+    if (includePast) {
+      list = matched;
+    } else {
+      const up = matched.filter((r) => isRaceUpcomingClient(r));
+      list = up.length ? up : fallbackToMatched ? matched : [];
+    }
+  } else if (!includePast) {
     const up = list.filter((r) => isRaceUpcomingClient(r));
     if (up.length) list = up;
   }
@@ -597,6 +658,123 @@ function filterRacesClient(races = [], { region = '', day = '', raceType = '', s
     });
   }
   return list;
+}
+
+function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '', dateTo = '' } = {}) {
+  const allTips = [...(tipsPool || [])];
+  const dayNorm = String(day || '').trim().toLowerCase();
+  const hasCustom = Boolean(cleanIsoDateClient(dateFrom) || cleanIsoDateClient(dateTo));
+  const isDefaultToday = !hasCustom && ['', 'all', 'today'].includes(dayNorm);
+  const napTitle = isDefaultToday ? "Today's NAP Single" : 'NAP Win Single';
+  const l15Base = isDefaultToday ? 'Daily Lucky 15' : 'Lucky 15';
+
+  const winPool = allTips.filter((t) => t.market === 'R_WIN');
+  const ewPool = allTips.filter((t) => t.market === 'R_EW');
+  const plcPool = allTips.filter((t) => t.market === 'R_PLC');
+
+  const pickDistinct = (pool, count) => {
+    const seen = new Set();
+    const out = [];
+    for (const item of pool) {
+      if (seen.has(item.race_id)) continue;
+      seen.add(item.race_id);
+      out.push(tipToLegClient(item));
+      if (out.length >= count) break;
+    }
+    return out;
+  };
+
+  const cards = [];
+
+  const napLegs = pickDistinct(winPool.length ? winPool : allTips, 1);
+  if (napLegs.length) {
+    const ev = evaluateRacingMultipleClient(napLegs, 'single', false, 10.0);
+    cards.push({
+      id: 'nap_single',
+      title: napTitle,
+      badge: '🏆 Top Rated Win',
+      subtitle: `${napLegs[0].off_time} ${napLegs[0].course} • Best rating & edge on card`,
+      structure: 'single',
+      each_way: false,
+      unit_stake: 10.0,
+      legs: napLegs,
+      eval: ev,
+      bet_reasons: buildRacingBetReasonsClient(napTitle, napLegs, ev, false),
+      bet365_export: buildRacingBet365ExportClient(napLegs, 'single', false, 10.0, napTitle),
+    });
+  }
+
+  const ewDoubleLegs = pickDistinct(ewPool.length >= 2 ? ewPool : winPool, 2);
+  if (ewDoubleLegs.length >= 2) {
+    const isEw = ewDoubleLegs.every((l) => Boolean(l.ew_eligible));
+    const ev = evaluateRacingMultipleClient(ewDoubleLegs, 'double', isEw, 5.0);
+    cards.push({
+      id: 'ew_double',
+      title: 'Each-Way Value Double',
+      badge: isEw ? '⚖️ Each-Way Double' : '🏆 Win Double',
+      subtitle: '2 value runners at generous odds with strong place equity',
+      structure: 'double',
+      each_way: isEw,
+      unit_stake: 5.0,
+      legs: ewDoubleLegs,
+      eval: ev,
+      bet_reasons: buildRacingBetReasonsClient('Each-Way Value Double', ewDoubleLegs, ev, isEw),
+      bet365_export: buildRacingBet365ExportClient(ewDoubleLegs, 'double', isEw, 5.0, 'Each-Way Value Double'),
+    });
+  }
+
+  const treblePool = plcPool.length >= 3 ? plcPool : winPool;
+  const trebleLegs = pickDistinct(treblePool, 3);
+  if (trebleLegs.length >= 3) {
+    const ev = evaluateRacingMultipleClient(trebleLegs, 'treble', false, 5.0);
+    cards.push({
+      id: 'win_place_treble',
+      title: 'Win / Place Treble',
+      badge: '🎯 High-Hit Treble',
+      subtitle: '3 distinct races anchored by strong Top-3 finishers',
+      structure: 'treble',
+      each_way: false,
+      unit_stake: 5.0,
+      legs: trebleLegs,
+      eval: ev,
+      bet_reasons: buildRacingBetReasonsClient('Win / Place Treble', trebleLegs, ev, false),
+      bet365_export: buildRacingBet365ExportClient(trebleLegs, 'treble', false, 5.0, 'Win / Place Treble'),
+    });
+  }
+
+  const l15Pool =
+    ewPool.length >= 4
+      ? ewPool
+      : [...winPool, ...ewPool].sort(
+          (a, b) => Number(b.model_rating || 0) - Number(a.model_rating || 0) || Number(b.model_win_prob_pct || 0) - Number(a.model_win_prob_pct || 0)
+        );
+  let l15Legs = pickDistinct(l15Pool, 4);
+  if (l15Legs.length < 4) l15Legs = pickDistinct(allTips, 4);
+  if (l15Legs.length >= 4) {
+    const avgOdds = l15Legs.reduce((acc, l) => acc + Number(l.win_odds || 2), 0) / 4.0;
+    const ewL15 = avgOdds >= 4.0 && l15Legs.every((l) => Boolean(l.ew_eligible));
+    const l15Title = `${l15Base}${ewL15 ? ' (E/W)' : ' (Win)'}`;
+    const ev = evaluateRacingMultipleClient(l15Legs, 'lucky15', ewL15, 1.0);
+    cards.push({
+      id: 'daily_lucky15',
+      title: l15Title,
+      badge: ewL15 ? '🍀 Lucky 15 (30 Bets)' : '🍀 Lucky 15 (15 Bets)',
+      subtitle: '4 Singles, 6 Doubles, 4 Trebles & 4-Fold Acca across 4 races',
+      structure: 'lucky15',
+      each_way: ewL15,
+      unit_stake: 1.0,
+      legs: l15Legs,
+      eval: ev,
+      bet_reasons: buildRacingBetReasonsClient(l15Base, l15Legs, ev, ewL15),
+      bet365_export: buildRacingBet365ExportClient(l15Legs, 'lucky15', ewL15, 1.0, l15Base),
+    });
+  }
+
+  return {
+    cards,
+    structures: RACING_MULTIPLES_CLIENT,
+    total_pool_tips: allTips.length,
+  };
 }
 
 async function loadRacingSnapshot(forceReload = false) {
@@ -767,10 +945,13 @@ export async function racingStaticApi(path, opts = {}) {
   });
 
   const allTips = (snap.tips || []).map((t) => applyCustomOddsToRunner(hydrateCompactRunner(t), customOdds));
+  const upcomingRacesAll = allRaces.filter((r) => isRaceUpcomingClient(r));
+  const availableDates = [
+    ...new Set((upcomingRacesAll.length ? upcomingRacesAll : allRaces).map((r) => r.race_date).filter(Boolean)),
+  ].sort();
 
   if (pathname === '/api/racing/overview') {
-    const upcoming = allRaces.filter((r) => isRaceUpcomingClient(r));
-    const active = upcoming.length ? upcoming : allRaces;
+    const active = upcomingRacesAll.length ? upcomingRacesAll : allRaces;
     const byRegion = {};
     const meetings = new Set();
     let liveCount = 0;
@@ -786,12 +967,13 @@ export async function racingStaticApi(path, opts = {}) {
       counts: {
         ...(snap.overview?.counts || {}),
         races_total: allRaces.length,
-        upcoming_races: upcoming.length,
+        upcoming_races: upcomingRacesAll.length,
         active_races: active.length,
         meetings_count: meetings.size,
         live_odds_races: liveCount,
       },
       by_region: byRegion,
+      available_dates: availableDates,
       news: snap.news || snap.overview?.news || [],
       generated_at: snap.generated_at,
     };
@@ -801,9 +983,12 @@ export async function racingStaticApi(path, opts = {}) {
     const filteredRaces = filterRacesClient(allRaces, {
       region: query.get('region') || '',
       day: query.get('day') || '',
+      dateFrom: query.get('date_from') || '',
+      dateTo: query.get('date_to') || '',
       raceType: query.get('race_type') || '',
       search: query.get('search') || '',
       includePast: query.get('include_past') === '1',
+      fallbackToMatched: true,
     });
     const mMap = new Map();
     for (const rc of filteredRaces) {
@@ -845,6 +1030,7 @@ export async function racingStaticApi(path, opts = {}) {
       races: filteredRaces,
       total_races: filteredRaces.length,
       regions: snap.overview?.regions || {},
+      available_dates: availableDates,
     };
   }
 
@@ -878,18 +1064,28 @@ export async function racingStaticApi(path, opts = {}) {
     const region = (query.get('region') || '').trim().toUpperCase();
     const betType = (query.get('bet_type') || '').trim().toUpperCase();
     const day = (query.get('day') || '').trim().toLowerCase();
+    const dateFrom = (query.get('date_from') || '').trim();
+    const dateTo = (query.get('date_to') || '').trim();
     const raceType = (query.get('race_type') || '').trim().toLowerCase();
-    const limit = Math.max(1, Math.min(160, Number(query.get('limit') || 60)));
+    const limit = Math.max(1, Math.min(400, Number(query.get('limit') || 60)));
 
     const matchingRaceIds = new Set(
-      filterRacesClient(allRaces, { region, day, raceType, includePast: false }).map((r) => Number(r.id))
+      filterRacesClient(allRaces, {
+        region,
+        day,
+        dateFrom,
+        dateTo,
+        raceType,
+        includePast: false,
+        fallbackToMatched: false,
+      }).map((r) => Number(r.id))
     );
     let tips = allTips.filter((t) => matchingRaceIds.has(Number(t.race_id)));
     if (betType && betType !== 'ALL') {
       const btNorm = betType === 'WIN' ? 'R_WIN' : betType === 'EW' ? 'R_EW' : betType === 'PLC' ? 'R_PLC' : betType;
       tips = tips.filter((t) => t.market === btNorm);
     }
-    return { tips: tips.slice(0, limit), total: tips.length };
+    return { tips: tips.slice(0, limit), total: tips.length, available_dates: availableDates };
   }
 
   if (pathname === '/api/racing/evaluate-multiple' && method === 'POST') {
@@ -901,26 +1097,28 @@ export async function racingStaticApi(path, opts = {}) {
   }
 
   if (pathname === '/api/racing/suggest-bet') {
-    const base = snap.suggest_bet ? JSON.parse(JSON.stringify(snap.suggest_bet)) : { cards: [], structures: RACING_MULTIPLES_CLIENT };
-    const upcomingIds = new Set(filterRacesClient(allRaces, { includePast: false }).map((r) => Number(r.id)));
-    const tipMap = new Map(allTips.map((t) => [`${t.runner_id}:${t.market}`, t]));
-    base.cards = (base.cards || [])
-      .map((card) => {
-        const legs = (card.legs || [])
-          .filter((l) => !upcomingIds.size || upcomingIds.has(Number(l.race_id)))
-          .map((l) => tipMap.get(`${l.runner_id}:${l.market}`) || applyCustomOddsToRunner(l, customOdds));
-        if (!legs.length) return null;
-        const ev = evaluateRacingMultipleClient(legs, card.structure, Boolean(card.each_way), Number(card.unit_stake || 1));
-        return {
-          ...card,
-          legs,
-          eval: ev,
-          bet_reasons: buildRacingBetReasonsClient(card.title, legs, ev, Boolean(card.each_way)),
-          bet365_export: buildRacingBet365ExportClient(legs, card.structure, Boolean(card.each_way), Number(card.unit_stake || 1), card.title),
-        };
-      })
-      .filter(Boolean);
-    return base;
+    const region = (query.get('region') || '').trim().toUpperCase();
+    const day = (query.get('day') || '').trim().toLowerCase();
+    const dateFrom = (query.get('date_from') || '').trim();
+    const dateTo = (query.get('date_to') || '').trim();
+    const raceType = (query.get('race_type') || '').trim().toLowerCase();
+    const matchingRaceIds = new Set(
+      filterRacesClient(allRaces, {
+        region,
+        day,
+        dateFrom,
+        dateTo,
+        raceType,
+        includePast: false,
+        fallbackToMatched: false,
+      }).map((r) => Number(r.id))
+    );
+    const filteredTips = allTips.filter((t) => matchingRaceIds.has(Number(t.race_id)));
+    const built = buildRacingSuggestionsClient(filteredTips, { day, dateFrom, dateTo });
+    return {
+      ...built,
+      available_dates: availableDates,
+    };
   }
 
   if (pathname === '/api/racing/suggest-bet/build' && method === 'POST') {
@@ -941,9 +1139,12 @@ export async function racingStaticApi(path, opts = {}) {
     const raceIds = new Set(
       filterRacesClient(allRaces, {
         region: body.region || 'ALL',
-        day: body.day || 'ALL',
+        day: body.day || 'all',
+        dateFrom: body.date_from || '',
+        dateTo: body.date_to || '',
         raceType: body.race_type || 'ALL',
         includePast: false,
+        fallbackToMatched: false,
       }).map((r) => Number(r.id))
     );
     let pool = allTips.filter((t) => raceIds.has(Number(t.race_id)));
@@ -976,6 +1177,7 @@ export async function racingStaticApi(path, opts = {}) {
         requested_legs: reqLegs,
         excluded_count: exclSets.raceKeys.size,
         available_pool_count: 0,
+        available_dates: availableDates,
         notice: 'No matching runners found for these criteria — try widening regions, dates, or exclusions.',
       };
     }
@@ -1032,6 +1234,7 @@ export async function racingStaticApi(path, opts = {}) {
       requested_legs: reqLegs,
       excluded_count: exclSets.raceKeys.size,
       available_pool_count: filtered.length,
+      available_dates: availableDates,
       notice,
     };
   }
@@ -1078,10 +1281,18 @@ export function initRacingModule(ctx) {
   const savedMultiPrefs = getStorageSafe(RACING_MULTI_PREFS_KEY, {});
   const savedSuggest = getStorageSafe(RACING_SUGGEST_KEY, {});
 
+  const normalizedSavedDay = (() => {
+    const rawDay = String(savedSuggest.day || '').trim().toLowerCase();
+    return ['all', 'today', 'tomorrow', 'next_2', 'next_3', 'custom'].includes(rawDay) ? rawDay : 'all';
+  })();
+
   const rState = {
     overview: null,
     region: 'ALL',
     day: 'all',
+    dateFrom: '',
+    dateTo: '',
+    availableDates: [],
     raceType: 'all',
     search: '',
     selectedRaceId: null,
@@ -1103,7 +1314,9 @@ export function initRacingModule(ctx) {
       legsCount: Math.max(2, Math.min(6, Number(savedSuggest.legsCount || 4))),
       numBets: Math.max(1, Math.min(3, Number(savedSuggest.numBets || 1))),
       region: savedSuggest.region || 'ALL',
-      day: savedSuggest.day || 'ALL',
+      day: normalizedSavedDay,
+      dateFrom: cleanIsoDateClient(savedSuggest.dateFrom || ''),
+      dateTo: cleanIsoDateClient(savedSuggest.dateTo || ''),
       raceType: savedSuggest.raceType || 'ALL',
       excludeAlreadyBet: savedSuggest.excludeAlreadyBet !== undefined ? Boolean(savedSuggest.excludeAlreadyBet) : true,
       excludeScope: savedSuggest.excludeScope === 'runner' ? 'runner' : 'race',
@@ -1136,10 +1349,58 @@ export function initRacingModule(ctx) {
       numBets: s.numBets,
       region: s.region,
       day: s.day,
+      dateFrom: s.dateFrom,
+      dateTo: s.dateTo,
       raceType: s.raceType,
       excludeAlreadyBet: s.excludeAlreadyBet,
       excludeScope: s.excludeScope,
     });
+  }
+
+  function getRacingDateBounds() {
+    const dates = [...(rState.availableDates || [])].filter(Boolean).sort();
+    const { todayIso, dayPlus2Iso } = ukNowInfo();
+    return {
+      dates,
+      minDate: dates[0] || todayIso,
+      maxDate: dates[dates.length - 1] || dayPlus2Iso,
+    };
+  }
+
+  function ensureCustomDateBounds(targetObj) {
+    const { minDate, maxDate } = getRacingDateBounds();
+    if (!cleanIsoDateClient(targetObj.dateFrom)) targetObj.dateFrom = minDate;
+    if (!cleanIsoDateClient(targetObj.dateTo)) targetObj.dateTo = maxDate;
+    if (targetObj.dateFrom > targetObj.dateTo) {
+      const tmp = targetObj.dateFrom;
+      targetObj.dateFrom = targetObj.dateTo;
+      targetObj.dateTo = tmp;
+    }
+  }
+
+  function appendDateRangeParams(params, day, dateFrom, dateTo) {
+    const dNorm = String(day || 'all').trim().toLowerCase();
+    if (dNorm && dNorm !== 'all') {
+      params.set('day', dNorm);
+    }
+    if (dNorm === 'custom') {
+      const df = cleanIsoDateClient(dateFrom);
+      const dt = cleanIsoDateClient(dateTo);
+      if (df) params.set('date_from', df);
+      if (dt) params.set('date_to', dt);
+    }
+  }
+
+  function updateAvailableDatesFromPayload(payload) {
+    if (Array.isArray(payload?.available_dates) && payload.available_dates.length) {
+      rState.availableDates = [...payload.available_dates].filter(Boolean).sort();
+    }
+  }
+
+  function formatDateSpanHint(dates = []) {
+    if (!dates.length) return '';
+    if (dates.length === 1) return formatShortRacingDate(dates[0]);
+    return `${formatShortRacingDate(dates[0])} – ${formatShortRacingDate(dates[dates.length - 1])}`;
   }
 
   function saveRacingSlip() {
@@ -1360,9 +1621,96 @@ export function initRacingModule(ctx) {
     return `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${cls}">${esc(t)}</span>`;
   }
 
+  function renderRacingDateControlsHtml({
+    attrName = 'data-r-day',
+    idPrefix = 'rc-date',
+    day = 'all',
+    dateFrom = '',
+    dateTo = '',
+    availableDates = [],
+    compact = false,
+  }) {
+    const { dates, minDate, maxDate } = getRacingDateBounds();
+    const spanDates = availableDates.length ? availableDates : dates;
+    const spanHint = formatDateSpanHint(spanDates);
+    const activeDay = String(day || 'all').toLowerCase();
+    const curFrom = cleanIsoDateClient(dateFrom) || minDate;
+    const curTo = cleanIsoDateClient(dateTo) || maxDate;
+
+    return `
+      <div class="space-y-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-1 rounded-xl bg-slate-950 border border-slate-800 p-1">
+            ${RACING_DATE_PRESETS.map(
+              ([dCode, dLbl]) => `
+              <button type="button" ${attrName}="${dCode}" class="px-2.5 py-1 rounded-lg font-semibold transition ${
+                activeDay === dCode
+                  ? 'bg-emerald-500 text-slate-950 font-extrabold shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }">${dLbl}</button>`
+            ).join('')}
+          </div>
+          ${spanHint && !compact ? `<span class="text-[11px] text-slate-400 font-medium">Available: <b class="text-slate-200">${esc(spanHint)}</b></span>` : ''}
+        </div>
+        ${activeDay === 'custom'
+          ? `<div class="flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 text-xs">
+              <label class="flex items-center gap-1.5 text-slate-300 font-semibold">
+                <span>From:</span>
+                <input id="${idPrefix}-from" type="date" value="${esc(curFrom)}" min="${esc(minDate)}" max="${esc(maxDate)}" class="bg-panel border border-slate-700 rounded-lg px-2 py-1 text-white font-mono" />
+              </label>
+              <label class="flex items-center gap-1.5 text-slate-300 font-semibold">
+                <span>To:</span>
+                <input id="${idPrefix}-to" type="date" value="${esc(curTo)}" min="${esc(minDate)}" max="${esc(maxDate)}" class="bg-panel border-slate-700 rounded-lg px-2 py-1 text-white font-mono border" />
+              </label>
+              <button id="${idPrefix}-reset" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-semibold">Reset</button>
+              ${spanHint && compact ? `<span class="text-[11px] text-slate-400 ml-auto">${esc(spanHint)}</span>` : ''}
+            </div>`
+          : ''}
+      </div>
+    `;
+  }
+
+  function bindRacingDateControls(rootEl, { attrName, idPrefix, targetObj, onUpdate }) {
+    if (!rootEl) return;
+    rootEl.querySelectorAll(`[${attrName}]`).forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const nextDay = btn.getAttribute(attrName) || 'all';
+        targetObj.day = nextDay;
+        if (nextDay === 'custom') {
+          ensureCustomDateBounds(targetObj);
+        }
+        onUpdate();
+      })
+    );
+    const fromEl = document.getElementById(`${idPrefix}-from`);
+    const toEl = document.getElementById(`${idPrefix}-to`);
+    const resetEl = document.getElementById(`${idPrefix}-reset`);
+    fromEl?.addEventListener('change', (e) => {
+      targetObj.dateFrom = cleanIsoDateClient(e.target.value);
+      if (targetObj.dateFrom && targetObj.dateTo && targetObj.dateFrom > targetObj.dateTo) {
+        targetObj.dateTo = targetObj.dateFrom;
+      }
+      onUpdate();
+    });
+    toEl?.addEventListener('change', (e) => {
+      targetObj.dateTo = cleanIsoDateClient(e.target.value);
+      if (targetObj.dateFrom && targetObj.dateTo && targetObj.dateTo < targetObj.dateFrom) {
+        targetObj.dateFrom = targetObj.dateTo;
+      }
+      onUpdate();
+    });
+    resetEl?.addEventListener('click', () => {
+      targetObj.day = 'all';
+      targetObj.dateFrom = '';
+      targetObj.dateTo = '';
+      onUpdate();
+    });
+  }
+
   async function refreshOverview() {
     try {
       rState.overview = await api('/api/racing/overview');
+      updateAvailableDatesFromPayload(rState.overview);
       const kpiEl = document.getElementById('kpi-strip');
       if (kpiEl && state.activeSport === 'racing' && rState.overview) {
         const c = rState.overview.counts || {};
@@ -1579,7 +1927,7 @@ export function initRacingModule(ctx) {
 
     const q = new URLSearchParams();
     if (rState.region !== 'ALL') q.set('region', rState.region);
-    if (rState.day !== 'all') q.set('day', rState.day);
+    appendDateRangeParams(q, rState.day, rState.dateFrom, rState.dateTo);
     if (rState.raceType !== 'all') q.set('race_type', rState.raceType);
     if (rState.search) q.set('search', rState.search);
 
@@ -1587,6 +1935,7 @@ export function initRacingModule(ctx) {
       api(`/api/racing/cards${q.toString() ? `?${q.toString()}` : ''}`),
       refreshOverview(),
     ]);
+    updateAvailableDatesFromPayload(cardsRes);
 
     const rawMeetings = cardsRes.meetings || [];
     const regionOrder = (rc) => (rc === 'GB' || rc === 'IRE' ? 0 : rc === 'FR' ? 1 : 2);
@@ -1627,37 +1976,29 @@ export function initRacingModule(ctx) {
               }">${label}</button>`
             ).join('')}
           </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <div class="flex rounded-xl bg-slate-950 border border-slate-800 p-0.5">
-              ${[
-                ['all', 'All Upcoming'],
-                ['today', 'Today'],
-                ['tomorrow', 'Tomorrow'],
-              ]
-                .map(
-                  ([dCode, dLbl]) => `
-                  <button type="button" data-r-day="${dCode}" class="px-2.5 py-1 rounded-lg font-semibold transition ${
-                    rState.day === dCode ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-400 hover:text-white'
-                  }">${dLbl}</button>`
-                )
-                .join('')}
-            </div>
-            <div class="flex rounded-xl bg-slate-950 border border-slate-800 p-0.5">
-              ${[
-                ['all', 'All Codes'],
-                ['flat', 'Flat'],
-                ['jumps', 'Jumps'],
-              ]
-                .map(
-                  ([tCode, tLbl]) => `
-                  <button type="button" data-r-type="${tCode}" class="px-2.5 py-1 rounded-lg font-semibold transition ${
-                    rState.raceType === tCode ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-400 hover:text-white'
-                  }">${tLbl}</button>`
-                )
-                .join('')}
-            </div>
+          <div class="flex rounded-xl bg-slate-950 border border-slate-800 p-0.5">
+            ${[
+              ['all', 'All Codes'],
+              ['flat', 'Flat'],
+              ['jumps', 'Jumps'],
+            ]
+              .map(
+                ([tCode, tLbl]) => `
+                <button type="button" data-r-type="${tCode}" class="px-2.5 py-1 rounded-lg font-semibold transition ${
+                  rState.raceType === tCode ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-400 hover:text-white'
+                }">${tLbl}</button>`
+              )
+              .join('')}
           </div>
         </div>
+        ${renderRacingDateControlsHtml({
+          attrName: 'data-r-day',
+          idPrefix: 'rc-date',
+          day: rState.day,
+          dateFrom: rState.dateFrom,
+          dateTo: rState.dateTo,
+          availableDates: rState.availableDates,
+        })}
         <div class="flex items-center gap-2">
           <input id="rc-search-input" type="search" value="${esc(rState.search)}" placeholder="Search course, horse name, jockey or trainer..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-400" />
           <span class="text-slate-400 shrink-0 font-mono">${races.length} races</span>
@@ -1747,12 +2088,12 @@ export function initRacingModule(ctx) {
         renderRacingCardsTab();
       })
     );
-    main.querySelectorAll('[data-r-day]').forEach((btn) =>
-      btn.addEventListener('click', () => {
-        rState.day = btn.dataset.rDay;
-        renderRacingCardsTab();
-      })
-    );
+    bindRacingDateControls(main, {
+      attrName: 'data-r-day',
+      idPrefix: 'rc-date',
+      targetObj: rState,
+      onUpdate: renderRacingCardsTab,
+    });
     main.querySelectorAll('[data-r-type]').forEach((btn) =>
       btn.addEventListener('click', () => {
         rState.raceType = btn.dataset.rType;
@@ -1820,13 +2161,14 @@ export function initRacingModule(ctx) {
     const main = document.getElementById('main-content');
     main.innerHTML = '<div class="text-slate-400 text-sm py-8 text-center">Scoring racing value tips &amp; place locks...</div>';
 
-    const q = new URLSearchParams({ limit: '80' });
+    const q = new URLSearchParams({ limit: '160' });
     if (rState.region !== 'ALL') q.set('region', rState.region);
-    if (rState.day !== 'all') q.set('day', rState.day);
+    appendDateRangeParams(q, rState.day, rState.dateFrom, rState.dateTo);
     if (rState.raceType !== 'all') q.set('race_type', rState.raceType);
     if (rState.tipType !== 'ALL') q.set('bet_type', rState.tipType);
 
     const [tipsRes] = await Promise.all([api(`/api/racing/tips?${q.toString()}`), refreshOverview()]);
+    updateAvailableDatesFromPayload(tipsRes);
     const tips = tipsRes.tips || [];
     const tipByKey = new Map(tips.map((t) => [String(t.tip_id), t]));
     const exclSets = racingExclusionSetsClient(collectExcludedRacingLegs());
@@ -1834,37 +2176,47 @@ export function initRacingModule(ctx) {
     main.innerHTML = `
       <div>
         <h2 class="text-xl font-bold text-white">💎 Top Racing Tips</h2>
-        <p class="text-xs text-slate-400">Ranked Win, Each-Way &amp; Place picks • Compare estimated vs live Bet365 odds</p>
+        <p class="text-xs text-slate-400">Ranked Win, Each-Way &amp; Place picks • Filter by Date Range, Region &amp; Bet Type</p>
       </div>
 
-      <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/80 text-xs">
-        <div class="flex flex-wrap gap-1.5">
-          ${[
-            ['ALL', '🔥 All Tips'],
-            ['R_WIN', '🏆 Win Tips'],
-            ['R_EW', '⚖️ Each-Way Value'],
-            ['R_PLC', '🎯 Place Locks'],
-          ]
-            .map(
-              ([bt, lbl]) => `
-              <button type="button" data-rt-type="${bt}" class="px-3 py-1.5 rounded-xl font-extrabold border transition ${
-                rState.tipType === bt
-                  ? 'bg-emerald-500 text-slate-950 border-emerald-400'
-                  : 'bg-panel border-slate-700 text-slate-300 hover:text-white'
-              }">${lbl}</button>`
-            )
-            .join('')}
+      <div class="bg-panel border border-slate-800/80 rounded-2xl p-3.5 space-y-3 text-xs">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap gap-1.5">
+            ${[
+              ['ALL', '🔥 All Tips'],
+              ['R_WIN', '🏆 Win Tips'],
+              ['R_EW', '⚖️ Each-Way Value'],
+              ['R_PLC', '🎯 Place Locks'],
+            ]
+              .map(
+                ([bt, lbl]) => `
+                <button type="button" data-rt-type="${bt}" class="px-3 py-1.5 rounded-xl font-extrabold border transition ${
+                  rState.tipType === bt
+                    ? 'bg-emerald-500 text-slate-950 border-emerald-400'
+                    : 'bg-card border-slate-700 text-slate-300 hover:text-white'
+                }">${lbl}</button>`
+              )
+              .join('')}
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            ${REGION_FILTER_OPTIONS.map(
+              ([code, label]) => `
+              <button type="button" data-rt-region="${code}" class="px-2.5 py-1 rounded-full font-semibold border transition ${
+                rState.region === code
+                  ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/70'
+                  : 'bg-card text-slate-400 border-slate-800 hover:text-white'
+              }">${label}</button>`
+            ).join('')}
+          </div>
         </div>
-        <div class="flex flex-wrap gap-1.5">
-          ${REGION_FILTER_OPTIONS.map(
-            ([code, label]) => `
-            <button type="button" data-rt-region="${code}" class="px-2.5 py-1 rounded-full font-semibold border transition ${
-              rState.region === code
-                ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/70'
-                : 'bg-panel text-slate-400 border-slate-800 hover:text-white'
-            }">${label}</button>`
-          ).join('')}
-        </div>
+        ${renderRacingDateControlsHtml({
+          attrName: 'data-rt-day',
+          idPrefix: 'rt-date',
+          day: rState.day,
+          dateFrom: rState.dateFrom,
+          dateTo: rState.dateTo,
+          availableDates: rState.availableDates,
+        })}
       </div>
 
       ${tips.length
@@ -1885,7 +2237,7 @@ export function initRacingModule(ctx) {
                           <span>${esc(t.region_flag || '🏇')}</span>
                           <b class="text-white break-words">${esc(t.course)}</b>
                           <span class="font-mono text-amber-300 font-bold">${esc(t.off_time)}</span>
-                          <span>• ${esc(t.race_date)}</span>
+                          <span>• ${esc(formatShortRacingDate(t.race_date))}</span>
                           <span>• ${esc(t.race_type)}</span>
                         </div>
                         <div class="text-base font-extrabold text-white mt-0.5 break-words leading-snug">#${t.saddle_cloth} ${esc(t.horse_name)}</div>
@@ -1937,10 +2289,25 @@ export function initRacingModule(ctx) {
               })
               .join('')}
           </div>`
-        : '<div class="p-8 rounded-2xl bg-card border border-slate-800 text-sm text-slate-400 text-center">No tips match the current filters — widen Region or Bet Type above.</div>'
+        : `<div class="p-8 rounded-2xl bg-card border border-slate-800 text-sm text-slate-400 text-center space-y-3">
+            <div>No tips match the current filters — widen Date Range, Region, or Bet Type above.</div>
+            ${rState.day !== 'all' ? '<button id="rt-empty-reset-date" type="button" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-cyan-300">Show All Upcoming Dates</button>' : ''}
+          </div>`
       }
     `;
 
+    bindRacingDateControls(main, {
+      attrName: 'data-rt-day',
+      idPrefix: 'rt-date',
+      targetObj: rState,
+      onUpdate: renderRacingTipsTab,
+    });
+    document.getElementById('rt-empty-reset-date')?.addEventListener('click', () => {
+      rState.day = 'all';
+      rState.dateFrom = '';
+      rState.dateTo = '';
+      renderRacingTipsTab();
+    });
     main.querySelectorAll('[data-rt-type]').forEach((btn) =>
       btn.addEventListener('click', () => {
         rState.tipType = btn.dataset.rtType;
@@ -2276,21 +2643,52 @@ export function initRacingModule(ctx) {
     if (!modal || !body) return;
 
     titleEl.textContent = '✨ Suggest a Horse Racing Bet';
-    subEl.textContent = 'Custom UK Multiples (Lucky 15, Yankee, Trixie, Patent) & Daily Racing Cards';
+    subEl.textContent = 'Custom UK Multiples (Lucky 15, Yankee, Trixie, Patent) & Curated Racing Cards by Date Range';
     modal.classList.remove('hidden');
-    body.innerHTML = '<div class="text-sm text-slate-400 py-8 text-center">Analysing today &amp; tomorrow’s racecards...</div>';
+    body.innerHTML = '<div class="text-sm text-slate-400 py-8 text-center">Analysing upcoming racecards...</div>';
+
+    if (!rState.availableDates.length) {
+      await refreshOverview();
+    }
 
     const sb = rState.suggest;
     const renderModalContent = async () => {
       const excludedList = sb.excludeAlreadyBet ? collectExcludedRacingLegs() : [];
       if (sb.mode === 'quick') {
-        const res = await api('/api/racing/suggest-bet');
+        const q = new URLSearchParams();
+        if (sb.region && sb.region !== 'ALL') q.set('region', sb.region);
+        appendDateRangeParams(q, sb.day, sb.dateFrom, sb.dateTo);
+        const res = await api(`/api/racing/suggest-bet${q.toString() ? `?${q.toString()}` : ''}`);
+        updateAvailableDatesFromPayload(res);
         const cards = res.cards || [];
         body.innerHTML = `
-          <div class="flex gap-2 border-b border-slate-800 pb-3 text-xs">
+          <div class="flex flex-wrap gap-2 border-b border-slate-800 pb-3 text-xs">
             <button type="button" data-rs-mode="custom" class="px-3.5 py-2 rounded-xl bg-card border border-slate-700 text-slate-300 font-bold">🛠️ Custom Racing Builder</button>
-            <button type="button" data-rs-mode="quick" class="px-3.5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-extrabold">⚡ Quick Daily Cards (${cards.length})</button>
+            <button type="button" data-rs-mode="quick" class="px-3.5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-extrabold">⚡ Quick Racing Cards (${cards.length})</button>
           </div>
+
+          <div class="p-3 rounded-2xl bg-panel border border-slate-800 space-y-2.5 text-xs">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Filter Cards by Date &amp; Region</span>
+              <select id="rq-region" class="bg-card border border-slate-700 rounded-xl px-2.5 py-1.5 text-white text-xs">
+                <option value="ALL" ${sb.region === 'ALL' ? 'selected' : ''}>🌍 All Regions</option>
+                <option value="UK_IRE" ${sb.region === 'UK_IRE' ? 'selected' : ''}>🇬🇧 UK &amp; Ireland</option>
+                <option value="FR" ${sb.region === 'FR' ? 'selected' : ''}>🇫🇷 France</option>
+                <option value="US" ${sb.region === 'US' ? 'selected' : ''}>🇺🇸 USA</option>
+                <option value="AU" ${sb.region === 'AU' ? 'selected' : ''}>🇦🇺 Australia</option>
+              </select>
+            </div>
+            ${renderRacingDateControlsHtml({
+              attrName: 'data-rq-day',
+              idPrefix: 'rq-date',
+              day: sb.day,
+              dateFrom: sb.dateFrom,
+              dateTo: sb.dateTo,
+              availableDates: rState.availableDates,
+              compact: true,
+            })}
+          </div>
+
           ${cards.length
             ? `<div class="space-y-4">
                 ${cards
@@ -2318,7 +2716,7 @@ export function initRacingModule(ctx) {
                               <div class="p-2 rounded-xl bg-panel border border-slate-800/90 flex items-center justify-between gap-2">
                                 <div class="min-w-0 flex-1 break-words leading-snug">
                                   <span class="font-bold text-white">#${l.saddle_cloth} ${esc(l.horse_name)}</span>
-                                  <span class="text-slate-400"> • ${esc(l.off_time)} ${esc(l.course)}</span>
+                                  <span class="text-slate-400"> • ${esc(l.off_time)} ${esc(l.course)} • ${esc(formatShortRacingDate(l.race_date))}</span>
                                 </div>
                                 <span class="font-mono font-bold text-amber-300 shrink-0">${esc(l.odds_fractional)}</span>
                               </div>`
@@ -2335,9 +2733,34 @@ export function initRacingModule(ctx) {
                   })
                   .join('')}
               </div>`
-            : '<div class="p-6 text-center text-xs text-slate-400">No quick cards available right now.</div>'
+            : `<div class="p-6 rounded-2xl bg-card border border-slate-800 text-center text-xs text-slate-400 space-y-2.5">
+                <div>No quick cards available for the selected date range or region.</div>
+                ${(sb.day !== 'all' || sb.region !== 'ALL') ? '<button id="rq-empty-reset" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold">Reset Date &amp; Region Filters</button>' : ''}
+              </div>`
           }
         `;
+        bindRacingDateControls(body, {
+          attrName: 'data-rq-day',
+          idPrefix: 'rq-date',
+          targetObj: sb,
+          onUpdate: () => {
+            persistSuggestPrefs();
+            renderModalContent();
+          },
+        });
+        document.getElementById('rq-region')?.addEventListener('change', (e) => {
+          sb.region = e.target.value;
+          persistSuggestPrefs();
+          renderModalContent();
+        });
+        document.getElementById('rq-empty-reset')?.addEventListener('click', () => {
+          sb.day = 'all';
+          sb.dateFrom = '';
+          sb.dateTo = '';
+          sb.region = 'ALL';
+          persistSuggestPrefs();
+          renderModalContent();
+        });
         body.querySelectorAll('[data-rs-mode]').forEach((btn) =>
           btn.addEventListener('click', () => {
             sb.mode = btn.dataset.rsMode;
@@ -2383,10 +2806,14 @@ export function initRacingModule(ctx) {
       const linesPerBet = previewMultipleLines(sb.structure, sb.eachWay);
       const totalPerBet = linesPerBet * Number(sb.unitStake || 1);
       const cleanStructName = spec.short.split(' (')[0];
+      const { dates: availDates, minDate, maxDate } = getRacingDateBounds();
+      const sbDayNorm = String(sb.day || 'all').toLowerCase();
+      const rsFromVal = cleanIsoDateClient(sb.dateFrom) || minDate;
+      const rsToVal = cleanIsoDateClient(sb.dateTo) || maxDate;
       body.innerHTML = `
-        <div class="flex gap-2 border-b border-slate-800 pb-3 text-xs">
+        <div class="flex flex-wrap gap-2 border-b border-slate-800 pb-3 text-xs">
           <button type="button" data-rs-mode="custom" class="px-3.5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-extrabold">🛠️ Custom Racing Builder</button>
-          <button type="button" data-rs-mode="quick" class="px-3.5 py-2 rounded-xl bg-card border border-slate-700 text-slate-300 font-bold">⚡ Quick Daily Cards</button>
+          <button type="button" data-rs-mode="quick" class="px-3.5 py-2 rounded-xl bg-card border border-slate-700 text-slate-300 font-bold">⚡ Quick Racing Cards</button>
         </div>
 
         <div class="p-4 rounded-2xl bg-card border border-slate-800 space-y-3 text-xs">
@@ -2447,11 +2874,11 @@ export function initRacingModule(ctx) {
               </select>
             </label>
             <label>
-              <span class="text-[11px] text-slate-400">Date</span>
+              <span class="text-[11px] text-slate-400">Date Range</span>
               <select id="rs-day" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white">
-                <option value="ALL" ${sb.day === 'ALL' ? 'selected' : ''}>All Upcoming</option>
-                <option value="today" ${sb.day === 'today' ? 'selected' : ''}>Today</option>
-                <option value="tomorrow" ${sb.day === 'tomorrow' ? 'selected' : ''}>Tomorrow</option>
+                ${RACING_DATE_PRESETS.map(
+                  ([dCode, dLbl]) => `<option value="${dCode}" ${sbDayNorm === dCode ? 'selected' : ''}>${dLbl}</option>`
+                ).join('')}
               </select>
             </label>
             <label>
@@ -2466,6 +2893,19 @@ export function initRacingModule(ctx) {
               }
             </label>
           </div>
+
+          ${sbDayNorm === 'custom'
+            ? `<div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                <label>
+                  <span class="text-[11px] text-slate-300 font-semibold">From Date</span>
+                  <input id="rs-date-from" type="date" value="${esc(rsFromVal)}" min="${esc(minDate)}" max="${esc(maxDate)}" class="mt-1 w-full bg-panel border border-slate-700 rounded-xl px-2.5 py-1.5 text-white font-mono" />
+                </label>
+                <label>
+                  <span class="text-[11px] text-slate-300 font-semibold">To Date${availDates.length ? ` <span class="text-[10px] font-normal text-slate-400">(${esc(formatDateSpanHint(availDates))})</span>` : ''}</span>
+                  <input id="rs-date-to" type="date" value="${esc(rsToVal)}" min="${esc(minDate)}" max="${esc(maxDate)}" class="mt-1 w-full bg-panel border border-slate-700 rounded-xl px-2.5 py-1.5 text-white font-mono" />
+                </label>
+              </div>`
+            : ''}
 
           <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
             <div class="flex flex-wrap items-center gap-2">
@@ -2523,7 +2963,7 @@ export function initRacingModule(ctx) {
                           <div class="p-2.5 rounded-xl bg-panel border border-slate-800 space-y-1.5">
                             <div class="flex flex-wrap items-center justify-between gap-2">
                               <div class="min-w-0 flex-1">
-                                <div class="font-bold text-white break-words leading-snug">${lIdx + 1}. #${l.saddle_cloth} ${esc(l.horse_name)} <span class="text-slate-400 font-normal">(${esc(l.off_time)} ${esc(l.course)})</span></div>
+                                <div class="font-bold text-white break-words leading-snug">${lIdx + 1}. #${l.saddle_cloth} ${esc(l.horse_name)} <span class="text-slate-400 font-normal">(${esc(l.off_time)} ${esc(l.course)} • ${esc(formatShortRacingDate(l.race_date))})</span></div>
                                 <div class="text-[11px] text-slate-400">${esc(l.place_terms_label)} • Win ${(Number(l.model_win_prob || 0) * 100).toFixed(1)}% / Place ${(Number(l.model_place_prob || 0) * 100).toFixed(1)}%</div>
                               </div>
                               <div class="flex items-center gap-1.5 shrink-0">
@@ -2587,7 +3027,21 @@ export function initRacingModule(ctx) {
       });
       document.getElementById('rs-day')?.addEventListener('change', (e) => {
         sb.day = e.target.value;
+        if (sb.day === 'custom') ensureCustomDateBounds(sb);
         persistSuggestPrefs();
+        renderModalContent();
+      });
+      document.getElementById('rs-date-from')?.addEventListener('change', (e) => {
+        sb.dateFrom = cleanIsoDateClient(e.target.value);
+        if (sb.dateFrom && sb.dateTo && sb.dateFrom > sb.dateTo) sb.dateTo = sb.dateFrom;
+        persistSuggestPrefs();
+        renderModalContent();
+      });
+      document.getElementById('rs-date-to')?.addEventListener('change', (e) => {
+        sb.dateTo = cleanIsoDateClient(e.target.value);
+        if (sb.dateFrom && sb.dateTo && sb.dateTo < sb.dateFrom) sb.dateFrom = sb.dateTo;
+        persistSuggestPrefs();
+        renderModalContent();
       });
       document.getElementById('rs-legs')?.addEventListener('change', (e) => {
         sb.legsCount = Number(e.target.value || 4);
@@ -2667,13 +3121,16 @@ export function initRacingModule(ctx) {
             legs_count: sb.legsCount,
             num_bets: sb.numBets,
             region: sb.region,
-            day: sb.day,
+            day: sbDayNorm,
+            date_from: sbDayNorm === 'custom' ? rsFromVal : '',
+            date_to: sbDayNorm === 'custom' ? rsToVal : '',
             race_type: sb.raceType,
             exclude_already_bet: sb.excludeAlreadyBet,
             exclude_scope: sb.excludeScope,
             excluded_legs: sb.excludeAlreadyBet ? collectExcludedRacingLegs() : [],
           }),
         });
+        updateAvailableDatesFromPayload(res);
         sb.builtBets = res.bets || [];
         sb.notice = res.notice || '';
         renderModalContent();

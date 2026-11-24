@@ -35,7 +35,9 @@ from accalab.racing_engine import (
     build_racing_bet365_export,
     build_racing_suggestions,
     evaluate_racing_multiple,
+    filter_races_by_date_range,
     find_racing_tips,
+    get_available_racing_dates,
     is_race_upcoming,
 )
 from accalab.db import (
@@ -1647,6 +1649,7 @@ def create_app() -> Flask:
                     "regions": RACING_REGIONS,
                     "multiples": RACING_MULTIPLES,
                     "racing_feeds_mode": "free_public_no_key",
+                    "available_dates": sorted({rc["race_date"] for rc in active_races if rc.get("race_date")}),
                     "news": news,
                     "generated_at": utc_now_iso(),
                 }
@@ -1656,27 +1659,26 @@ def create_app() -> Flask:
     def api_racing_cards() -> Response:
         region = (request.args.get("region") or "").strip().upper()
         day = (request.args.get("day") or "").strip().lower()
+        date_from = (request.args.get("date_from") or "").strip()
+        date_to = (request.args.get("date_to") or "").strip()
         race_type = (request.args.get("race_type") or "").strip().lower()
         search = (request.args.get("search") or "").strip().lower()
         include_past = request.args.get("include_past") == "1"
 
         with db_session() as conn:
+            avail_dates = get_available_racing_dates(conn)
             rows = [
                 dict(r)
                 for r in conn.execute("SELECT * FROM racing_races ORDER BY race_date ASC, off_time ASC, course ASC").fetchall()
             ]
-            upcoming_only = [r for r in rows if is_race_upcoming(r)]
-            if not include_past and not day and upcoming_only:
-                rows = upcoming_only
-
-            if day == "today":
-                from accalab.racing_engine import _uk_now
-                t_iso = _uk_now().strftime("%Y-%m-%d")
-                rows = [r for r in rows if r["race_date"] == t_iso]
-            elif day == "tomorrow":
-                from accalab.racing_engine import _uk_now
-                tm_iso = (_uk_now() + timedelta(days=1)).strftime("%Y-%m-%d")
-                rows = [r for r in rows if r["race_date"] == tm_iso]
+            rows = filter_races_by_date_range(
+                rows,
+                day=day,
+                date_from=date_from,
+                date_to=date_to,
+                include_past=include_past,
+                fallback_to_matched=True,
+            )
 
             if region and region != "ALL":
                 if region in ("UK_IRE", "GB_IRE"):
@@ -1772,7 +1774,7 @@ def create_app() -> Flask:
                 )
 
             meetings_list = sorted(meetings_map.values(), key=lambda m: (m["race_date"], m["races"][0]["off_time"] if m["races"] else "", m["course"]))
-            return jsonify({"meetings": meetings_list, "races": races_out, "total_races": len(races_out), "regions": RACING_REGIONS})
+            return jsonify({"meetings": meetings_list, "races": races_out, "total_races": len(races_out), "regions": RACING_REGIONS, "available_dates": avail_dates})
 
     @app.route("/api/racing/race/<int:race_id>")
     def api_racing_race_detail(race_id: int) -> tuple[Response, int] | Response:
@@ -1849,13 +1851,16 @@ def create_app() -> Flask:
         region = (request.args.get("region") or "").strip() or None
         bet_type = (request.args.get("bet_type") or "").strip() or None
         day = (request.args.get("day") or "").strip() or None
+        date_from = (request.args.get("date_from") or "").strip() or None
+        date_to = (request.args.get("date_to") or "").strip() or None
         race_type = (request.args.get("race_type") or "").strip() or None
         try:
-            limit = max(1, min(160, int(request.args.get("limit", "60"))))
+            limit = max(1, min(400, int(request.args.get("limit", "60"))))
         except (TypeError, ValueError):
             limit = 60
         with db_session() as conn:
             user = _get_active_user(conn)
+            avail_dates = get_available_racing_dates(conn)
             tips = find_racing_tips(
                 conn,
                 user=user,
@@ -1864,8 +1869,10 @@ def create_app() -> Flask:
                 day=day,
                 race_type=race_type,
                 limit=limit,
+                date_from=date_from,
+                date_to=date_to,
             )
-            return jsonify({"tips": tips, "total": len(tips)})
+            return jsonify({"tips": tips, "total": len(tips), "available_dates": avail_dates})
 
     @app.route("/api/racing/evaluate-multiple", methods=["POST"])
     def api_racing_evaluate_multiple() -> Response:
@@ -1881,9 +1888,24 @@ def create_app() -> Flask:
 
     @app.route("/api/racing/suggest-bet")
     def api_racing_suggest_bet() -> Response:
+        region = (request.args.get("region") or "").strip() or None
+        day = (request.args.get("day") or "").strip() or None
+        date_from = (request.args.get("date_from") or "").strip() or None
+        date_to = (request.args.get("date_to") or "").strip() or None
+        race_type = (request.args.get("race_type") or "").strip() or None
         with db_session() as conn:
             user = _get_active_user(conn)
-            return jsonify(build_racing_suggestions(conn, user=user))
+            return jsonify(
+                build_racing_suggestions(
+                    conn,
+                    user=user,
+                    region=region,
+                    day=day,
+                    date_from=date_from,
+                    date_to=date_to,
+                    race_type=race_type,
+                )
+            )
 
     @app.route("/api/racing/suggest-bet/build", methods=["POST"])
     def api_racing_suggest_bet_build() -> Response:

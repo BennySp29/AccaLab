@@ -688,9 +688,9 @@ def ingest_entain_public_cards(
     """Fetch ALL daily UK & IRE plus top FR/US/AU/INTL thoroughbred cards & live fixed odds via TAB/Entain JSON."""
     now_uk = _uk_now()
     today_uk = now_uk.date().isoformat()
-    tomorrow_uk = (now_uk.date() + timedelta(days=1)).isoformat()
+    target_days = tuple((now_uk.date() + timedelta(days=i)).isoformat() for i in range(3))
     d_from = (now_uk.date() - timedelta(days=1)).isoformat()
-    d_to = (now_uk.date() + timedelta(days=2)).isoformat()
+    d_to = (now_uk.date() + timedelta(days=3)).isoformat()
 
     own_client = client is None
     if own_client:
@@ -734,7 +734,7 @@ def ingest_entain_public_cards(
             if not ev_id:
                 continue
             r_date, off_time, off_utc = _iso_utc_to_uk(r_sum.get("start_time"), today_uk)
-            if r_date not in (today_uk, tomorrow_uk):
+            if r_date not in target_days:
                 continue
             g_key = (r_date, course_slug, reg_code)
             bucket = grouped.setdefault(
@@ -759,7 +759,7 @@ def ingest_entain_public_cards(
     # Select ALL UK & Ireland meetings + bounded major international meetings per day
     intl_limits = {"FR": 2, "US": 2, "AU": 2, "INTL": 1}
     selected_meetings: list[dict[str, Any]] = []
-    for day_key in (today_uk, tomorrow_uk):
+    for day_key in target_days:
         day_buckets = [b for b in grouped.values() if b["race_date"] == day_key]
         day_buckets.sort(key=lambda b: len(b["races"]), reverse=True)
         counts_by_reg: dict[str, int] = {}
@@ -951,7 +951,7 @@ def ingest_entain_public_cards(
 def ingest_pmu_public_cards(
     conn: sqlite3.Connection,
     client: httpx.Client | None = None,
-    days_offsets: tuple[int, ...] = (0, 1),
+    days_offsets: tuple[int, ...] = (0, 1, 2),
     max_meetings_per_day: int = 6,
 ) -> dict[str, Any]:
     """Fetch PMU public thoroughbred racecards to enrich Entain UK/FR cards (OR/career stats) & add extra cards."""
@@ -1182,7 +1182,7 @@ def ingest_pmu_public_cards(
 
         conn.execute(
             "INSERT INTO api_usage_log (provider, endpoint, status_code, called_at) VALUES (?, ?, ?, ?)",
-            ("pmu_public", f"/programme/today+tomorrow ({meetings_processed}m)", 200, utc_now_iso()),
+            ("pmu_public", f"/programme/3d ({meetings_processed}m)", 200, utc_now_iso()),
         )
     finally:
         if own_client:

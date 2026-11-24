@@ -359,11 +359,98 @@ def _enrich_runner_row(race: dict[str, Any], runner: dict[str, Any]) -> dict[str
     }
 
 
+def _clean_iso_date(val: Any) -> str | None:
+    """Validate and normalize a YYYY-MM-DD date string, returning None if empty/invalid."""
+    s = str(val or "").strip()
+    if len(s) < 10:
+        return None
+    try:
+        return date.fromisoformat(s[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def filter_races_by_date_range(
+    races: list[dict[str, Any]],
+    day: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    include_past: bool = False,
+    fallback_to_matched: bool = False,
+    now_uk: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Filter race dicts by preset window ('today', 'tomorrow', 'next_2', 'next_3') or custom date bounds."""
+    if not races:
+        return []
+    ref = now_uk or _uk_now()
+    today_d = ref.date()
+    today_iso = today_d.isoformat()
+    tomorrow_iso = (today_d + timedelta(days=1)).isoformat()
+    day2_iso = (today_d + timedelta(days=2)).isoformat()
+
+    d_from = _clean_iso_date(date_from)
+    d_to = _clean_iso_date(date_to)
+    if d_from and d_to and d_from > d_to:
+        d_from, d_to = d_to, d_from
+
+    day_norm = str(day or "").strip().lower()
+    explicit_date = _clean_iso_date(day_norm)
+
+    if d_from or d_to:
+        matched = [
+            r
+            for r in races
+            if (not d_from or str(r.get("race_date") or "") >= d_from)
+            and (not d_to or str(r.get("race_date") or "") <= d_to)
+        ]
+    elif day_norm == "today":
+        matched = [r for r in races if str(r.get("race_date") or "") == today_iso]
+    elif day_norm == "tomorrow":
+        matched = [r for r in races if str(r.get("race_date") or "") == tomorrow_iso]
+    elif day_norm in ("next_2", "2d"):
+        matched = [r for r in races if today_iso <= str(r.get("race_date") or "") <= tomorrow_iso]
+    elif day_norm in ("next_3", "3d"):
+        matched = [r for r in races if today_iso <= str(r.get("race_date") or "") <= day2_iso]
+    elif explicit_date:
+        matched = [r for r in races if str(r.get("race_date") or "") == explicit_date]
+    else:
+        if include_past:
+            return list(races)
+        upcoming = [r for r in races if is_race_upcoming(r, now_uk=ref)]
+        return upcoming or list(races)
+
+    if include_past:
+        return matched
+    upcoming = [r for r in matched if is_race_upcoming(r, now_uk=ref)]
+    if upcoming:
+        return upcoming
+    return matched if fallback_to_matched else []
+
+
+def get_available_racing_dates(
+    conn: sqlite3.Connection,
+    now_uk: datetime | None = None,
+) -> list[str]:
+    """Return sorted distinct YYYY-MM-DD race dates available (upcoming first, else all stored races)."""
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT race_date, off_time, status FROM racing_races ORDER BY race_date ASC"
+        ).fetchall()
+    ]
+    ref = now_uk or _uk_now()
+    upcoming = [r for r in rows if is_race_upcoming(r, now_uk=ref)]
+    pool = upcoming or rows
+    return sorted({str(r.get("race_date") or "") for r in pool if r.get("race_date")})
+
+
 def _load_active_racing_pool(
     conn: sqlite3.Connection,
     region: str | None = None,
     day: str | None = None,
     race_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
     """Return list of (race_dict, active_enriched_runners) filtered cleanly."""
     races = [
@@ -375,19 +462,14 @@ def _load_active_racing_pool(
     if not races:
         return []
 
-    now_uk = _uk_now()
-    today_iso = now_uk.strftime("%Y-%m-%d")
-    tomorrow_iso = (date.fromisoformat(today_iso) + timedelta(days=1)).isoformat()
-
-    day_norm = str(day or "").strip().lower()
-    if day_norm == "today":
-        races = [r for r in races if r["race_date"] == today_iso]
-    elif day_norm == "tomorrow":
-        races = [r for r in races if r["race_date"] == tomorrow_iso]
-    else:
-        upcoming = [r for r in races if is_race_upcoming(r, now_uk=now_uk)]
-        if upcoming:
-            races = upcoming
+    races = filter_races_by_date_range(
+        races,
+        day=day,
+        date_from=date_from,
+        date_to=date_to,
+        include_past=False,
+        fallback_to_matched=False,
+    )
 
     reg_norm = str(region or "").strip().upper()
     if reg_norm and reg_norm != "ALL":
@@ -435,9 +517,18 @@ def find_racing_tips(
     day: str | None = None,
     race_type: str | None = None,
     limit: int = 60,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict[str, Any]]:
     """Generate ranked Win (R_WIN), Each-Way Value (R_EW), and Place Lock (R_PLC) racing tips."""
-    race_groups = _load_active_racing_pool(conn, region=region, day=day, race_type=race_type)
+    race_groups = _load_active_racing_pool(
+        conn,
+        region=region,
+        day=day,
+        race_type=race_type,
+        date_from=date_from,
+        date_to=date_to,
+    )
     if not race_groups:
         return []
 
@@ -771,12 +862,32 @@ def build_racing_suggestions(
     conn: sqlite3.Connection,
     user: dict[str, Any] | None = None,
     exclude_legs: list[dict[str, Any]] | None = None,
+    region: str | None = None,
+    day: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    race_type: str | None = None,
 ) -> dict[str, Any]:
-    """Build 4 curated Quick Daily Racing Cards (NAP Single, EW Double, Win/Place Treble, Daily Lucky 15)."""
-    all_tips = find_racing_tips(conn, user=user, limit=120)
+    """Build 4 curated Quick Racing Cards (NAP Single, EW Double, Win/Place Treble, Lucky 15) for a date range."""
+    all_tips = find_racing_tips(
+        conn,
+        user=user,
+        region=region,
+        day=day,
+        date_from=date_from,
+        date_to=date_to,
+        race_type=race_type,
+        limit=240,
+    )
     race_keys, runner_keys = _racing_exclusion_sets(exclude_legs)
     if race_keys or runner_keys:
         all_tips = [t for t in all_tips if not _is_tip_excluded(t, race_keys, runner_keys, scope="race")]
+
+    day_norm = str(day or "").strip().lower()
+    has_custom = bool(_clean_iso_date(date_from) or _clean_iso_date(date_to))
+    is_default_today = (not has_custom) and day_norm in ("", "all", "today")
+    nap_title = "Today's NAP Single" if is_default_today else "NAP Win Single"
+    l15_base = "Daily Lucky 15" if is_default_today else "Lucky 15"
 
     win_pool = [t for t in all_tips if t["market"] == "R_WIN"]
     ew_pool = [t for t in all_tips if t["market"] == "R_EW"]
@@ -803,7 +914,7 @@ def build_racing_suggestions(
         cards.append(
             {
                 "id": "nap_single",
-                "title": "Today's NAP Single",
+                "title": nap_title,
                 "badge": "🏆 Top Rated Win",
                 "subtitle": f"{nap_legs[0]['off_time']} {nap_legs[0]['course']} • Best rating & edge on card",
                 "structure": "single",
@@ -811,8 +922,8 @@ def build_racing_suggestions(
                 "unit_stake": 10.0,
                 "legs": nap_legs,
                 "eval": ev,
-                "bet_reasons": _build_racing_bet_reasons("Today's NAP Single", nap_legs, ev, False),
-                "bet365_export": build_racing_bet365_export(nap_legs, "single", False, 10.0, "Today's NAP Single"),
+                "bet_reasons": _build_racing_bet_reasons(nap_title, nap_legs, ev, False),
+                "bet365_export": build_racing_bet365_export(nap_legs, "single", False, 10.0, nap_title),
             }
         )
 
@@ -858,7 +969,7 @@ def build_racing_suggestions(
             }
         )
 
-    # 4. Daily Lucky 15 (4 runners)
+    # 4. Lucky 15 (4 runners)
     l15_pool = ew_pool if len(ew_pool) >= 4 else sorted(
         win_pool + ew_pool,
         key=lambda x: (x["model_rating"], x["model_win_prob_pct"]),
@@ -870,11 +981,12 @@ def build_racing_suggestions(
     if len(l15_legs) >= 4:
         avg_odds = sum(l["win_odds"] for l in l15_legs) / 4.0
         ew_l15 = avg_odds >= 4.0 and all(l["ew_eligible"] for l in l15_legs)
+        l15_full_title = l15_base + (" (E/W)" if ew_l15 else " (Win)")
         ev = evaluate_racing_multiple(l15_legs, structure="lucky15", each_way=ew_l15, unit_stake=1.0)
         cards.append(
             {
                 "id": "daily_lucky15",
-                "title": "Daily Lucky 15" + (" (E/W)" if ew_l15 else " (Win)"),
+                "title": l15_full_title,
                 "badge": "🍀 Lucky 15 (30 Bets)" if ew_l15 else "🍀 Lucky 15 (15 Bets)",
                 "subtitle": "4 Singles, 6 Doubles, 4 Trebles & 4-Fold Acca across 4 races",
                 "structure": "lucky15",
@@ -882,8 +994,8 @@ def build_racing_suggestions(
                 "unit_stake": 1.0,
                 "legs": l15_legs,
                 "eval": ev,
-                "bet_reasons": _build_racing_bet_reasons("Daily Lucky 15", l15_legs, ev, ew_l15),
-                "bet365_export": build_racing_bet365_export(l15_legs, "lucky15", ew_l15, 1.0, "Daily Lucky 15"),
+                "bet_reasons": _build_racing_bet_reasons(l15_base, l15_legs, ev, ew_l15),
+                "bet365_export": build_racing_bet365_export(l15_legs, "lucky15", ew_l15, 1.0, l15_base),
             }
         )
 
@@ -891,6 +1003,7 @@ def build_racing_suggestions(
         "cards": cards,
         "structures": RACING_MULTIPLES,
         "total_pool_tips": len(all_tips),
+        "available_dates": get_available_racing_dates(conn),
     }
 
 
@@ -934,10 +1047,13 @@ def build_custom_racing_bets(
 
     num_bets = max(1, min(3, int(crit.get("num_bets") or 1)))
     region = (crit.get("region") or "ALL").strip()
-    day = (crit.get("day") or "ALL").strip()
+    day = (crit.get("day") or "all").strip()
+    date_from = crit.get("date_from")
+    date_to = crit.get("date_to")
     race_type = (crit.get("race_type") or "ALL").strip()
     exclude_already = bool(crit.get("exclude_already_bet", True))
     exclude_scope = "runner" if crit.get("exclude_scope") == "runner" else "race"
+    avail_dates = get_available_racing_dates(conn)
 
     pool = find_racing_tips(
         conn,
@@ -946,7 +1062,9 @@ def build_custom_racing_bets(
         bet_type=style,
         day=day,
         race_type=race_type,
-        limit=240,
+        limit=320,
+        date_from=date_from,
+        date_to=date_to,
     )
     if each_way:
         pool = [t for t in pool if t.get("ew_eligible") and t.get("win_odds", 0) >= 2.2] or pool
@@ -975,6 +1093,7 @@ def build_custom_racing_bets(
             "requested_legs": req_legs,
             "excluded_count": len(race_keys),
             "available_pool_count": 0,
+            "available_dates": avail_dates,
             "notice": "No matching runners found for these criteria — try widening regions, dates, or exclusions.",
         }
 
@@ -1037,5 +1156,6 @@ def build_custom_racing_bets(
         "requested_legs": req_legs,
         "excluded_count": len(race_keys),
         "available_pool_count": len(filtered),
+        "available_dates": avail_dates,
         "notice": notice,
     }

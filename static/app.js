@@ -1,5 +1,5 @@
 // AccaLab Frontend PWA Application
-import { initRacingModule, racingStaticApi } from './racing.js?v=cb2dda29';
+import { initRacingModule, racingStaticApi } from './racing.js?v=274e123b';
 
 function loadSavedSuggestCriteria() {
   const fallback = {
