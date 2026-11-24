@@ -1,11 +1,11 @@
 {
-  "name": "AccaLab — Football Betting Assistant",
+  "name": "AccaLab — Football & Horse Racing Assistant",
   "short_name": "AccaLab",
-  "description": "Private English football analytics, value finder, acca builder & CLV bet tracker.",
+  "description": "English football & horse racing analytics, value tips, acca & multiples builder.",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0b1120",
-  "theme_color": "#10b981",
+  "background_color": "#f2f6f9",
+  "theme_color": "#059669",
   "orientation": "portrait-primary",
   "icons": [
     {

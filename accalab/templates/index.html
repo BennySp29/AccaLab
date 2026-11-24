@@ -1,26 +1,34 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="daylight-theme">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#060913" />
+  <meta name="theme-color" content="#f2f6f9" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="AccaLab" />
-  <title>AccaLab — Football Betting Assistant</title>
+  <title>AccaLab — Football &amp; Horse Racing Assistant</title>
   <link rel="manifest" href="./manifest.json" />
   <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
   <link rel="icon" href="./icon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script>
+    if (window.Chart) {
+      Chart.defaults.color = '#475569';
+      Chart.defaults.borderColor = '#e2e8f0';
+    }
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     tailwind.config = {
-      darkMode: 'class',
       theme: {
         extend: {
           fontFamily: {
@@ -28,58 +36,322 @@
             mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
           },
           colors: {
-            slatebg: '#060913',
-            panel: '#0c1322',
-            card: '#131d33',
-            surface: '#192540',
+            slatebg: '#f2f6f9',
+            panel: '#ffffff',
+            card: '#f8fafc',
+            surface: '#eef4f8',
           },
         },
       },
     };
   </script>
   <style>
+    :root {
+      color-scheme: light;
+    }
+
     body {
-      background-color: #060913;
+      background-color: #f2f6f9;
       background-image:
-        radial-gradient(circle at 12% 0%, rgba(16, 185, 129, 0.09), transparent 42%),
-        radial-gradient(circle at 88% 12%, rgba(6, 182, 212, 0.07), transparent 40%);
-      color: #e2e8f0;
+        radial-gradient(circle at 10% 0%, rgba(16, 185, 129, 0.11), transparent 44%),
+        radial-gradient(circle at 90% 8%, rgba(14, 165, 233, 0.08), transparent 42%);
+      color: #0f172a;
       font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
     }
+
     .glass-panel {
-      background: rgba(12, 19, 34, 0.84);
+      background: rgba(255, 255, 255, 0.92);
       backdrop-filter: blur(14px);
       -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 1px 12px rgba(15, 23, 42, 0.06);
     }
+
+    html.daylight-theme .bg-panel.rounded-2xl,
+    html.daylight-theme .bg-card.rounded-2xl {
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 14px -6px rgba(15, 23, 42, 0.07);
+    }
+
     .card-hover {
       transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s ease, box-shadow 0.18s ease;
     }
+
     .card-hover:hover {
       transform: translateY(-2px);
-      box-shadow: 0 12px 28px -12px rgba(16, 185, 129, 0.22);
+      box-shadow: 0 12px 26px -12px rgba(5, 150, 105, 0.25);
     }
+
     @keyframes fadeInSlide {
-      from { opacity: 0; transform: translateY(5px); }
-      to { opacity: 1; transform: translateY(0); }
+      from {
+        opacity: 0;
+        transform: translateY(5px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
+
     .animate-fade-in {
       animation: fadeInSlide 0.22s ease-out;
     }
+
+    html.daylight-theme .btn-bet365,
+
     .btn-bet365 {
       background: linear-gradient(135deg, #027b5b 0%, #059669 100%);
-      color: #ffdf1b;
-      border: 1px solid rgba(255, 223, 27, 0.28);
-      box-shadow: 0 6px 18px -6px rgba(2, 123, 91, 0.55);
+      color: #ffdf1b !important;
+      border: 1px solid rgba(5, 150, 105, 0.45);
+      box-shadow: 0 6px 18px -6px rgba(2, 123, 91, 0.38);
       transition: filter 0.15s ease, transform 0.15s ease;
     }
+
     .btn-bet365:hover {
-      filter: brightness(1.08);
+      filter: brightness(1.07);
       transform: translateY(-1px);
     }
-    .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
-    .scrollbar-thin::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+
+    /* Daylight Surface Remaps */
+    html.daylight-theme .bg-slate-950,
+    html.daylight-theme .bg-slate-950\/90,
+    html.daylight-theme .bg-slate-950\/80,
+    html.daylight-theme .bg-slate-950\/70,
+    html.daylight-theme .bg-slate-950\/60,
+    html.daylight-theme .bg-slatebg\/90 {
+      background-color: #f1f5f9 !important;
+    }
+
+    html.daylight-theme .bg-slate-900,
+    html.daylight-theme .bg-slate-900\/90,
+    html.daylight-theme .bg-slate-900\/60 {
+      background-color: #e8eef5 !important;
+    }
+
+    html.daylight-theme .bg-slate-800,
+    html.daylight-theme .bg-slate-800\/80 {
+      background-color: #e2e8f0 !important;
+    }
+
+    html.daylight-theme .bg-slate-800\/25 {
+      background-color: rgba(226, 232, 240, 0.48) !important;
+    }
+
+    html.daylight-theme .bg-slate-700,
+    html.daylight-theme .bg-slate-700\/60 {
+      background-color: #cbd5e1 !important;
+    }
+
+    html.daylight-theme .bg-black\/75,
+    html.daylight-theme .bg-black\/80 {
+      background-color: rgba(15, 23, 42, 0.42) !important;
+    }
+
+    /* Daylight Hover Surfaces */
+    html.daylight-theme .hover\:bg-slate-800:hover,
+    html.daylight-theme .hover\:bg-slate-800\/70:hover,
+    html.daylight-theme .hover\:bg-slate-800\/50:hover,
+    html.daylight-theme .hover\:bg-slate-800\/30:hover {
+      background-color: #e2e8f0 !important;
+    }
+
+    html.daylight-theme .hover\:bg-slate-700:hover,
+    html.daylight-theme .hover\:bg-slate-600:hover {
+      background-color: #cbd5e1 !important;
+    }
+
+    html.daylight-theme .hover\:bg-surface:hover {
+      background-color: #e2ecf4 !important;
+    }
+
+    html.daylight-theme .hover\:bg-panel\/60:hover {
+      background-color: #f1f5f9 !important;
+    }
+
+    /* Crisp White Inputs & Selects */
+    html.daylight-theme input[type="text"],
+    html.daylight-theme input[type="search"],
+    html.daylight-theme input[type="number"],
+    html.daylight-theme input[type="password"],
+    html.daylight-theme input[type="email"],
+    html.daylight-theme select {
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+      border-color: #cbd5e1 !important;
+    }
+
+    html.daylight-theme select option {
+      background-color: #ffffff;
+      color: #0f172a;
+    }
+
+    html.daylight-theme input::placeholder {
+      color: #94a3b8 !important;
+    }
+
+    /* Daylight Borders & Dividers */
+    html.daylight-theme .border-slate-800,
+    html.daylight-theme .border-slate-800\/90,
+    html.daylight-theme .border-slate-800\/80,
+    html.daylight-theme .border-slate-800\/70,
+    html.daylight-theme .border-slate-800\/60,
+    html.daylight-theme .border-slate-800\/30 {
+      border-color: #dce4ee !important;
+    }
+
+    html.daylight-theme .border-slate-700,
+    html.daylight-theme .border-slate-700\/80,
+    html.daylight-theme .border-slate-700\/70 {
+      border-color: #cbd5e1 !important;
+    }
+
+    html.daylight-theme .border-slate-600,
+    html.daylight-theme .hover\:border-slate-600:hover,
+    html.daylight-theme .hover\:border-slate-500:hover {
+      border-color: #94a3b8 !important;
+    }
+
+    html.daylight-theme .divide-slate-800\/80> :not([hidden])~ :not([hidden]) {
+      border-color: #e2e8f0 !important;
+    }
+
+    /* Neutral & Ink Typography */
+    html.daylight-theme .text-white,
+    html.daylight-theme .hover\:text-white:hover {
+      color: #0f172a !important;
+    }
+
+    html.daylight-theme .text-slate-200 {
+      color: #1e293b !important;
+    }
+
+    html.daylight-theme .text-slate-300,
+    html.daylight-theme .hover\:text-slate-300:hover {
+      color: #334155 !important;
+    }
+
+    html.daylight-theme .text-slate-400 {
+      color: #475569 !important;
+    }
+
+    html.daylight-theme .text-slate-500 {
+      color: #64748b !important;
+    }
+
+    html.daylight-theme .text-slate-600 {
+      color: #94a3b8 !important;
+    }
+
+    /* High-Contrast Daylight Jewel Accents */
+    html.daylight-theme .text-emerald-100,
+    html.daylight-theme .text-emerald-200,
+    html.daylight-theme .text-emerald-300,
+    html.daylight-theme .text-emerald-400 {
+      color: #047857 !important;
+    }
+
+    html.daylight-theme .hover\:text-emerald-300:hover {
+      color: #059669 !important;
+    }
+
+    html.daylight-theme .text-cyan-200,
+    html.daylight-theme .text-cyan-300,
+    html.daylight-theme .text-sky-300,
+    html.daylight-theme .text-sky-400 {
+      color: #0369a1 !important;
+    }
+
+    html.daylight-theme .hover\:text-cyan-200:hover {
+      color: #0284c7 !important;
+    }
+
+    html.daylight-theme .text-amber-200,
+    html.daylight-theme .text-amber-300 {
+      color: #b45309 !important;
+    }
+
+    html.daylight-theme .hover\:text-amber-300:hover {
+      color: #d97706 !important;
+    }
+
+    html.daylight-theme .text-indigo-200,
+    html.daylight-theme .text-indigo-300 {
+      color: #4338ca !important;
+    }
+
+    html.daylight-theme .text-rose-300,
+    html.daylight-theme .text-rose-400 {
+      color: #be123c !important;
+    }
+
+    html.daylight-theme .text-teal-300 {
+      color: #0f766e !important;
+    }
+
+    html.daylight-theme .text-fuchsia-300 {
+      color: #a21caf !important;
+    }
+
+    html.daylight-theme .text-orange-300 {
+      color: #c2410c !important;
+    }
+
+    html.daylight-theme .text-yellow-300 {
+      color: #a16207 !important;
+    }
+
+    /* Crisp Gold Borders on Light Cards */
+    html.daylight-theme .border-amber-400\/40,
+    html.daylight-theme .border-amber-400\/50,
+    html.daylight-theme .border-amber-400\/60,
+    html.daylight-theme .border-amber-500\/30,
+    html.daylight-theme .border-amber-500\/35,
+    html.daylight-theme .border-amber-500\/40,
+    html.daylight-theme .border-amber-500\/45,
+    html.daylight-theme .border-amber-500\/50 {
+      border-color: rgba(217, 119, 6, 0.45) !important;
+    }
+
+    /* Protect White Text Inside Opaque Saturated Buttons & Toasts (after .text-white) */
+    html.daylight-theme .bg-emerald-600,
+    html.daylight-theme .bg-emerald-600\/80,
+    html.daylight-theme .bg-emerald-600\/85,
+    html.daylight-theme .bg-emerald-600\/90,
+    html.daylight-theme .bg-indigo-600,
+    html.daylight-theme .bg-sky-600,
+    html.daylight-theme .bg-rose-600,
+    html.daylight-theme .hover\:bg-emerald-600:hover,
+    html.daylight-theme .hover\:bg-emerald-500:hover,
+    html.daylight-theme .hover\:bg-indigo-500:hover,
+    html.daylight-theme .hover\:bg-sky-500:hover,
+    html.daylight-theme #toast {
+      color: #ffffff !important;
+    }
+
+    html.daylight-theme .bg-emerald-600 .text-white,
+    html.daylight-theme .bg-emerald-600\/90 .text-white,
+    html.daylight-theme .bg-indigo-600 .text-white,
+    html.daylight-theme .bg-sky-600 .text-white,
+    html.daylight-theme .bg-rose-600 .text-white {
+      color: #ffffff !important;
+    }
+
+    html.daylight-theme #open-slip-btn #slip-count-badge {
+      background-color: rgba(255, 255, 255, 0.96) !important;
+      color: #4338ca !important;
+    }
+
+    .scrollbar-thin::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 9999px;
+    }
   </style>
 </head>
+
 <body class="min-h-screen flex flex-col lg:flex-row pb-20 lg:pb-0 selection:bg-emerald-500/30">
 
   <!-- Desktop Sidebar -->
@@ -94,52 +366,62 @@
 
     <div id="sport-switcher-desktop" class="px-3 pt-3">
       <div class="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-950 border border-slate-800/90 text-xs font-bold">
-        <button type="button" data-sport-btn="football" class="sport-switch-btn py-1.5 px-2 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition flex items-center justify-center gap-1.5">
+        <button type="button" data-sport-btn="football"
+          class="sport-switch-btn py-1.5 px-2 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition flex items-center justify-center gap-1.5">
           <span>⚽</span><span>Football</span>
         </button>
-        <button type="button" data-sport-btn="racing" class="sport-switch-btn py-1.5 px-2 rounded-lg text-slate-400 hover:text-white border border-transparent transition flex items-center justify-center gap-1.5">
+        <button type="button" data-sport-btn="racing"
+          class="sport-switch-btn py-1.5 px-2 rounded-lg text-slate-400 hover:text-white border border-transparent transition flex items-center justify-center gap-1.5">
           <span>🏇</span><span>Racing</span>
         </button>
       </div>
     </div>
 
     <div class="px-3 pt-3">
-      <button id="open-suggest-sidebar-btn" class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition">
+      <button id="open-suggest-sidebar-btn"
+        class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition">
         <span>✨ Suggest a Bet</span>
-      </button>
-      <button id="open-boost-sidebar-btn" type="button" class="w-full mt-2 py-2 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-extrabold flex items-center justify-center gap-2 transition">
-        <span id="open-boost-sidebar-label">⚡ Check a Bet365 Boost</span>
       </button>
     </div>
 
     <nav id="desktop-nav" class="flex-1 p-3 space-y-1 overflow-y-auto">
       <div id="desktop-nav-football" class="space-y-1">
-        <button data-tab="fixtures" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium bg-emerald-500/15 text-emerald-400">
+        <button data-tab="fixtures"
+          class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium bg-emerald-500/15 text-emerald-400">
           <span>⚽</span><span>Matches</span>
         </button>
-        <button data-tab="value" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <button data-tab="value"
+          class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
           <span>💎</span><span>Top Tips</span>
         </button>
-        <button data-tab="acca" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <button data-tab="acca"
+          class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
           <span>🧮</span><span>Acca Builder</span>
         </button>
-        <button data-tab="settings" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <button data-tab="settings"
+          class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
           <span class="flex items-center gap-3"><span>⭐</span><span>Clubs &amp; Settings</span></span>
-          <span id="sidebar-alert-badge" class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
+          <span id="sidebar-alert-badge"
+            class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
         </button>
       </div>
       <div id="desktop-nav-racing" class="hidden space-y-1">
-        <button data-tab="racing_cards" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <button data-tab="racing_cards"
+          class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
           <span>🏇</span><span>Daily Races</span>
         </button>
-        <button data-tab="racing_tips" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <button data-tab="racing_tips"
+          class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
           <span>💎</span><span>Top Racing Tips</span>
         </button>
-        <button data-tab="racing_multiples" class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <button data-tab="racing_multiples"
+          class="nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
           <span class="flex items-center gap-3"><span>🎟️</span><span>Multiples &amp; Slip</span></span>
-          <span id="racing-nav-slip-badge" class="hidden text-xs bg-emerald-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
+          <span id="racing-nav-slip-badge"
+            class="hidden text-xs bg-emerald-500 text-slate-950 font-bold px-2 py-0.5 rounded-full">0</span>
         </button>
-        <button data-tab="settings" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
+        <button data-tab="settings"
+          class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800/70">
           <span>⭐</span><span>Settings</span>
         </button>
       </div>
@@ -148,19 +430,25 @@
     <div class="p-4 border-t border-slate-800/80 space-y-3">
       <div class="flex items-center justify-between gap-2">
         <div class="flex items-center gap-2 min-w-0">
-          <span id="sidebar-avatar" class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-slate-950 bg-emerald-400 shrink-0">G</span>
+          <span id="sidebar-avatar"
+            class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-slate-950 bg-emerald-400 shrink-0">G</span>
           <div class="min-w-0">
             <div id="sidebar-username" class="text-xs font-bold text-white break-words leading-snug">Guest</div>
-            <div id="sidebar-auth-status" class="text-[10px] text-amber-300 leading-snug">No account yet • Click to set up</div>
+            <div id="sidebar-auth-status" class="text-[10px] text-amber-300 leading-snug">No account yet • Click to set
+              up</div>
           </div>
         </div>
-        <button id="open-auth-modal-btn" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-emerald-300 shrink-0">Set Up Account</button>
+        <button id="open-auth-modal-btn"
+          class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-emerald-300 shrink-0">Set
+          Up Account</button>
       </div>
       <div id="user-switcher-wrap" class="hidden">
         <label class="text-[11px] uppercase tracking-wider text-slate-400">Switch Account / Member</label>
-        <select id="user-switcher" class="mt-1 w-full bg-surface border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white"></select>
+        <select id="user-switcher"
+          class="mt-1 w-full bg-surface border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white"></select>
       </div>
-      <button id="sync-btn-sidebar" class="w-full py-2 px-3 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-semibold transition">
+      <button id="sync-btn-sidebar"
+        class="w-full py-2 px-3 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-semibold transition">
         ↻ Smart Sync Data
       </button>
     </div>
@@ -169,7 +457,8 @@
   <!-- Main Content -->
   <div class="flex-1 lg:pl-64 flex flex-col min-h-screen">
     <!-- Top Header Bar -->
-    <header class="lg:sticky lg:top-0 z-20 glass-panel border-b border-slate-800/80 px-3 py-2 lg:px-4 lg:py-3 flex flex-col gap-2 lg:gap-0">
+    <header
+      class="lg:sticky lg:top-0 z-20 glass-panel border-b border-slate-800/80 px-3 py-2 lg:px-4 lg:py-3 flex flex-col gap-2 lg:gap-0">
       <div class="flex items-center justify-between gap-2 w-full">
         <div class="flex items-center gap-2 lg:hidden shrink-0">
           <img src="./icon-192.png" alt="AccaLab" class="w-7 h-7 rounded-lg" />
@@ -179,26 +468,32 @@
           <span class="px-2.5 py-1 rounded-full bg-card border border-slate-700 text-slate-300">Loading stats...</span>
         </div>
         <div class="flex items-center gap-1.5 sm:gap-2">
-          <button id="open-suggest-btn" class="hidden lg:flex px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold items-center gap-1.5 shadow-md shadow-emerald-500/20 transition">
+          <button id="open-suggest-btn"
+            class="hidden lg:flex px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-extrabold items-center gap-1.5 shadow-md shadow-emerald-500/20 transition">
             <span>✨ Suggest Bet</span>
           </button>
-          <button id="open-boost-checker-btn" type="button" class="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-extrabold flex items-center gap-1 transition">
-            <span>⚡</span><span class="hidden sm:inline">Check</span><span id="open-boost-header-label">Boost</span>
-          </button>
-          <select id="user-switcher-mobile" class="hidden lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
-          <button id="open-auth-modal-mobile-btn" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Sign In</button>
-          <button id="open-slip-btn" class="relative px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shrink-0">
+          <select id="user-switcher-mobile"
+            class="hidden lg:hidden bg-surface border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"></select>
+          <button id="open-auth-modal-mobile-btn"
+            class="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300">Sign
+            In</button>
+          <button id="open-slip-btn"
+            class="relative px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shrink-0">
             <span>🧾</span><span class="hidden sm:inline">Bet </span><span>Slip</span>
-            <span id="slip-count-badge" class="bg-slate-950/80 text-emerald-300 px-1.5 py-0.5 rounded-full text-[11px] font-mono">0</span>
+            <span id="slip-count-badge"
+              class="bg-white/95 text-indigo-700 px-1.5 py-0.5 rounded-full text-[11px] font-mono font-bold">0</span>
           </button>
         </div>
       </div>
 
-      <div id="sport-switcher-mobile" class="lg:hidden grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-950 border border-slate-800/90 text-xs font-bold w-full">
-        <button type="button" data-sport-btn="football" class="sport-switch-btn py-1.5 px-2.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition flex items-center justify-center gap-1.5">
+      <div id="sport-switcher-mobile"
+        class="lg:hidden grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-950 border border-slate-800/90 text-xs font-bold w-full">
+        <button type="button" data-sport-btn="football"
+          class="sport-switch-btn py-1.5 px-2.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition flex items-center justify-center gap-1.5">
           <span>⚽</span><span>Football</span>
         </button>
-        <button type="button" data-sport-btn="racing" class="sport-switch-btn py-1.5 px-2.5 rounded-lg text-slate-400 hover:text-white border border-transparent transition flex items-center justify-center gap-1.5">
+        <button type="button" data-sport-btn="racing"
+          class="sport-switch-btn py-1.5 px-2.5 rounded-lg text-slate-400 hover:text-white border border-transparent transition flex items-center justify-center gap-1.5">
           <span>🏇</span><span>Horse Racing</span>
         </button>
       </div>
@@ -211,7 +506,8 @@
   </div>
 
   <!-- Mobile Bottom Navigation -->
-  <nav id="mobile-nav" class="lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 grid grid-cols-5 items-center px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30">
+  <nav id="mobile-nav"
+    class="lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 grid grid-cols-5 items-center px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30">
     <button data-tab="fixtures" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-emerald-400">
       <span class="text-base leading-none">⚽</span><span class="mt-0.5">Matches</span>
     </button>
@@ -219,7 +515,8 @@
       <span class="text-base leading-none">💎</span><span class="mt-0.5">Tips</span>
     </button>
     <div class="flex justify-center">
-      <button id="open-suggest-mobile-btn" type="button" class="flex flex-col items-center justify-center -mt-3.5 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
+      <button id="open-suggest-mobile-btn" type="button"
+        class="flex flex-col items-center justify-center -mt-3.5 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
         <span class="text-base leading-none">✨</span><span class="mt-0.5">Suggest</span>
       </button>
     </div>
@@ -232,19 +529,23 @@
   </nav>
 
   <!-- Mobile Bottom Navigation (Racing Mode) -->
-  <nav id="mobile-nav-racing" class="hidden lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 grid grid-cols-5 items-center px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30">
-    <button data-tab="racing_cards" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-emerald-400">
+  <nav id="mobile-nav-racing"
+    class="hidden lg:hidden fixed bottom-0 inset-x-0 glass-panel border-t border-slate-800/80 grid grid-cols-5 items-center px-1 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30">
+    <button data-tab="racing_cards"
+      class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-emerald-400">
       <span class="text-base leading-none">🏇</span><span class="mt-0.5">Races</span>
     </button>
     <button data-tab="racing_tips" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
       <span class="text-base leading-none">💎</span><span class="mt-0.5">Tips</span>
     </button>
     <div class="flex justify-center">
-      <button id="open-suggest-mobile-racing-btn" type="button" class="flex flex-col items-center justify-center -mt-3.5 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
+      <button id="open-suggest-mobile-racing-btn" type="button"
+        class="flex flex-col items-center justify-center -mt-3.5 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-slate-950 font-extrabold text-[11px] shadow-lg shadow-emerald-500/25 border border-emerald-300/40 active:scale-95 transition">
         <span class="text-base leading-none">✨</span><span class="mt-0.5">Suggest</span>
       </button>
     </div>
-    <button data-tab="racing_multiples" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
+    <button data-tab="racing_multiples"
+      class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
       <span class="text-base leading-none">🎟️</span><span class="mt-0.5">Slip</span>
     </button>
     <button data-tab="settings" class="nav-btn-mob flex flex-col items-center py-1 px-1 text-[11px] text-slate-400">
@@ -254,20 +555,23 @@
 
   <!-- Match Preview Drawer/Modal -->
   <div id="preview-modal" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm z-40 overflow-y-auto p-3 md:p-6">
-    <div class="max-w-4xl mx-auto bg-panel border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden my-4 animate-fade-in">
+    <div
+      class="max-w-4xl mx-auto bg-panel border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden my-4 animate-fade-in">
       <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
         <div>
           <span id="modal-league-tag" class="text-xs font-semibold uppercase tracking-wider text-emerald-400"></span>
           <h2 id="modal-match-title" class="text-lg md:text-xl font-bold text-white mt-0.5"></h2>
         </div>
-        <button id="close-preview-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm">✕ Close</button>
+        <button id="close-preview-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm">✕
+          Close</button>
       </div>
       <div id="preview-modal-body" class="p-5 space-y-5 max-h-[82vh] overflow-y-auto scrollbar-thin"></div>
     </div>
   </div>
 
   <!-- Floating Bet Slip Drawer -->
-  <div id="slip-drawer" class="hidden fixed inset-y-0 right-0 w-full max-w-md glass-panel border-l border-slate-700/80 z-50 flex flex-col shadow-2xl">
+  <div id="slip-drawer"
+    class="hidden fixed inset-y-0 right-0 w-full max-w-md glass-panel border-l border-slate-700/80 z-50 flex flex-col shadow-2xl">
     <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
       <h3 class="font-bold text-white text-base">🧾 Your Acca &amp; Tip Slip</h3>
       <button id="close-slip-btn" class="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs">✕</button>
@@ -278,13 +582,18 @@
 
   <!-- Smart Bet Suggester & Bet365 Express Export Modal -->
   <div id="suggest-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 overflow-y-auto p-3 md:p-6">
-    <div class="max-w-3xl mx-auto bg-panel border border-emerald-500/30 rounded-2xl shadow-2xl overflow-hidden my-4 animate-fade-in">
-      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between gap-3 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10">
+    <div
+      class="max-w-3xl mx-auto bg-panel border border-emerald-500/30 rounded-2xl shadow-2xl overflow-hidden my-4 animate-fade-in">
+      <div
+        class="px-5 py-4 border-b border-slate-800 flex items-center justify-between gap-3 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10">
         <div>
-          <h2 id="suggest-modal-title" class="text-lg font-extrabold text-white">✨ Smart Bet Assistant &amp; Bet365 Export</h2>
-          <p id="suggest-modal-subtitle" class="text-xs text-slate-300">Smart single &amp; accumulator picks tailored to your risk level</p>
+          <h2 id="suggest-modal-title" class="text-lg font-extrabold text-white">✨ Smart Bet Assistant &amp; Bet365
+            Export</h2>
+          <p id="suggest-modal-subtitle" class="text-xs text-slate-300">Smart single &amp; accumulator picks tailored to
+            your risk level</p>
         </div>
-        <button id="close-suggest-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs shrink-0">✕ Close</button>
+        <button id="close-suggest-modal"
+          class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs shrink-0">✕ Close</button>
       </div>
       <div id="suggest-modal-body" class="p-5 space-y-4 max-h-[80vh] overflow-y-auto scrollbar-thin"></div>
     </div>
@@ -292,25 +601,34 @@
 
   <!-- Account Sign Up / Log In Modal -->
   <div id="auth-modal" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm z-50 overflow-y-auto p-3 md:p-6">
-    <div class="max-w-lg mx-auto bg-panel border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden my-6 animate-fade-in">
+    <div
+      class="max-w-lg mx-auto bg-panel border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden my-6 animate-fade-in">
       <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
         <div>
           <h2 class="text-lg font-bold text-white">Your AccaLab Account</h2>
-          <p class="text-xs text-slate-400">Save your favourite clubs, watchlist matches &amp; saved accas across devices</p>
+          <p class="text-xs text-slate-400">Save your favourite clubs, watchlist matches &amp; saved accas across
+            devices</p>
         </div>
-        <button id="close-auth-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">✕ Close</button>
+        <button id="close-auth-modal" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">✕
+          Close</button>
       </div>
       <div class="px-5 pt-4 flex gap-2 border-b border-slate-800">
-        <button id="auth-tab-login" class="px-4 py-2 text-xs font-bold border-b-2 border-emerald-400 text-emerald-400">Log In</button>
-        <button id="auth-tab-register" class="px-4 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-white">Create Account</button>
+        <button id="auth-tab-login"
+          class="px-4 py-2 text-xs font-bold border-b-2 border-emerald-400 text-emerald-400">Log In</button>
+        <button id="auth-tab-register"
+          class="px-4 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-white">Create
+          Account</button>
       </div>
       <div id="auth-modal-body" class="p-5 space-y-4 max-h-[75vh] overflow-y-auto scrollbar-thin"></div>
     </div>
   </div>
 
   <!-- Toast Banner -->
-  <div id="toast" class="hidden fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium shadow-xl z-50"></div>
+  <div id="toast"
+    class="hidden fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium shadow-xl z-50">
+  </div>
 
   <script type="module" src="./static/app.js"></script>
 </body>
+
 </html>

@@ -262,8 +262,6 @@ def _build_bet_level_reasons(
         notes.append("screened out your active placed/saved/slip legs")
     if two_up_count > 0:
         notes.append(f"{two_up_count}x 2-Up Early Payout eligible")
-    if len(legs) >= 2:
-        notes.append("Acca Boost qualifying leg structure")
     if notes:
         bet_reasons.append(f"Bet Safeguards & Perks: {notes[0][0].upper()}{notes[0][1:]}{(' • ' + ' • '.join(notes[1:])) if len(notes) > 1 else ''}.")
 
