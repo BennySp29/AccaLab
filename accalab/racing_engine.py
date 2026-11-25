@@ -217,8 +217,10 @@ def evaluate_racing_multiple(
                 fold_max += clean_unit * single_plc_mode_odds
                 fold_exp += clean_unit * single_plc_mode_prob * single_plc_mode_odds
 
-        max_return += fold_max
-        all_place_return += fold_plc_only
+        fold_max = min(1_000_000.0, fold_max)
+        fold_plc_only = min(1_000_000.0, fold_plc_only)
+        max_return = min(1_000_000.0, max_return + fold_max)
+        all_place_return = min(1_000_000.0, all_place_return + fold_plc_only)
         expected_return += fold_exp
         breakdown.append(
             {
@@ -565,48 +567,90 @@ def find_racing_tips(
         second_rating = sorted_r[1]["model_rating"] if len(sorted_r) > 1 else top["model_rating"] - 6.0
         rating_lead = max(0.0, top["model_rating"] - second_rating)
 
-        # 1. Win Tip (top-rated contender)
-        if bt_filter in ("ALL", "R_WIN") and (top["model_win_prob"] >= 0.16 or top["win_edge_pct"] >= 0.0):
-            score_win = top["model_rating"] * 0.55 + top["model_win_prob_pct"] * 0.8 + top["win_edge_pct"] * 0.65 + rating_lead * 1.1
-            conf_w = max(54, min(97, round(52 + top["model_win_prob_pct"] * 0.7 + max(0.0, top["win_edge_pct"]) * 0.8 + rating_lead)))
-            w_tip = {
-                **top,
-                "tip_id": f"{top['race_id']}:{top['runner_id']}:R_WIN",
-                "market": "R_WIN",
-                "bet_type": "r_win",
-                "bet_type_label": "To Win",
-                "selection_label": f"{top['horse_name']} (Win)",
-                "odds": top["win_odds"],
-                "odds_fractional": top["odds_fractional"],
-                "fair_odds": top["fair_win_odds"],
-                "fair_odds_fractional": top["fair_win_odds_fractional"],
-                "min_bet365_odds": top["fair_win_odds"],
-                "min_bet365_fractional": top["fair_win_odds_fractional"],
-                "model_prob": top["model_win_prob"],
-                "model_prob_pct": top["model_win_prob_pct"],
-                "edge_pct": top["win_edge_pct"],
-                "confidence_score": conf_w,
-                "kelly_stake": _kelly(top["model_win_prob"], top["win_odds"]),
-                "value_tag": "Value Win" if top["win_edge_pct"] >= 8.0 else "Strong Win",
-                "_sort_score": score_win,
-            }
-            win_tips.append(w_tip)
+        win_picked_id: int | None = None
+        ew_picked_id: int | None = None
 
-        # 2. Each-Way Value (bigger price in >=5 runner EW races with high place likelihood)
+        # 1. Win Tip (genuine contender within realistic win odds <= 15.0)
+        if bt_filter in ("ALL", "R_WIN"):
+            win_cands = [
+                r
+                for r in sorted_r[:2]
+                if r["win_odds"] <= 15.0 and r["model_win_prob"] >= 0.14 and r["win_edge_pct"] >= -8.0
+            ]
+            if win_cands:
+                top_w = max(
+                    win_cands,
+                    key=lambda r: (
+                        r["model_rating"] * 0.65
+                        + r["model_win_prob_pct"] * 0.90
+                        + min(35.0, max(-10.0, r["win_edge_pct"])) * 0.45
+                    ),
+                )
+                win_picked_id = top_w["runner_id"] if bt_filter == "ALL" else None
+                capped_edge_w = min(35.0, max(-10.0, top_w["win_edge_pct"]))
+                score_win = (
+                    top_w["model_rating"] * 0.65
+                    + top_w["model_win_prob_pct"] * 0.90
+                    + capped_edge_w * 0.45
+                    + rating_lead * 1.1
+                )
+                conf_w = max(
+                    54,
+                    min(97, round(52 + top_w["model_win_prob_pct"] * 0.7 + max(0.0, capped_edge_w) * 0.6 + rating_lead)),
+                )
+                w_tip = {
+                    **top_w,
+                    "tip_id": f"{top_w['race_id']}:{top_w['runner_id']}:R_WIN",
+                    "market": "R_WIN",
+                    "bet_type": "r_win",
+                    "bet_type_label": "To Win",
+                    "selection_label": f"{top_w['horse_name']} (Win)",
+                    "odds": top_w["win_odds"],
+                    "odds_fractional": top_w["odds_fractional"],
+                    "fair_odds": top_w["fair_win_odds"],
+                    "fair_odds_fractional": top_w["fair_win_odds_fractional"],
+                    "min_bet365_odds": top_w["fair_win_odds"],
+                    "min_bet365_fractional": top_w["fair_win_odds_fractional"],
+                    "model_prob": top_w["model_win_prob"],
+                    "model_prob_pct": top_w["model_win_prob_pct"],
+                    "edge_pct": top_w["win_edge_pct"],
+                    "confidence_score": conf_w,
+                    "kelly_stake": _kelly(top_w["model_win_prob"], top_w["win_odds"]),
+                    "value_tag": "Value Win" if top_w["win_edge_pct"] >= 6.0 else "Strong Win",
+                    "_sort_score": score_win,
+                }
+                win_tips.append(w_tip)
+
+        # 2. Each-Way Value (mid/double-digit price in >=5 runner EW races, preferring a distinct horse)
         if bt_filter in ("ALL", "R_EW") and top["ew_eligible"]:
             ew_cands = [
                 r
                 for r in sorted_r[:5]
-                if r["win_odds"] >= 4.5 and r["win_odds"] <= 26.0 and r["model_place_prob"] >= 0.24
+                if 4.5 <= r["win_odds"] <= 26.0 and r["model_place_prob"] >= 0.25 and r["ew_edge_pct"] >= -6.0
             ]
             if ew_cands:
+                non_dup_ew = [r for r in ew_cands if r["runner_id"] != win_picked_id]
+                cand_pool_ew = non_dup_ew if (bt_filter == "ALL" and non_dup_ew) else ew_cands
                 ew_pick = max(
-                    ew_cands,
-                    key=lambda r: r["ew_edge_pct"] * 0.85 + r["model_place_prob_pct"] * 0.75 + (r["model_rating"] - 50.0) * 0.45,
+                    cand_pool_ew,
+                    key=lambda r: (
+                        min(35.0, max(-10.0, r["ew_edge_pct"])) * 0.70
+                        + r["model_place_prob_pct"] * 0.80
+                        + (r["model_rating"] - 50.0) * 0.45
+                    ),
                 )
+                ew_picked_id = ew_pick["runner_id"] if bt_filter == "ALL" else None
                 comb_prob = round(0.5 * ew_pick["model_win_prob"] + 0.5 * ew_pick["model_place_prob"], 5)
-                conf_ew = max(52, min(94, round(48 + ew_pick["model_place_prob_pct"] * 0.72 + max(0.0, ew_pick["ew_edge_pct"]) * 0.7)))
-                score_ew = ew_pick["ew_edge_pct"] * 0.8 + ew_pick["model_place_prob_pct"] * 0.85 + (ew_pick["model_rating"] - 50.0) * 0.5
+                capped_edge_ew = min(35.0, max(-10.0, ew_pick["ew_edge_pct"]))
+                conf_ew = max(
+                    52,
+                    min(94, round(48 + ew_pick["model_place_prob_pct"] * 0.72 + max(0.0, capped_edge_ew) * 0.5)),
+                )
+                score_ew = (
+                    capped_edge_ew * 0.70
+                    + ew_pick["model_place_prob_pct"] * 0.80
+                    + (ew_pick["model_rating"] - 50.0) * 0.45
+                )
                 ew_tips.append(
                     {
                         **ew_pick,
@@ -631,16 +675,33 @@ def find_racing_tips(
                     }
                 )
 
-        # 3. Place Locks (consistent frame hitters in >=5 runner fields)
+        # 3. Place Locks (consistent frame hitters <= 12.0 win odds in >=5 runner fields)
         if bt_filter in ("ALL", "R_PLC") and top["ew_eligible"]:
-            plc_cands = [r for r in sorted_r[:3] if r["model_place_prob"] >= 0.42 and r["place_odds"] >= 1.18]
+            plc_cands = [
+                r
+                for r in sorted_r[:3]
+                if 1.8 <= r["win_odds"] <= 12.0
+                and r["model_place_prob"] >= 0.45
+                and r["place_odds"] >= 1.18
+                and r["place_edge_pct"] >= -8.0
+            ]
             if plc_cands:
+                non_dup_plc = [r for r in plc_cands if r["runner_id"] not in {win_picked_id, ew_picked_id}]
+                cand_pool_plc = non_dup_plc if (bt_filter == "ALL" and non_dup_plc) else plc_cands
                 plc_pick = max(
-                    plc_cands,
-                    key=lambda r: r["model_place_prob_pct"] * 1.1 + r["place_edge_pct"] * 0.7 + r["model_rating"] * 0.35,
+                    cand_pool_plc,
+                    key=lambda r: (
+                        r["model_place_prob_pct"] * 1.05
+                        + min(35.0, max(-10.0, r["place_edge_pct"])) * 0.55
+                        + r["model_rating"] * 0.35
+                    ),
                 )
-                conf_p = max(58, min(97, round(46 + plc_pick["model_place_prob_pct"] * 0.68 + max(0.0, plc_pick["place_edge_pct"]) * 0.5)))
-                score_p = plc_pick["model_place_prob_pct"] * 1.05 + plc_pick["place_edge_pct"] * 0.65 + plc_pick["model_rating"] * 0.3
+                capped_edge_p = min(35.0, max(-10.0, plc_pick["place_edge_pct"]))
+                conf_p = max(
+                    58,
+                    min(97, round(46 + plc_pick["model_place_prob_pct"] * 0.68 + max(0.0, capped_edge_p) * 0.45)),
+                )
+                score_p = plc_pick["model_place_prob_pct"] * 1.05 + capped_edge_p * 0.55 + plc_pick["model_rating"] * 0.35
                 plc_tips.append(
                     {
                         **plc_pick,
@@ -665,16 +726,25 @@ def find_racing_tips(
                     }
                 )
 
-    win_tips.sort(key=lambda x: x["_sort_score"], reverse=True)
-    ew_tips.sort(key=lambda x: x["_sort_score"], reverse=True)
-    plc_tips.sort(key=lambda x: x["_sort_score"], reverse=True)
-
-    if win_tips:
-        win_tips[0]["value_tag"] = "NAP"
-    if len(win_tips) > 1:
-        win_tips[1]["value_tag"] = "NB"
-
     merged = win_tips + ew_tips + plc_tips
+    merged.sort(key=lambda x: x["_sort_score"], reverse=True)
+    if bt_filter == "ALL":
+        deduped: list[dict[str, Any]] = []
+        seen_runners: set[int] = set()
+        for item in merged:
+            rid_rn = int(item["runner_id"])
+            if rid_rn in seen_runners:
+                continue
+            seen_runners.add(rid_rn)
+            deduped.append(item)
+        merged = deduped
+
+    win_surviving = [x for x in merged if x["market"] == "R_WIN"]
+    if win_surviving:
+        win_surviving[0]["value_tag"] = "NAP"
+    if len(win_surviving) > 1:
+        win_surviving[1]["value_tag"] = "NB"
+
     merged.sort(key=lambda x: (1 if x["value_tag"] in ("NAP", "NB") else 0, x["_sort_score"]), reverse=True)
     for item in merged:
         item.pop("_sort_score", None)
@@ -733,22 +803,42 @@ def _build_racing_bet_reasons(
         return []
     distinct_courses = len({l["course"] for l in legs})
     top_leg = max(legs, key=lambda l: float(l.get("model_rating") or 0))
+    struct = str(ev.get("structure") or "acca").lower()
+    if struct == "single":
+        struct_desc = (
+            f"Single bet covering 1 race — relies solely on {legs[0]['horse_name']} "
+            f"finishing {'in the places or winning' if each_way else 'first'}."
+        )
+    elif struct in ("double", "treble", "acca"):
+        ew_note = " (or place on the E/W half)" if each_way else ""
+        struct_desc = (
+            f"{ev['structure_label']} across {distinct_courses} track(s) — all {len(legs)} selections roll together"
+            f"{ew_note} to multiply your odds."
+        )
+    else:
+        has_singles = struct in ("patent", "lucky15")
+        min_note = "just 1 winner already pays a return" if has_singles else "2 winners already guarantee a return"
+        struct_desc = (
+            f"{ev['structure_label']} across {distinct_courses} track(s) covering {ev['base_lines']} combinations — "
+            f"{min_note}{' (doubled with Each-Way cover)' if each_way else ''}."
+        )
+    place_txt = f" • All-place return: £{ev['all_place_return']:.2f}" if each_way else ""
     return [
+        f"Bet Structure: {struct_desc}",
         (
-            f"Bet Structure: {ev['structure_label']} ({'Each-Way • 2x lines' if each_way else 'Win/Place'}) "
-            f"combining {len(legs)} distinct races across {distinct_courses} track(s) at £{ev['unit_stake']:.2f}/line "
-            f"(Total stake £{ev['total_stake']:.2f})."
+            f"Stake & Realistic Payout: £{ev['unit_stake']:.2f}/line across {ev['total_bets']} bets "
+            f"(£{ev['total_stake']:.2f} total). Max payout if all win: £{ev['max_return']:.2f}{place_txt} — "
+            f"why it matters: {ev['prob_any_return_pct']:.1f}% estimated chance of at least one return."
         ),
         (
-            f"Payout & Math: Max return £{ev['max_return']:.2f}"
-            + (f" (all-place return £{ev['all_place_return']:.2f})" if each_way else "")
-            + f" • {ev['prob_any_return_pct']:.1f}% chance of at least one return • EV {ev['expected_value_pct']:+.1f}%."
+            f"Headline Pick: {top_leg['horse_name']} ({top_leg['off_time']} {top_leg['course']}) leads at "
+            f"{top_leg['model_rating']:.0f}/100 ({top_leg['model_win_prob']*100:.1f}% Win / {top_leg['model_place_prob']*100:.1f}% Place) — "
+            f"why it matters: having a reliable top-rated anchor steadies the overall multiple."
         ),
         (
-            f"Anchor Runner: {top_leg['horse_name']} ({top_leg['off_time']} {top_leg['course']}) tops the card at "
-            f"{top_leg['model_rating']:.0f}/100 ({top_leg['model_win_prob']*100:.1f}% Win / {top_leg['model_place_prob']*100:.1f}% Place)."
+            "Selection Safeguards: Strictly 1 horse per race, odds kept inside your chosen risk band, "
+            "and races already in your slip or placed history are screened out."
         ),
-        "Race Discipline Rule: Strict 1 runner per race inside every multiple, screening out already-backed races & runners.",
     ]
 
 
@@ -858,6 +948,14 @@ def _is_tip_excluded(
     return False
 
 
+RACING_RISK_ODDS_BANDS: dict[str, tuple[float, float]] = {
+    "low": (1.20, 4.50),
+    "medium": (1.90, 8.50),
+    "high": (3.50, 15.00),
+    "longshot": (6.50, 29.00),
+}
+
+
 def build_racing_suggestions(
     conn: sqlite3.Connection,
     user: dict[str, Any] | None = None,
@@ -868,7 +966,7 @@ def build_racing_suggestions(
     date_to: str | None = None,
     race_type: str | None = None,
 ) -> dict[str, Any]:
-    """Build 4 curated Quick Racing Cards (NAP Single, EW Double, Win/Place Treble, Lucky 15) for a date range."""
+    """Build 4 diversified Quick Racing Cards (NAP Single, EW Double, Win/Place Treble, Lucky 15) for a date range."""
     all_tips = find_racing_tips(
         conn,
         user=user,
@@ -877,7 +975,7 @@ def build_racing_suggestions(
         date_from=date_from,
         date_to=date_to,
         race_type=race_type,
-        limit=240,
+        limit=320,
     )
     race_keys, runner_keys = _racing_exclusion_sets(exclude_legs)
     if race_keys or runner_keys:
@@ -893,13 +991,45 @@ def build_racing_suggestions(
     ew_pool = [t for t in all_tips if t["market"] == "R_EW"]
     plc_pool = [t for t in all_tips if t["market"] == "R_PLC"]
 
-    def _pick_distinct(pool: list[dict[str, Any]], count: int, used_races: set[int] | None = None) -> list[dict[str, Any]]:
-        seen = set(used_races or set())
+    runner_usage: dict[int, int] = {}
+
+    def _pick_diversified(
+        pool: list[dict[str, Any]],
+        count: int,
+        min_odds: float = 1.15,
+        max_odds: float = 30.0,
+        fallback_pool: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        seen_races: set[int] = set()
+        seen_runners: set[int] = set()
         out: list[dict[str, Any]] = []
-        for item in pool:
-            if item["race_id"] in seen:
+
+        candidates = [
+            t
+            for t in pool
+            if min_odds <= float(t.get("win_odds") or t.get("odds") or 0.0) <= max_odds
+        ]
+        if len({int(t["race_id"]) for t in candidates}) < count and fallback_pool:
+            seen_ids = {int(t["runner_id"]) for t in candidates}
+            for extra in fallback_pool:
+                if int(extra["runner_id"]) not in seen_ids and min_odds <= float(extra.get("win_odds") or extra.get("odds") or 0.0) <= max_odds:
+                    candidates.append(extra)
+                    seen_ids.add(int(extra["runner_id"]))
+        if len({int(t["race_id"]) for t in candidates}) < count:
+            candidates = list(pool) + [t for t in (fallback_pool or []) if t not in pool]
+
+        ranked = sorted(
+            enumerate(candidates),
+            key=lambda pair: (runner_usage.get(int(pair[1]["runner_id"]), 0), pair[0]),
+        )
+        for _, item in ranked:
+            rid_rc = int(item["race_id"])
+            rid_rn = int(item["runner_id"])
+            if rid_rc in seen_races or rid_rn in seen_runners:
                 continue
-            seen.add(item["race_id"])
+            seen_races.add(rid_rc)
+            seen_runners.add(rid_rn)
+            runner_usage[rid_rn] = runner_usage.get(rid_rn, 0) + 1
             out.append(_tip_to_racing_leg(item))
             if len(out) >= count:
                 break
@@ -908,7 +1038,7 @@ def build_racing_suggestions(
     cards: list[dict[str, Any]] = []
 
     # 1. NAP Win Single
-    nap_legs = _pick_distinct(win_pool or all_tips, 1)
+    nap_legs = _pick_diversified(win_pool or all_tips, 1, min_odds=1.20, max_odds=9.0, fallback_pool=all_tips)
     if nap_legs:
         ev = evaluate_racing_multiple(nap_legs, structure="single", each_way=False, unit_stake=10.0)
         cards.append(
@@ -927,8 +1057,14 @@ def build_racing_suggestions(
             }
         )
 
-    # 2. Each-Way Value Double
-    ew_double_legs = _pick_distinct(ew_pool if len(ew_pool) >= 2 else win_pool, 2)
+    # 2. Each-Way Value Double (prefers horses not yet used in NAP)
+    ew_double_legs = _pick_diversified(
+        ew_pool if len(ew_pool) >= 2 else win_pool,
+        2,
+        min_odds=4.5,
+        max_odds=17.0,
+        fallback_pool=win_pool,
+    )
     if len(ew_double_legs) >= 2:
         is_ew = all(l["ew_eligible"] for l in ew_double_legs)
         ev = evaluate_racing_multiple(ew_double_legs, structure="double", each_way=is_ew, unit_stake=5.0)
@@ -948,9 +1084,9 @@ def build_racing_suggestions(
             }
         )
 
-    # 3. Win / Place Treble
+    # 3. Win / Place Treble (high-hit anchors <= 7.5 win odds)
     treble_pool = plc_pool if len(plc_pool) >= 3 else win_pool
-    treble_legs = _pick_distinct(treble_pool, 3)
+    treble_legs = _pick_diversified(treble_pool, 3, min_odds=1.50, max_odds=7.50, fallback_pool=win_pool)
     if len(treble_legs) >= 3:
         ev = evaluate_racing_multiple(treble_legs, structure="treble", each_way=False, unit_stake=5.0)
         cards.append(
@@ -969,18 +1105,16 @@ def build_racing_suggestions(
             }
         )
 
-    # 4. Lucky 15 (4 runners)
-    l15_pool = ew_pool if len(ew_pool) >= 4 else sorted(
+    # 4. Lucky 15 (4 balanced runners 2.50 - 12.00, preferring fresh picks)
+    l15_base_pool = sorted(
         win_pool + ew_pool,
         key=lambda x: (x["model_rating"], x["model_win_prob_pct"]),
         reverse=True,
     )
-    l15_legs = _pick_distinct(l15_pool, 4)
-    if len(l15_legs) < 4:
-        l15_legs = _pick_distinct(all_tips, 4)
+    l15_legs = _pick_diversified(l15_base_pool, 4, min_odds=2.50, max_odds=12.0, fallback_pool=all_tips)
     if len(l15_legs) >= 4:
         avg_odds = sum(l["win_odds"] for l in l15_legs) / 4.0
-        ew_l15 = avg_odds >= 4.0 and all(l["ew_eligible"] for l in l15_legs)
+        ew_l15 = avg_odds >= 3.8 and all(l["ew_eligible"] for l in l15_legs)
         l15_full_title = l15_base + (" (E/W)" if ew_l15 else " (Win)")
         ev = evaluate_racing_multiple(l15_legs, structure="lucky15", each_way=ew_l15, unit_stake=1.0)
         cards.append(
@@ -1012,14 +1146,14 @@ def _score_racing_candidate_for_risk(tip: dict[str, Any], risk_level: str) -> fl
     rating = float(tip.get("model_rating") or 50.0)
     win_p = float(tip.get("model_win_prob_pct") or 10.0)
     plc_p = float(tip.get("model_place_prob_pct") or 30.0)
-    edge = float(tip.get("edge_pct") or 0.0)
+    edge = max(-15.0, min(35.0, float(tip.get("edge_pct") or 0.0)))
     if risk_level == "low":
-        return plc_p * 1.15 + win_p * 0.75 + rating * 0.45 - max(0.0, win_odds - 5.0) * 4.5
+        return plc_p * 1.15 + win_p * 0.80 + rating * 0.55 - max(0.0, win_odds - 3.8) * 5.0
     if risk_level == "high":
-        return edge * 1.1 + min(win_odds, 14.0) * 3.0 + rating * 0.55 - max(0.0, 2.5 - win_odds) * 8.0
+        return edge * 0.75 + min(win_odds, 14.0) * 2.2 + rating * 0.65 - max(0.0, 3.5 - win_odds) * 8.0
     if risk_level == "longshot":
-        return edge * 1.0 + min(win_odds, 22.0) * 3.6 + plc_p * 0.55 - max(0.0, 5.0 - win_odds) * 10.0
-    return rating * 0.7 + edge * 0.9 + plc_p * 0.5 + win_p * 0.55 - max(0.0, win_odds - 10.0) * 1.8
+        return edge * 0.70 + min(win_odds, 24.0) * 2.2 + plc_p * 0.65 - max(0.0, 6.5 - win_odds) * 10.0
+    return rating * 0.85 + edge * 0.55 + plc_p * 0.60 + win_p * 0.70 - max(0.0, win_odds - 6.5) * 3.0
 
 
 def build_custom_racing_bets(
@@ -1027,7 +1161,7 @@ def build_custom_racing_bets(
     user: dict[str, Any] | None = None,
     criteria: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build 1-3 custom UK horse racing Singles/Doubles/Trebles/Accas/Trixies/Patents/Yankees/Lucky 15s."""
+    """Build 1-3 custom UK horse racing multiples within strict risk-tier odds bands."""
     crit = criteria or {}
     struct = str(crit.get("structure") or "lucky15").strip().lower()
     if struct not in RACING_MULTIPLES:
@@ -1037,7 +1171,7 @@ def build_custom_racing_bets(
     unit_stake = round(max(0.1, float(crit.get("unit_stake") or 1.0)), 2)
     style = str(crit.get("style") or "ALL").strip().upper()
     risk_level = str(crit.get("risk_level") or "medium").strip().lower()
-    if risk_level not in ("low", "medium", "high", "longshot"):
+    if risk_level not in RACING_RISK_ODDS_BANDS:
         risk_level = "medium"
 
     if struct == "acca":
@@ -1055,37 +1189,55 @@ def build_custom_racing_bets(
     exclude_scope = "runner" if crit.get("exclude_scope") == "runner" else "race"
     avail_dates = get_available_racing_dates(conn)
 
-    pool = find_racing_tips(
+    # Fetch full race pool rather than only single-market deduped tips so every risk band has deep coverage
+    raw_pool = find_racing_tips(
         conn,
         user=user,
         region=region,
         bet_type=style,
         day=day,
         race_type=race_type,
-        limit=320,
+        limit=400,
         date_from=date_from,
         date_to=date_to,
     )
     if each_way:
-        pool = [t for t in pool if t.get("ew_eligible") and t.get("win_odds", 0) >= 2.2] or pool
+        ew_filtered = [t for t in raw_pool if t.get("ew_eligible") and float(t.get("win_odds") or t.get("odds") or 0.0) >= 2.0]
+        if ew_filtered:
+            raw_pool = ew_filtered
+    elif style == "ALL" and risk_level != "low":
+        win_like = [t for t in raw_pool if t.get("market") in ("R_WIN", "R_EW")]
+        if len({int(t["race_id"]) for t in win_like}) >= req_legs:
+            raw_pool = win_like
 
     excl_legs = list(crit.get("excluded_legs") or []) if exclude_already else []
     avoid_legs = list(crit.get("avoid_legs") or [])
     race_keys, runner_keys = _racing_exclusion_sets(excl_legs)
     avoid_rk, avoid_rn = _racing_exclusion_sets(avoid_legs)
 
-    filtered: list[dict[str, Any]] = []
-    for t in pool:
+    eligible: list[dict[str, Any]] = []
+    for t in raw_pool:
         if exclude_already and _is_tip_excluded(t, race_keys, runner_keys, scope=exclude_scope):
             continue
         if (avoid_rk or avoid_rn) and _is_tip_excluded(t, avoid_rk, avoid_rn, scope="race"):
             continue
+        eligible.append(t)
+
+    min_o, max_o = RACING_RISK_ODDS_BANDS[risk_level]
+    in_band = [t for t in eligible if min_o <= float(t.get("win_odds") or t.get("odds") or 0.0) <= max_o]
+    if len({int(t["race_id"]) for t in in_band}) < req_legs:
+        fb_min, fb_max = (1.15, 12.0) if risk_level in ("low", "medium") else (2.50, 29.0)
+        in_band = [t for t in eligible if fb_min <= float(t.get("win_odds") or t.get("odds") or 0.0) <= fb_max]
+    if not in_band:
+        in_band = eligible
+
+    filtered: list[dict[str, Any]] = []
+    for t in in_band:
         t_copy = dict(t)
         t_copy["_score"] = _score_racing_candidate_for_risk(t, risk_level)
         filtered.append(t_copy)
-
     filtered.sort(key=lambda x: x["_score"], reverse=True)
-    # Deduplicate same runner across different tip markets (prefer best score for that runner/race)
+
     if not filtered:
         return {
             "bets": [],
@@ -1129,7 +1281,19 @@ def build_custom_racing_bets(
         for p in picked:
             used_races_global.add(int(p["race_id"]))
 
-        legs = [_tip_to_racing_leg(p) for p in picked]
+        legs: list[dict[str, Any]] = []
+        for p in picked:
+            leg = _tip_to_racing_leg(p)
+            if each_way and leg.get("ew_eligible") and leg.get("market") != "R_EW":
+                leg["market"] = "R_EW"
+                leg["bet_type"] = "r_ew"
+                leg["bet_type_label"] = "Each-Way"
+                leg["selection_label"] = f"{leg['horse_name']} (E/W)"
+                leg["odds"] = leg["win_odds"]
+                leg["odds_fractional"] = _fmt_uk_odds_text(leg["win_odds"])
+                leg["model_prob"] = round(0.5 * (leg["model_win_prob"] + leg["model_place_prob"]), 5)
+            legs.append(leg)
+
         ew_tag = "Each-Way " if each_way else ""
         title = f"{ew_tag}{style_names.get(style, 'Racing')} {struct_short}" + (f" #{b_idx + 1}" if num_bets > 1 else "")
         subtitle = f"{risk_names[risk_level]} • {len(legs)} races • £{unit_stake:.2f}/line"

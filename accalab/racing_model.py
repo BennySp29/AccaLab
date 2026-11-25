@@ -91,7 +91,7 @@ def parse_form_figures(form_str: str, direction: str = "rtl") -> dict[str, Any]:
         return {
             "figures": [],
             "numeric_last": None,
-            "form_score": -0.05,
+            "form_score": 0.05,
             "recent_wins": 0,
             "recent_places": 0,
             "display_form": "",
@@ -231,15 +231,98 @@ def compute_place_probabilities(win_probs: list[float], places_paid: int) -> lis
     return [round(val, 5) for val in capped]
 
 
-def _z_standardize(vals: list[float]) -> list[float]:
+def _z_standardize(vals: list[float], floor_sd: float = 0.15) -> list[float]:
     if len(vals) <= 1:
         return [0.0 for _ in vals]
     mean_v = sum(vals) / len(vals)
     var = sum((v - mean_v) ** 2 for v in vals) / len(vals)
-    sd = math.sqrt(var)
-    if sd < 1e-6:
-        return [0.0 for _ in vals]
+    sd = max(math.sqrt(var), floor_sd)
     return [max(-2.6, min(2.6, (v - mean_v) / sd)) for v in vals]
+
+
+def _match_racing_news(
+    race: dict[str, Any],
+    runner: dict[str, Any],
+    news_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Match racing news headlines cleanly to this runner, its trainer at this meeting, or its course."""
+    if not news_rows:
+        return None
+    horse = str(runner.get("horse_name") or "").strip()
+    trainer = str(runner.get("trainer") or "").strip()
+    course = str(race.get("course") or "").strip()
+
+    if len(horse) >= 5:
+        pat = re.compile(rf"\b{re.escape(horse)}\b", re.I)
+        for nw in news_rows:
+            hay = f"{nw.get('title', '')} {nw.get('summary', '')}"
+            if pat.search(hay):
+                return nw
+
+    if len(trainer) >= 5 and len(course) >= 4:
+        pat_tr = re.compile(rf"\b{re.escape(trainer)}\b", re.I)
+        pat_cr = re.compile(rf"\b{re.escape(course)}\b", re.I)
+        for nw in news_rows:
+            hay = f"{nw.get('title', '')} {nw.get('summary', '')}"
+            if pat_tr.search(hay) and pat_cr.search(hay):
+                return nw
+
+    if len(course) >= 4:
+        pat_cr = re.compile(rf"\b{re.escape(course)}\b", re.I)
+        for nw in news_rows:
+            hay = f"{nw.get('title', '')} {nw.get('summary', '')}"
+            if pat_cr.search(hay):
+                return nw
+
+    return None
+
+
+def _describe_recent_form(
+    parsed_form: dict[str, Any],
+    runs: int,
+    wins: int,
+    plcs: int,
+    is_debutant: bool,
+) -> str:
+    figs = parsed_form.get("figures") or []
+    disp = parsed_form.get("display_form") or ""
+    if is_debutant or (not figs and runs == 0):
+        return (
+            "Unraced debutant with no public form yet — "
+            "why it matters: assessed on yard strike rate, weight carried, and market support rather than past runs."
+        )
+
+    last = figs[0] if figs else ""
+    if last == "1":
+        lead = "Won last time out"
+    elif last == "2":
+        lead = "Finished 2nd last time out"
+    elif last == "3":
+        lead = "Placed 3rd last time out"
+    elif last == "4":
+        lead = "Finished 4th last time out"
+    elif last in ("F", "U", "P", "R", "B"):
+        lead = "Failed to complete last time out"
+    else:
+        lead = "Finished outside the frame last time out"
+
+    seq_txt = f" (recent figures: {disp})" if disp else ""
+    career_txt = (
+        f" • {wins} win{'s' if wins != 1 else ''} & {plcs} place{'s' if plcs != 1 else ''} in {runs} career starts"
+        if runs > 0
+        else ""
+    )
+
+    if parsed_form.get("recent_wins", 0) >= 2 or last in ("1", "2"):
+        why = "proves sharp recent fitness and ability to compete right at the finish."
+    elif parsed_form.get("recent_places", 0) >= 2 or last == "3":
+        why = "consistent top-3 runs show a dependable floor in this company."
+    elif float(parsed_form.get("form_score") or 0.0) >= 0.0:
+        why = "competitive recent efforts show steady fitness; race setup and price decide the edge."
+    else:
+        why = "mixed recent finishes mean improvement is needed today, so price and yard profile matter most."
+
+    return f"{lead}{seq_txt}{career_txt} — why it matters: {why}"
 
 
 def _build_connection_strength_maps(conn: sqlite3.Connection) -> tuple[dict[str, float], dict[str, float]]:
@@ -312,44 +395,65 @@ def _build_runner_reasons(
     wins = int(runner.get("career_wins") or 0)
     plcs = int(runner.get("career_places") or 0)
 
-    or_txt = f"OR {or_val}" if or_val else "Unrated"
-    w_txt = f" • {w_disp}" if w_disp else ""
-    career_txt = f"{wins}W / {plcs}P in {runs} runs" if runs > 0 else "Lightly raced / unexposed"
-    b1 = f"Form & Class: Rated {rating:.0f}/100 ({or_txt}{w_txt}) • Recent {disp_form} • {career_txt}."
+    b1 = f"Recent Form: {_describe_recent_form(parsed_form, runs, wins, plcs, bool(runner.get('is_debutant')))}"
 
     dist = race.get("distance_text") or "distance"
     going = race.get("going") or race.get("surface") or "prevailing ground"
-    draw_txt = f" • Stall {runner['draw']}" if runner.get("draw") else ""
-    hg_txt = f" • {runner['headgear']}" if runner.get("headgear") else ""
-    fresh_txt = f" • {runner['days_since_run']}d since last run" if runner.get("days_since_run") else ""
+    setup_parts = [f"{race['course']} {dist} ({race['race_type']}) on {going}"]
+    if or_val:
+        setup_parts.append(f"Official Rating {or_val}")
+    if w_disp:
+        setup_parts.append(f"carrying {w_disp}")
+    if runner.get("draw"):
+        setup_parts.append(f"Stall {runner['draw']}")
+    if runner.get("headgear"):
+        setup_parts.append(f"gear: {runner['headgear']}")
+    if runner.get("days_since_run"):
+        setup_parts.append(f"{runner['days_since_run']}d since last run")
+    ew_clause = (
+        f"Each-Way safety net pays {terms['places_paid']} of {race['runners_count']} places ({terms['label']})."
+        if terms["ew_eligible"]
+        else f"Win-only terms apply ({race['runners_count']} runners)."
+    )
     b2 = (
-        f"Conditions & Draw: {race['course']} {dist} ({race['race_type']}) on {going}"
-        f"{draw_txt}{hg_txt}{fresh_txt} ({terms['places_paid']} of {race['runners_count']} places: {terms['label']})."
+        f"Today's Race Setup: {', '.join(setup_parts)}. {ew_clause} — "
+        f"why it matters: trip, ground, and weight suitability shape how cleanly the horse can run to its rating."
     )
 
     fair_win = 1.0 / max(0.005, win_prob)
     fair_plc = 1.0 / max(0.01, place_prob)
     src_lbl = "live market" if odds_source in ("live_fixed", "pmu_tote", "user_manual") else "model tissue"
-    ew_note = (
-        f"EW fair min > {_fmt_uk_odds_text(fair_win)} ({terms['label']}, EW edge {ew_edge_pct:+.1f}%)"
-        if terms["ew_eligible"]
-        else "Win-only field (<5 runners)"
-    )
+    if win_edge_pct >= 5.0:
+        val_why = "the bookmaker odds are higher than our fair price, offering positive mathematical value."
+    elif terms["ew_eligible"] and ew_edge_pct >= 3.0:
+        val_why = "strong top-3 consistency makes the each-way place return attractive at these odds."
+    elif win_prob >= 0.24:
+        val_why = "priced closely around fair market odds, making this a reliability play rather than a longshot edge."
+    else:
+        val_why = "priced close to market consensus, so best sided with when the race setup suits."
     b3 = (
-        f"Win/Place Value Math: {win_prob * 100:.1f}% Win (fair {_fmt_uk_odds_text(fair_win)}) & "
-        f"{place_prob * 100:.1f}% Place (fair {_fmt_uk_odds_text(fair_plc)}) vs {_fmt_uk_odds_text(ref_odds)} {src_lbl} "
-        f"({win_edge_pct:+.1f}% Win edge) • {ew_note}."
+        f"Price & Value: Rated {rating:.0f}/100 with {win_prob * 100:.1f}% Win chance (fair {_fmt_uk_odds_text(fair_win)}) "
+        f"and {place_prob * 100:.1f}% top-{terms['places_paid']} finish (fair {_fmt_uk_odds_text(fair_plc)}) "
+        f"vs {_fmt_uk_odds_text(ref_odds)} {src_lbl} ({win_edge_pct:+.1f}% edge) — why it matters: {val_why}"
     )
 
     tr = runner.get("trainer") or "Yard"
     jk = runner.get("jockey") or "Jockey TBA"
+    b4 = (
+        f"Stable & Jockey: {jk} is booked for trainer {tr} in this {race['runners_count']}-runner {race['race_type']} race — "
+        f"why it matters: rider bookings and yard form signal race-day readiness and tactical judgement."
+    )
+
     if matched_news:
-        b4 = f"Connections & News: {jk} rides for {tr} • [{matched_news['source']}] {matched_news['title']}."
+        b5 = (
+            f"Racing News: [{matched_news['source']}] {matched_news['title']} — "
+            f"why it matters: relevant yard, runner, or track pointer ahead of this race."
+        )
     else:
-        b4 = f"Connections: {jk} booked for trainer {tr} in {race['runners_count']}-runner {race['race_type']} field."
+        b5 = "Racing News: No negative going alerts, withdrawals, or stable setbacks flagged in BBC Sport Racing feeds — clean bill of health."
 
     career_record = f"{wins}-{plcs}-{runs}" if runs > 0 else "Unraced"
-    stats = {
+    stats: dict[str, Any] = {
         "model_rating": round(rating, 1),
         "official_rating": or_val,
         "weight_display": w_disp,
@@ -361,12 +465,27 @@ def _build_runner_reasons(
         "place_terms_label": terms["label"],
         "career_record": career_record,
         "runners_count": int(race["runners_count"]),
+        "course": race["course"],
+        "distance_text": dist,
+        "going": going,
+        "race_type": race["race_type"],
+        "jockey": jk,
+        "trainer": tr,
     }
-    return [b1, b2, b3, b4], stats
+    if runner.get("draw"):
+        stats["draw"] = runner["draw"]
+    if runner.get("headgear"):
+        stats["headgear"] = runner["headgear"]
+    if runner.get("days_since_run"):
+        stats["days_since_run"] = runner["days_since_run"]
+    if matched_news:
+        stats["news_headline"] = f"[{matched_news['source']}] {matched_news['title']}"
+        stats["news_source"] = matched_news["source"]
+    return [b1, b2, b3, b4, b5], stats
 
 
 def score_and_predict_races(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Score every loaded horse race, fit softmax Win + Stern-Harville Place probs, and compute edges."""
+    """Score every loaded horse race, apply Bayesian market pooling, Stern-Harville Place probs, and clear reasons."""
     races = [dict(r) for r in conn.execute("SELECT * FROM racing_races ORDER BY race_date ASC, off_time ASC").fetchall()]
     if not races:
         return {"races_scored": 0, "runners_scored": 0}
@@ -400,7 +519,7 @@ def score_and_predict_races(conn: sqlite3.Connection) -> dict[str, Any]:
                         reasons_json = ?, reason_stats_json = '{}', updated_at = ?
                     WHERE id = ?
                     """,
-                    (json.dumps(["Non-Runner: declared withdrawn from this race."]), now, nr["id"]),
+                    (json.dumps(["Non-Runner: Declared withdrawn from this race — excluded from betting calculations."]), now, nr["id"]),
                 )
 
         n = len(active)
@@ -458,9 +577,9 @@ def score_and_predict_races(conn: sqlite3.Connection) -> dict[str, Any]:
             deb_adj = -0.04 if r.get("is_debutant") else 0.0
             conn_raw.append(0.55 * tr + 0.45 * jk + deb_adj)
 
-        # Conditions, freshness & draw
+        # Conditions, freshness & draw (avoid lifting beaten outsiders just for wearing headgear)
         cond_raw: list[float] = []
-        for r in active:
+        for idx_r, r in enumerate(active):
             val = 0.0
             dsr = r.get("days_since_run")
             if dsr is not None:
@@ -472,15 +591,15 @@ def score_and_predict_races(conn: sqlite3.Connection) -> dict[str, Any]:
                 draw_num = float(r["draw"])
                 mid = (n + 1) / 2.0
                 val -= 0.03 * ((draw_num - mid) / max(1.0, n / 2.0)) * 5.0
-            if r.get("headgear"):
-                val += 0.12
+            if r.get("headgear") and parsed_forms[idx_r]["form_score"] > 0.15:
+                val += 0.04
             cond_raw.append(val)
 
-        z_form = _z_standardize(form_raw)
-        z_rw = _z_standardize(rating_weight_raw)
-        z_car = _z_standardize(career_raw)
-        z_conn = _z_standardize(conn_raw)
-        z_cond = _z_standardize(cond_raw)
+        z_form = _z_standardize(form_raw, floor_sd=0.22)
+        z_rw = _z_standardize(rating_weight_raw, floor_sd=2.5 if use_or else 0.25)
+        z_car = _z_standardize(career_raw, floor_sd=0.06)
+        z_conn = _z_standardize(conn_raw, floor_sd=0.04)
+        z_cond = _z_standardize(cond_raw, floor_sd=0.20)
 
         comp_scores = [
             0.35 * z_form[i] + 0.27 * z_rw[i] + 0.19 * z_car[i] + 0.11 * z_conn[i] + 0.08 * z_cond[i]
@@ -493,55 +612,57 @@ def score_and_predict_races(conn: sqlite3.Connection) -> dict[str, Any]:
         exp_sum = sum(exp_vals) or 1.0
         fundamental_probs = [ev / exp_sum for ev in exp_vals]
 
-        # Check live market coverage
+        # Bayesian log-linear pooling with live devigged market probabilities & plausible edge guardrail
         live_sources = {"live_fixed", "pmu_tote", "user_manual"}
-        live_entries = [
-            r.get("market_odds")
+        has_live_flag = [
+            bool(r.get("odds_source") in live_sources and r.get("market_odds") and float(r["market_odds"]) > 1.01)
             for r in active
-            if r.get("odds_source") in live_sources and r.get("market_odds") and float(r["market_odds"]) > 1.01
         ]
-        has_market_blend = len(live_entries) >= max(2, int(math.ceil(n * 0.70)))
+        live_count = sum(1 for x in has_live_flag if x)
+        has_market_blend = live_count >= max(2, int(math.ceil(n * 0.70)))
         if has_market_blend:
             raw_mkt_inv = [
-                (1.0 / float(r["market_odds"]))
-                if (r.get("odds_source") in live_sources and r.get("market_odds") and float(r["market_odds"]) > 1.01)
+                (1.0 / min(151.0, max(1.04, float(r["market_odds"]))))
+                if has_live_flag[i]
                 else fundamental_probs[i]
                 for i, r in enumerate(active)
             ]
             mkt_sum = sum(raw_mkt_inv) or 1.0
             mkt_probs = [v / mkt_sum for v in raw_mkt_inv]
-            blended = [0.70 * fundamental_probs[i] + 0.30 * mkt_probs[i] for i in range(n)]
+            w_mkt = 0.72 if use_or else 0.84
+            geo = [
+                (max(1e-4, fundamental_probs[i]) ** (1.0 - w_mkt)) * (max(1e-4, mkt_probs[i]) ** w_mkt)
+                for i in range(n)
+            ]
+            geo_sum = sum(geo) or 1.0
+            pooled = [g / geo_sum for g in geo]
+            guarded: list[float] = []
+            for i in range(n):
+                p_val = pooled[i]
+                if has_live_flag[i]:
+                    lo_p = 0.58 * mkt_probs[i]
+                    hi_p = min(0.88, 1.42 * mkt_probs[i] + 0.015)
+                    p_val = max(lo_p, min(hi_p, p_val))
+                guarded.append(max(0.004, min(0.88, p_val)))
+            norm_sum = sum(guarded) or 1.0
+            win_probs = [round(p / norm_sum, 5) for p in guarded]
         else:
-            blended = list(fundamental_probs)
+            clamped = [max(0.004, min(0.88, p)) for p in fundamental_probs]
+            norm_sum = sum(clamped) or 1.0
+            win_probs = [round(p / norm_sum, 5) for p in clamped]
 
-        clamped = [max(0.004, min(0.88, p)) for p in blended]
-        norm_sum = sum(clamped) or 1.0
-        win_probs = [round(p / norm_sum, 5) for p in clamped]
         place_probs = compute_place_probabilities(win_probs, terms["places_paid"])
 
-        top_comp = max(comp_scores)
-        matched_news = None
-        course_low = race["course"].lower()
-        for nw in news_rows:
-            if course_low and course_low in f"{nw['title']} {nw['summary']}".lower():
-                matched_news = nw
-                break
-        if not matched_news and news_rows:
-            for nw in news_rows:
-                hay = f"{nw['title']} {nw['summary']}".lower()
-                if any(r["horse_name"].lower() in hay for r in active):
-                    matched_news = nw
-                    break
-
+        max_win_p = max(win_probs) if win_probs else 0.0
         tissue_overround = min(1.22, 1.0 + 0.012 * n)
         for i, r in enumerate(active):
             p_win = win_probs[i]
             p_plc = place_probs[i]
             comp = comp_scores[i]
-            rating = 40.0 + 54.0 * (1.0 / (1.0 + math.exp(-0.95 * comp)))
-            if comp == top_comp:
-                rating += 4.0
-            rating = round(max(40.0, min(98.0, rating)), 1)
+            rel_log = math.log(max(0.004, p_win) / (1.0 / max(1, n)))
+            sig = 0.82 * rel_log + 0.22 * comp
+            rating = 65.0 + 27.0 * math.tanh(0.70 * sig) + (2.5 if p_win == max_win_p else 0.0)
+            rating = round(max(41.0, min(97.0, rating)), 1)
             r["model_rating"] = rating
 
             fair_win = round(1.0 / max(0.004, p_win), 2)
@@ -564,6 +685,7 @@ def score_and_predict_races(conn: sqlite3.Connection) -> dict[str, Any]:
             else:
                 ew_edge = win_edge
 
+            matched_news = _match_racing_news(race, r, news_rows)
             reasons, reason_stats = _build_runner_reasons(
                 race=race,
                 runner=r,

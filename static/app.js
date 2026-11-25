@@ -1,5 +1,5 @@
 // AccaLab Frontend PWA Application
-import { initRacingModule, racingStaticApi } from './racing.js?v=274e123b';
+import { initRacingModule, racingStaticApi } from './racing.js?v=04559ba8';
 
 function loadSavedSuggestCriteria() {
   const fallback = {
@@ -2007,13 +2007,34 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
     chips.push(stats.place_terms_label);
   }
 
+  const getReasonIcon = (label) => {
+    const k = String(label || '').toLowerCase();
+    if (k.includes('form')) return '📈';
+    if (k.includes('setup') || k.includes('condition') || k.includes('matchup') || k.includes('goal') || k.includes('attacking') || k.includes('clean-sheet') || k.includes('balance')) return '🏟️';
+    if (k.includes('price') || k.includes('value') || k.includes('odds') || k.includes('stake') || k.includes('payout') || k.includes('math') || k.includes('prob')) return '💷';
+    if (k.includes('stable') || k.includes('jockey') || k.includes('connection')) return '🏇';
+    if (k.includes('news')) return '📰';
+    if (k.includes('structure') || k.includes('strategy') || k.includes('criteria')) return '🎯';
+    if (k.includes('headline') || k.includes('anchor') || k.includes('driver')) return '⭐';
+    if (k.includes('safeguard') || k.includes('discipline') || k.includes('perk')) return '🛡️';
+    return '💡';
+  };
+
   const formatBullet = (txt) => {
-    const raw = String(txt || '');
+    const raw = String(txt || '').trim();
     const idx = raw.indexOf(': ');
-    if (idx > 0 && idx <= 28) {
-      return `<span class="font-semibold text-cyan-200">${esc(raw.slice(0, idx + 1))}</span> ${esc(raw.slice(idx + 2))}`;
-    }
-    return esc(raw);
+    const heading = idx > 0 && idx <= 32 ? raw.slice(0, idx) : '';
+    const detail = heading ? raw.slice(idx + 2) : raw;
+    const whySplit = detail.match(/^(.*?)\s+—\s+(?:why it matters:\s*)?(.+)$/i);
+    const bodyHtml = whySplit
+      ? `<div class="text-slate-200 leading-snug break-words">${esc(whySplit[1])}</div>
+         <div class="text-[11px] text-emerald-300 leading-snug break-words"><b class="uppercase tracking-wider text-[10px]">Why it matters:</b> ${esc(whySplit[2])}</div>`
+      : `<div class="text-slate-200 leading-snug break-words">${esc(detail)}</div>`;
+    return `
+      <div class="p-2.5 rounded-xl bg-panel border border-slate-800/80 space-y-1">
+        ${heading ? `<div class="text-[10px] font-extrabold uppercase tracking-wider text-cyan-300 flex items-center gap-1.5 break-words"><span>${getReasonIcon(heading)}</span><span>${esc(heading)}</span></div>` : ''}
+        ${bodyHtml}
+      </div>`;
   };
 
   return `
@@ -2025,7 +2046,7 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
             .join('')}</div>`
         : ''}
       ${bullets.length
-        ? `<ul class="space-y-1 text-slate-300 leading-relaxed list-disc pl-4">${bullets.map((r) => `<li>${formatBullet(r)}</li>`).join('')}</ul>`
+        ? `<div class="space-y-1.5">${bullets.map((r) => formatBullet(r)).join('')}</div>`
         : `<div class="text-slate-400">${esc(opts.fallbackText || 'Reasoning based on Dixon-Coles match probabilities and latest market prices.')}</div>`}
       ${opts.extraFooterHtml || ''}
     </div>

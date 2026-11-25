@@ -267,8 +267,10 @@ export function evaluateRacingMultipleClient(legs = [], structure = 'acca', each
       }
     }
 
-    maxReturn += foldMax;
-    allPlaceReturn += foldPlcOnly;
+    foldMax = Math.min(1000000.0, foldMax);
+    foldPlcOnly = Math.min(1000000.0, foldPlcOnly);
+    maxReturn = Math.min(1000000.0, maxReturn + foldMax);
+    allPlaceReturn = Math.min(1000000.0, allPlaceReturn + foldPlcOnly);
     expectedReturn += foldExp;
     breakdown.push({
       fold: fSize,
@@ -474,11 +476,23 @@ function buildRacingBetReasonsClient(title, legs, ev, eachWay) {
   if (!legs?.length) return [];
   const distinctCourses = new Set(legs.map((l) => l.course)).size;
   const topLeg = legs.reduce((a, b) => (Number(b.model_rating || 0) > Number(a.model_rating || 0) ? b : a), legs[0]);
+  const struct = String(ev?.structure || 'acca').toLowerCase();
+  let structDesc = '';
+  if (struct === 'single') {
+    structDesc = `Single bet covering 1 race — relies solely on ${legs[0].horse_name} finishing ${eachWay ? 'in the places or winning' : 'first'}.`;
+  } else if (['double', 'treble', 'acca'].includes(struct)) {
+    structDesc = `${ev.structure_label} across ${distinctCourses} track(s) — all ${legs.length} selections roll together${eachWay ? ' (or place on the E/W half)' : ''} to multiply your odds.`;
+  } else {
+    const hasSingles = ['patent', 'lucky15'].includes(struct);
+    const minNote = hasSingles ? 'just 1 winner already pays a return' : '2 winners already guarantee a return';
+    structDesc = `${ev.structure_label} across ${distinctCourses} track(s) covering ${ev.base_lines} combinations — ${minNote}${eachWay ? ' (doubled with Each-Way cover)' : ''}.`;
+  }
+  const placeTxt = eachWay ? ` • All-place return: £${ev.all_place_return.toFixed(2)}` : '';
   return [
-    `Bet Structure: ${ev.structure_label} (${eachWay ? 'Each-Way • 2x lines' : 'Win/Place'}) combining ${legs.length} distinct races across ${distinctCourses} track(s) at £${ev.unit_stake.toFixed(2)}/line (Total stake £${ev.total_stake.toFixed(2)}).`,
-    `Payout & Math: Max return £${ev.max_return.toFixed(2)}${eachWay ? ` (all-place return £${ev.all_place_return.toFixed(2)})` : ''} • ${ev.prob_any_return_pct.toFixed(1)}% chance of at least one return • EV ${ev.expected_value_pct >= 0 ? '+' : ''}${ev.expected_value_pct.toFixed(1)}%.`,
-    `Anchor Runner: ${topLeg.horse_name} (${topLeg.off_time} ${topLeg.course}) tops the card at ${Number(topLeg.model_rating || 0).toFixed(0)}/100 (${(Number(topLeg.model_win_prob || 0) * 100).toFixed(1)}% Win / ${(Number(topLeg.model_place_prob || 0) * 100).toFixed(1)}% Place).`,
-    'Race Discipline Rule: Strict 1 runner per race inside every multiple, screening out already-backed races & runners.',
+    `Bet Structure: ${structDesc}`,
+    `Stake & Realistic Payout: £${ev.unit_stake.toFixed(2)}/line across ${ev.total_bets} bets (£${ev.total_stake.toFixed(2)} total). Max payout if all win: £${ev.max_return.toFixed(2)}${placeTxt} — why it matters: ${ev.prob_any_return_pct.toFixed(1)}% estimated chance of at least one return.`,
+    `Headline Pick: ${topLeg.horse_name} (${topLeg.off_time} ${topLeg.course}) leads at ${Number(topLeg.model_rating || 0).toFixed(0)}/100 (${(Number(topLeg.model_win_prob || 0) * 100).toFixed(1)}% Win / ${(Number(topLeg.model_place_prob || 0) * 100).toFixed(1)}% Place) — why it matters: having a reliable top-rated anchor steadies the overall multiple.`,
+    'Selection Safeguards: Strictly 1 horse per race, odds kept inside your chosen risk band, and races already in your slip or placed history are screened out.',
   ];
 }
 
@@ -573,16 +587,23 @@ function tipToLegClient(tip) {
   };
 }
 
+const RACING_RISK_ODDS_BANDS = {
+  low: [1.2, 4.5],
+  medium: [1.9, 8.5],
+  high: [3.5, 15.0],
+  longshot: [6.5, 29.0],
+};
+
 function scoreRacingRiskClient(tip, riskLevel) {
   const winO = Number(tip.win_odds || tip.odds || 3.0);
   const rating = Number(tip.model_rating || 50);
   const winP = Number(tip.model_win_prob_pct || 10);
   const plcP = Number(tip.model_place_prob_pct || 30);
-  const edge = Number(tip.edge_pct || 0);
-  if (riskLevel === 'low') return plcP * 1.15 + winP * 0.75 + rating * 0.45 - Math.max(0, winO - 5) * 4.5;
-  if (riskLevel === 'high') return edge * 1.1 + Math.min(winO, 14) * 3.0 + rating * 0.55 - Math.max(0, 2.5 - winO) * 8.0;
-  if (riskLevel === 'longshot') return edge * 1.0 + Math.min(winO, 22) * 3.6 + plcP * 0.55 - Math.max(0, 5 - winO) * 10.0;
-  return rating * 0.7 + edge * 0.9 + plcP * 0.5 + winP * 0.55 - Math.max(0, winO - 10) * 1.8;
+  const edge = Math.max(-15, Math.min(35, Number(tip.edge_pct || 0)));
+  if (riskLevel === 'low') return plcP * 1.15 + winP * 0.8 + rating * 0.55 - Math.max(0, winO - 3.8) * 5.0;
+  if (riskLevel === 'high') return edge * 0.75 + Math.min(winO, 14) * 2.2 + rating * 0.65 - Math.max(0, 3.5 - winO) * 8.0;
+  if (riskLevel === 'longshot') return edge * 0.7 + Math.min(winO, 24) * 2.2 + plcP * 0.65 - Math.max(0, 6.5 - winO) * 10.0;
+  return rating * 0.85 + edge * 0.55 + plcP * 0.6 + winP * 0.7 - Math.max(0, winO - 6.5) * 3.0;
 }
 
 function filterRacesClient(
@@ -671,13 +692,51 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
   const winPool = allTips.filter((t) => t.market === 'R_WIN');
   const ewPool = allTips.filter((t) => t.market === 'R_EW');
   const plcPool = allTips.filter((t) => t.market === 'R_PLC');
+  const runnerUsage = new Map();
 
-  const pickDistinct = (pool, count) => {
-    const seen = new Set();
+  const pickDiversified = (pool, count, minOdds = 1.15, maxOdds = 30.0, fallbackPool = []) => {
+    const seenRaces = new Set();
+    const seenRunners = new Set();
     const out = [];
-    for (const item of pool) {
-      if (seen.has(item.race_id)) continue;
-      seen.add(item.race_id);
+
+    const within = (t) => {
+      const o = Number(t.win_odds || t.odds || 0);
+      return o >= minOdds && o <= maxOdds;
+    };
+
+    let candidates = pool.filter(within);
+    if (new Set(candidates.map((c) => Number(c.race_id))).size < count && fallbackPool.length) {
+      const seenIds = new Set(candidates.map((c) => Number(c.runner_id)));
+      for (const extra of fallbackPool) {
+        if (!seenIds.has(Number(extra.runner_id)) && within(extra)) {
+          candidates.push(extra);
+          seenIds.add(Number(extra.runner_id));
+        }
+      }
+    }
+    if (new Set(candidates.map((c) => Number(c.race_id))).size < count) {
+      const existing = new Set(candidates.map((c) => `${c.runner_id}:${c.market}`));
+      candidates = [...pool];
+      for (const ex of fallbackPool) {
+        if (!existing.has(`${ex.runner_id}:${ex.market}`)) candidates.push(ex);
+      }
+    }
+
+    const ranked = candidates
+      .map((item, idx) => ({ item, idx }))
+      .sort(
+        (a, b) =>
+          (runnerUsage.get(Number(a.item.runner_id)) || 0) - (runnerUsage.get(Number(b.item.runner_id)) || 0) ||
+          a.idx - b.idx
+      );
+
+    for (const { item } of ranked) {
+      const rId = Number(item.race_id);
+      const rnId = Number(item.runner_id);
+      if (seenRaces.has(rId) || seenRunners.has(rnId)) continue;
+      seenRaces.add(rId);
+      seenRunners.add(rnId);
+      runnerUsage.set(rnId, (runnerUsage.get(rnId) || 0) + 1);
       out.push(tipToLegClient(item));
       if (out.length >= count) break;
     }
@@ -686,7 +745,7 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
 
   const cards = [];
 
-  const napLegs = pickDistinct(winPool.length ? winPool : allTips, 1);
+  const napLegs = pickDiversified(winPool.length ? winPool : allTips, 1, 1.2, 9.0, allTips);
   if (napLegs.length) {
     const ev = evaluateRacingMultipleClient(napLegs, 'single', false, 10.0);
     cards.push({
@@ -704,7 +763,7 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
     });
   }
 
-  const ewDoubleLegs = pickDistinct(ewPool.length >= 2 ? ewPool : winPool, 2);
+  const ewDoubleLegs = pickDiversified(ewPool.length >= 2 ? ewPool : winPool, 2, 4.5, 17.0, winPool);
   if (ewDoubleLegs.length >= 2) {
     const isEw = ewDoubleLegs.every((l) => Boolean(l.ew_eligible));
     const ev = evaluateRacingMultipleClient(ewDoubleLegs, 'double', isEw, 5.0);
@@ -724,7 +783,7 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
   }
 
   const treblePool = plcPool.length >= 3 ? plcPool : winPool;
-  const trebleLegs = pickDistinct(treblePool, 3);
+  const trebleLegs = pickDiversified(treblePool, 3, 1.5, 7.5, winPool);
   if (trebleLegs.length >= 3) {
     const ev = evaluateRacingMultipleClient(trebleLegs, 'treble', false, 5.0);
     cards.push({
@@ -742,17 +801,13 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
     });
   }
 
-  const l15Pool =
-    ewPool.length >= 4
-      ? ewPool
-      : [...winPool, ...ewPool].sort(
-          (a, b) => Number(b.model_rating || 0) - Number(a.model_rating || 0) || Number(b.model_win_prob_pct || 0) - Number(a.model_win_prob_pct || 0)
-        );
-  let l15Legs = pickDistinct(l15Pool, 4);
-  if (l15Legs.length < 4) l15Legs = pickDistinct(allTips, 4);
+  const l15BasePool = [...winPool, ...ewPool].sort(
+    (a, b) => Number(b.model_rating || 0) - Number(a.model_rating || 0) || Number(b.model_win_prob_pct || 0) - Number(a.model_win_prob_pct || 0)
+  );
+  const l15Legs = pickDiversified(l15BasePool, 4, 2.5, 12.0, allTips);
   if (l15Legs.length >= 4) {
     const avgOdds = l15Legs.reduce((acc, l) => acc + Number(l.win_odds || 2), 0) / 4.0;
-    const ewL15 = avgOdds >= 4.0 && l15Legs.every((l) => Boolean(l.ew_eligible));
+    const ewL15 = avgOdds >= 3.8 && l15Legs.every((l) => Boolean(l.ew_eligible));
     const l15Title = `${l15Base}${ewL15 ? ' (E/W)' : ' (Win)'}`;
     const ev = evaluateRacingMultipleClient(l15Legs, 'lucky15', ewL15, 1.0);
     cards.push({
@@ -786,7 +841,71 @@ async function loadRacingSnapshot(forceReload = false) {
   return _racingSnapshot;
 }
 
-function buildRunnerReasonsClient(rn) {
+function escapeRegExpClient(s) {
+  return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchRacingNewsClient(runner, newsList = []) {
+  if (!Array.isArray(newsList) || !newsList.length || !runner) return null;
+  const horse = String(runner.horse_name || '').trim();
+  const trainer = String(runner.trainer || '').trim();
+  const course = String(runner.course || '').trim();
+
+  if (horse.length >= 5) {
+    const pat = new RegExp(`\\b${escapeRegExpClient(horse)}\\b`, 'i');
+    for (const nw of newsList) {
+      const hay = `${nw.title || ''} ${nw.summary || ''}`;
+      if (pat.test(hay)) return nw;
+    }
+  }
+  if (trainer.length >= 5 && course.length >= 4) {
+    const patTr = new RegExp(`\\b${escapeRegExpClient(trainer)}\\b`, 'i');
+    const patCr = new RegExp(`\\b${escapeRegExpClient(course)}\\b`, 'i');
+    for (const nw of newsList) {
+      const hay = `${nw.title || ''} ${nw.summary || ''}`;
+      if (patTr.test(hay) && patCr.test(hay)) return nw;
+    }
+  }
+  if (course.length >= 4) {
+    const patCr = new RegExp(`\\b${escapeRegExpClient(course)}\\b`, 'i');
+    for (const nw of newsList) {
+      const hay = `${nw.title || ''} ${nw.summary || ''}`;
+      if (patCr.test(hay)) return nw;
+    }
+  }
+  return null;
+}
+
+function describeRecentFormClient(dispForm, runs, wins, plcs, isDebutant) {
+  const disp = String(dispForm || '').trim();
+  const figs = disp && disp !== 'Debutant' && disp !== 'Unexposed' ? disp.split('-').map((x) => x.trim().toUpperCase()).filter(Boolean) : [];
+  if (isDebutant || (!figs.length && runs === 0)) {
+    return 'Unraced debutant with no public form yet — why it matters: assessed on yard strike rate, weight carried, and market support rather than past runs.';
+  }
+  const last = figs[0] || '';
+  let lead = 'Finished outside the frame last time out';
+  if (last === '1') lead = 'Won last time out';
+  else if (last === '2') lead = 'Finished 2nd last time out';
+  else if (last === '3') lead = 'Placed 3rd last time out';
+  else if (last === '4') lead = 'Finished 4th last time out';
+  else if (['F', 'U', 'P', 'R', 'B'].includes(last)) lead = 'Failed to complete last time out';
+
+  const seqTxt = disp ? ` (recent figures: ${disp})` : '';
+  const careerTxt = runs > 0 ? ` • ${wins} win${wins !== 1 ? 's' : ''} & ${plcs} place${plcs !== 1 ? 's' : ''} in ${runs} career starts` : '';
+  const recentWins = figs.filter((f) => f === '1').length;
+  const recentPlaces = figs.filter((f) => f === '1' || f === '2' || f === '3').length;
+  let why = 'competitive recent efforts show steady fitness; race setup and price decide the edge.';
+  if (recentWins >= 2 || last === '1' || last === '2') {
+    why = 'proves sharp recent fitness and ability to compete right at the finish.';
+  } else if (recentPlaces >= 2 || last === '3') {
+    why = 'consistent top-3 runs show a dependable floor in this company.';
+  } else if (figs.length && !recentPlaces && figs.every((f) => !['1', '2', '3', '4'].includes(f))) {
+    why = 'mixed recent finishes mean improvement is needed today, so price and yard profile matter most.';
+  }
+  return `${lead}${seqTxt}${careerTxt} — why it matters: ${why}`;
+}
+
+function buildRunnerReasonsClient(rn, newsList = []) {
   const rating = Number(rn.model_rating || 50);
   const orVal = rn.official_rating;
   const wDisp = rn.weight_display || '';
@@ -794,16 +913,21 @@ function buildRunnerReasonsClient(rn) {
   const runs = Number(rn.career_runs || 0);
   const wins = Number(rn.career_wins || 0);
   const plcs = Number(rn.career_places || 0);
-  const orTxt = orVal ? `OR ${orVal}` : 'Unrated';
-  const wTxt = wDisp ? ` • ${wDisp}` : '';
-  const careerTxt = runs > 0 ? `${wins}W / ${plcs}P in ${runs} runs` : 'Lightly raced / unexposed';
-  const b1 = `Form & Class: Rated ${rating.toFixed(0)}/100 (${orTxt}${wTxt}) • Recent ${dispForm} • ${careerTxt}.`;
+
+  const b1 = `Recent Form: ${describeRecentFormClient(dispForm, runs, wins, plcs, Boolean(rn.is_debutant))}`;
 
   const dist = rn.distance_text || 'distance';
   const going = rn.going || rn.surface || 'prevailing ground';
-  const drawTxt = rn.draw ? ` • Stall ${rn.draw}` : '';
-  const hgTxt = rn.headgear ? ` • ${rn.headgear}` : '';
-  const b2 = `Conditions & Draw: ${rn.course || 'Track'} ${dist} (${rn.race_type || 'Flat'}) on ${going}${drawTxt}${hgTxt} (${rn.places_paid || 3} of ${rn.runners_count || 8} places: ${rn.place_terms_label || ''}).`;
+  const setupParts = [`${rn.course || 'Track'} ${dist} (${rn.race_type || 'Flat'}) on ${going}`];
+  if (orVal) setupParts.push(`Official Rating ${orVal}`);
+  if (wDisp) setupParts.push(`carrying ${wDisp}`);
+  if (rn.draw) setupParts.push(`Stall ${rn.draw}`);
+  if (rn.headgear) setupParts.push(`gear: ${rn.headgear}`);
+  if (rn.days_since_run) setupParts.push(`${rn.days_since_run}d since last run`);
+  const ewClause = rn.ew_eligible
+    ? `Each-Way safety net pays ${rn.places_paid || 3} of ${rn.runners_count || 8} places (${rn.place_terms_label || ''}).`
+    : `Win-only terms apply (${rn.runners_count || 4} runners).`;
+  const b2 = `Today's Race Setup: ${setupParts.join(', ')}. ${ewClause} — why it matters: trip, ground, and weight suitability shape how cleanly the horse can run to its rating.`;
 
   const pWin = Number(rn.model_win_prob || 0.1);
   const pPlc = Number(rn.model_place_prob || 0.3);
@@ -813,18 +937,29 @@ function buildRunnerReasonsClient(rn) {
   const srcLbl = ['live_fixed', 'pmu_tote', 'user_manual'].includes(rn.odds_source) ? 'live market' : 'model tissue';
   const winEdge = Number(rn.win_edge_pct || 0);
   const ewEdge = Number(rn.ew_edge_pct || 0);
-  const ewNote = rn.ew_eligible
-    ? `EW fair min > ${fmtOddsLocal(fairWin)} (${rn.place_terms_label}, EW edge ${ewEdge >= 0 ? '+' : ''}${ewEdge.toFixed(1)}%)`
-    : 'Win-only field (<5 runners)';
-  const b3 = `Win/Place Value Math: ${(pWin * 100).toFixed(1)}% Win (fair ${fmtOddsLocal(fairWin)}) & ${(pPlc * 100).toFixed(1)}% Place (fair ${fmtOddsLocal(fairPlc)}) vs ${fmtOddsLocal(winO)} ${srcLbl} (${winEdge >= 0 ? '+' : ''}${winEdge.toFixed(1)}% Win edge) • ${ewNote}.`;
+  let valWhy = 'priced close to market consensus, so best sided with when the race setup suits.';
+  if (winEdge >= 5.0) valWhy = 'the bookmaker odds are higher than our fair price, offering positive mathematical value.';
+  else if (rn.ew_eligible && ewEdge >= 3.0) valWhy = 'strong top-3 consistency makes the each-way place return attractive at these odds.';
+  else if (pWin >= 0.24) valWhy = 'priced closely around fair market odds, making this a reliability play rather than a longshot edge.';
+
+  const ewTag = rn.ew_eligible ? `, EW ${ewEdge >= 0 ? '+' : ''}${ewEdge.toFixed(1)}%` : '';
+  const b3 = `Price & Value: Rated ${rating.toFixed(0)}/100 with ${(pWin * 100).toFixed(1)}% Win chance (fair ${fmtOddsLocal(fairWin)}) and ${(pPlc * 100).toFixed(1)}% top-${rn.places_paid || 3} finish (fair ${fmtOddsLocal(fairPlc)}) vs ${fmtOddsLocal(winO)} ${srcLbl} (${winEdge >= 0 ? '+' : ''}${winEdge.toFixed(1)}% edge${ewTag}) — why it matters: ${valWhy}`;
 
   const tr = rn.trainer || 'Yard';
   const jk = rn.jockey || 'Jockey TBA';
-  const b4 = `Connections: ${jk} booked for trainer ${tr} in ${rn.runners_count || 8}-runner ${rn.race_type || 'Flat'} field.`;
-  return [b1, b2, b3, b4];
+  const b4 = `Stable & Jockey: ${jk} is booked for trainer ${tr} in this ${rn.runners_count || 8}-runner ${rn.race_type || 'Flat'} race — why it matters: rider bookings and yard form signal race-day readiness and tactical judgement.`;
+
+  const matchedNews = matchRacingNewsClient(rn, newsList);
+  const b5 = matchedNews
+    ? `Racing News: [${matchedNews.source}] ${matchedNews.title} — why it matters: relevant yard, runner, or track pointer ahead of this race.`
+    : rn.reason_stats?.news_headline
+      ? `Racing News: ${rn.reason_stats.news_headline} — why it matters: relevant yard, runner, or track pointer ahead of this race.`
+      : 'Racing News: No negative going alerts, withdrawals, or stable setbacks flagged in BBC Sport Racing feeds — clean bill of health.';
+
+  return [b1, b2, b3, b4, b5];
 }
 
-function hydrateCompactRunner(rn, rc = null) {
+function hydrateCompactRunner(rn, rc = null, newsList = []) {
   const parent = rc
     ? {
         race_id: rc.id,
@@ -895,7 +1030,7 @@ function hydrateCompactRunner(rn, rc = null) {
   if (m.min_bet365_fractional === undefined) m.min_bet365_fractional = fmtOddsLocal(m.min_bet365_odds);
 
   if (!Array.isArray(m.reasons) || !m.reasons.length) {
-    m.reasons = buildRunnerReasonsClient(m);
+    m.reasons = buildRunnerReasonsClient(m, newsList);
   }
   if (!m.reason_stats) {
     m.reason_stats = {
@@ -921,9 +1056,10 @@ export async function racingStaticApi(path, opts = {}) {
   const body = opts.body ? (typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body) : {};
   const snap = await loadRacingSnapshot(false);
   const customOdds = getStorageSafe(RACING_CUSTOM_ODDS_KEY, {});
+  const newsList = snap.news || snap.overview?.news || [];
 
   const allRaces = (snap.races || []).map((rc) => {
-    const runners = (rc.runners || []).map((rn) => applyCustomOddsToRunner(hydrateCompactRunner(rn, rc), customOdds));
+    const runners = (rc.runners || []).map((rn) => applyCustomOddsToRunner(hydrateCompactRunner(rn, rc, newsList), customOdds));
     const sorted = [...runners].sort((a, b) => b.model_rating - a.model_rating || a.saddle_cloth - b.saddle_cloth);
     const top = sorted[0];
     return {
@@ -944,7 +1080,7 @@ export async function racingStaticApi(path, opts = {}) {
     };
   });
 
-  const allTips = (snap.tips || []).map((t) => applyCustomOddsToRunner(hydrateCompactRunner(t), customOdds));
+  const allTips = (snap.tips || []).map((t) => applyCustomOddsToRunner(hydrateCompactRunner(t, null, newsList), customOdds));
   const upcomingRacesAll = allRaces.filter((r) => isRaceUpcomingClient(r));
   const availableDates = [
     ...new Set((upcomingRacesAll.length ? upcomingRacesAll : allRaces).map((r) => r.race_date).filter(Boolean)),
@@ -1153,20 +1289,38 @@ export async function racingStaticApi(path, opts = {}) {
       pool = pool.filter((t) => t.market === bt);
     }
     if (eachWay) {
-      const ewPool = pool.filter((t) => t.ew_eligible && Number(t.win_odds || t.odds) >= 2.2);
+      const ewPool = pool.filter((t) => t.ew_eligible && Number(t.win_odds || t.odds) >= 2.0);
       if (ewPool.length) pool = ewPool;
+    } else if (style === 'ALL' && riskLevel !== 'low') {
+      const winLike = pool.filter((t) => t.market === 'R_WIN' || t.market === 'R_EW');
+      if (new Set(winLike.map((t) => Number(t.race_id))).size >= reqLegs) pool = winLike;
     }
 
     const exclSets = racingExclusionSetsClient(excludeAlready ? body.excluded_legs || [] : []);
     const avoidSets = racingExclusionSetsClient(body.avoid_legs || []);
     const avoidHas = Boolean((body.avoid_legs || []).length);
 
-    const filtered = pool
-      .filter((t) => {
-        if (excludeAlready && isRacingTipExcludedClient(t, exclSets, excludeScope)) return false;
-        if (avoidHas && isRacingTipExcludedClient(t, avoidSets, 'race')) return false;
-        return true;
-      })
+    const eligible = pool.filter((t) => {
+      if (excludeAlready && isRacingTipExcludedClient(t, exclSets, excludeScope)) return false;
+      if (avoidHas && isRacingTipExcludedClient(t, avoidSets, 'race')) return false;
+      return true;
+    });
+
+    const [minO, maxO] = RACING_RISK_ODDS_BANDS[riskLevel] || RACING_RISK_ODDS_BANDS.medium;
+    let inBand = eligible.filter((t) => {
+      const o = Number(t.win_odds || t.odds || 0);
+      return o >= minO && o <= maxO;
+    });
+    if (new Set(inBand.map((t) => Number(t.race_id))).size < reqLegs) {
+      const [fbMin, fbMax] = riskLevel === 'low' || riskLevel === 'medium' ? [1.15, 12.0] : [2.5, 29.0];
+      inBand = eligible.filter((t) => {
+        const o = Number(t.win_odds || t.odds || 0);
+        return o >= fbMin && o <= fbMax;
+      });
+    }
+    if (!inBand.length) inBand = eligible;
+
+    const filtered = inBand
       .map((t) => ({ ...t, _score: scoreRacingRiskClient(t, riskLevel) }))
       .sort((a, b) => b._score - a._score);
 
@@ -1209,7 +1363,19 @@ export async function racingStaticApi(path, opts = {}) {
       }
       if (!picked.length) break;
       for (const p of picked) usedGlobal.add(Number(p.race_id));
-      const legs = picked.map(tipToLegClient);
+      const legs = picked.map((p) => {
+        const lg = tipToLegClient(p);
+        if (eachWay && lg.ew_eligible && lg.market !== 'R_EW') {
+          lg.market = 'R_EW';
+          lg.bet_type = 'r_ew';
+          lg.bet_type_label = 'Each-Way';
+          lg.selection_label = `${lg.horse_name} (E/W)`;
+          lg.odds = lg.win_odds;
+          lg.odds_fractional = fmtOddsLocal(lg.win_odds);
+          lg.model_prob = roundC(0.5 * (Number(lg.model_win_prob || 0) + Number(lg.model_place_prob || 0)), 5);
+        }
+        return lg;
+      });
       const ewTag = eachWay ? 'Each-Way ' : '';
       const title = `${ewTag}${styleNames[style] || 'Racing'} ${structShort}${numBets > 1 ? ` #${bIdx + 1}` : ''}`;
       const ev = evaluateRacingMultipleClient(legs, struct, eachWay, unitStake);
