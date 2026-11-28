@@ -206,6 +206,14 @@ MARKET_LABELS = {
     "OU_U35": "Under 3.5 Goals",
     "BTTS_Y": "BTTS Yes",
     "BTTS_N": "BTTS No",
+    "CORN_O85": "Over 8.5 Corners",
+    "CORN_O95": "Over 9.5 Corners",
+    "CORN_O105": "Over 10.5 Corners",
+    "CORN_U105": "Under 10.5 Corners",
+    "CARD_O25": "Over 2.5 Cards",
+    "CARD_O35": "Over 3.5 Cards",
+    "CARD_O45": "Over 4.5 Cards",
+    "CARD_U35": "Under 3.5 Cards",
 }
 
 MARKET_BET_TYPES: dict[str, dict[str, str]] = {
@@ -220,6 +228,14 @@ MARKET_BET_TYPES: dict[str, dict[str, str]] = {
     "OU_U25": {"key": "goals", "label": "Goals"},
     "OU_O35": {"key": "goals", "label": "Goals"},
     "OU_U35": {"key": "goals", "label": "Goals"},
+    "CORN_O85": {"key": "corners", "label": "Corners"},
+    "CORN_O95": {"key": "corners", "label": "Corners"},
+    "CORN_O105": {"key": "corners", "label": "Corners"},
+    "CORN_U105": {"key": "corners", "label": "Corners"},
+    "CARD_O25": {"key": "cards", "label": "Cards"},
+    "CARD_O35": {"key": "cards", "label": "Cards"},
+    "CARD_O45": {"key": "cards", "label": "Cards"},
+    "CARD_U35": {"key": "cards", "label": "Cards"},
 }
 
 ALL_MARKET_CODES: frozenset[str] = frozenset(MARKET_LABELS.keys())
@@ -233,6 +249,8 @@ BET_TYPE_FILTER_GROUPS: dict[str, frozenset[str]] = {
     "BTTS_Y": frozenset({"BTTS_Y"}),
     "BTTS_N": frozenset({"BTTS_N"}),
     "GOALS": frozenset({"OU_O15", "OU_U15", "OU_O25", "OU_U25", "OU_O35", "OU_U35"}),
+    "CORNERS": frozenset({"CORN_O85", "CORN_O95", "CORN_O105", "CORN_U105"}),
+    "CARDS": frozenset({"CARD_O25", "CARD_O35", "CARD_O45", "CARD_U35"}),
 }
 
 

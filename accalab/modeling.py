@@ -142,7 +142,7 @@ def fit_dixon_coles_params(
     matches: list[dict[str, Any]],
     ref_date_str: str,
     xi: float = 0.0035,
-    l2_reg: float = 3.0,
+    l2_reg: float = 6.5,
 ) -> dict[str, Any]:
     """Fit time-decayed Dixon-Coles attack/defence, intercept, home advantage, and rho via regularized Newton steps."""
     if not matches:
@@ -334,14 +334,23 @@ def compute_team_season_stats(matches: list[dict[str, Any]], season: str) -> dic
     return stats
 
 
+def _recent_form_ppg(form_str: str | None) -> float:
+    s = [ch for ch in str(form_str or "").strip().upper() if ch in ("W", "D", "L")]
+    if not s:
+        return 1.33
+    pts = sum(3 if ch == "W" else (1 if ch == "D" else 0) for ch in s)
+    return pts / len(s)
+
+
 def _predict_lambdas(
     home: str,
     away: str,
     dc_model: dict[str, Any],
     elo_map: dict[str, float],
     div: str,
+    form_diff_ppg: float = 0.0,
 ) -> tuple[float, float]:
-    """Blend Dixon-Coles goal expectations (80%) with Elo strength expectation (20%)."""
+    """Blend Dixon-Coles goal expectations (62%) with Elo strength expectation (38%) and recent form."""
     avg_g = dc_model.get("avg_goals", 1.32)
     att = dc_model["attack"]
     defn = dc_model["defence"]
@@ -364,9 +373,65 @@ def _predict_lambdas(
     lam_elo = max(0.40, min(3.6, avg_g * math.exp(elo_diff / 850.0)))
     mu_elo = max(0.35, min(3.4, avg_g * math.exp(-elo_diff / 850.0)))
 
-    lam = 0.80 * lam_dc + 0.20 * lam_elo
-    mu = 0.80 * mu_dc + 0.20 * mu_elo
+    lam = 0.62 * lam_dc + 0.38 * lam_elo
+    mu = 0.62 * mu_dc + 0.38 * mu_elo
+    if form_diff_ppg:
+        form_adj = max(-0.07, min(0.07, float(form_diff_ppg) * 0.035))
+        lam *= math.exp(form_adj)
+        mu *= math.exp(-form_adj)
     return lam, mu
+
+
+def calibrate_lambdas_to_market(
+    lam: float,
+    mu: float,
+    rho: float,
+    fix: dict[str, Any],
+) -> tuple[float, float]:
+    """Log-rate pool model goal intensities with live devigged Bet365 odds so phantom extreme edges vanish."""
+    live_sources = {"bet365_official", "api_football_b365", "live_sportsbook", "user_manual"}
+    if fix.get("odds_source") not in live_sources:
+        return lam, mu
+    ho, do, ao = fix.get("b365h"), fix.get("b365d"), fix.get("b365a")
+    if not (ho and do and ao) or min(float(ho), float(do), float(ao)) <= 1.02:
+        return lam, mu
+
+    inv_h, inv_d, inv_a = 1.0 / float(ho), 1.0 / float(do), 1.0 / float(ao)
+    tot_1x2 = inv_h + inv_d + inv_a
+    fh, fa = inv_h / tot_1x2, inv_a / tot_1x2
+    target_diff = fh - fa
+
+    tot = max(1.45, min(4.30, float(lam) + float(mu)))
+    o25, u25 = fix.get("b365_over25"), fix.get("b365_under25")
+    if o25 and u25 and min(float(o25), float(u25)) > 1.02:
+        inv_o, inv_u = 1.0 / float(o25), 1.0 / float(u25)
+        fo25 = inv_o / (inv_o + inv_u)
+        lo_t, hi_t = 1.45, 4.30
+        for _ in range(12):
+            mid_t = 0.5 * (lo_t + hi_t)
+            p_o = extract_market_probs(score_matrix(0.54 * mid_t, 0.46 * mid_t, rho))["prob_over25"]
+            if p_o < fo25:
+                lo_t = mid_t
+            else:
+                hi_t = mid_t
+        tot = 0.5 * (lo_t + hi_t)
+
+    lo_s, hi_s = 0.16, 0.84
+    for _ in range(14):
+        mid_s = 0.5 * (lo_s + hi_s)
+        pr = extract_market_probs(score_matrix(tot * mid_s, tot * (1.0 - mid_s), rho))
+        diff = pr["prob_home"] - pr["prob_away"]
+        if diff < target_diff:
+            lo_s = mid_s
+        else:
+            hi_s = mid_s
+    share = 0.5 * (lo_s + hi_s)
+    lam_mkt = max(0.25, tot * share)
+    mu_mkt = max(0.25, tot * (1.0 - share))
+
+    lam_cal = max(0.32, min(4.0, (max(0.25, float(lam)) ** 0.42) * (lam_mkt ** 0.58)))
+    mu_cal = max(0.28, min(3.7, (max(0.25, float(mu)) ** 0.42) * (mu_mkt ** 0.58)))
+    return lam_cal, mu_cal
 
 
 def extract_extended_goals_probs(lam: float, mu: float, rho: float) -> dict[str, float]:
@@ -655,7 +720,11 @@ def run_model_and_predictions(conn: sqlite3.Connection) -> dict[str, Any]:
     for fix in upcoming:
         div = fix["div"]
         dc = dc_models.get(div) or {"attack": {}, "defence": {}, "home_adv": 0.22, "rho": -0.04, "avg_goals": 1.32}
-        lam, mu = _predict_lambdas(fix["home_team"], fix["away_team"], dc, elo_map, div)
+        h_row = ratings_lookup.get(fix["home_team"], {"elo": 1500.0, "form_last6": "", "sot_for_pg": 0.0, "sot_against_pg": 0.0})
+        a_row = ratings_lookup.get(fix["away_team"], {"elo": 1500.0, "form_last6": "", "sot_for_pg": 0.0, "sot_against_pg": 0.0})
+        form_diff = _recent_form_ppg(h_row.get("form_last6")) - _recent_form_ppg(a_row.get("form_last6"))
+        lam, mu = _predict_lambdas(fix["home_team"], fix["away_team"], dc, elo_map, div, form_diff_ppg=form_diff)
+        lam, mu = calibrate_lambdas_to_market(lam, mu, dc["rho"], fix)
         mat = score_matrix(lam, mu, dc["rho"])
         probs = extract_market_probs(mat)
 
@@ -697,9 +766,6 @@ def run_model_and_predictions(conn: sqlite3.Connection) -> dict[str, Any]:
                 "b365_btts_no": b365_bn,
             }
         )
-
-        h_row = ratings_lookup.get(fix["home_team"], {"elo": 1500.0, "form_last6": "", "sot_for_pg": 0.0, "sot_against_pg": 0.0})
-        a_row = ratings_lookup.get(fix["away_team"], {"elo": 1500.0, "form_last6": "", "sot_for_pg": 0.0, "sot_against_pg": 0.0})
 
         h2h = [
             m

@@ -104,7 +104,7 @@ def export_static_site() -> dict[str, Any]:
         out: dict[str, Any] = {}
         for k, v in rn.items():
             if k in derived_runner_keys:
-                if keep_reasons and k == "reasons" and v:
+                if keep_reasons and k in ("reasons", "reason_stats") and v:
                     out[k] = v
                 continue
             if strip_parent and k in parent_redundant_keys:

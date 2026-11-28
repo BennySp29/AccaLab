@@ -1,4 +1,4 @@
-const CACHE_NAME = 'accalab-v3-04559ba8';
+const CACHE_NAME = 'accalab-v3-b8aaf6e2';
 const APP_SHELL = [
   './',
   './index.html',

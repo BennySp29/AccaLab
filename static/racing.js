@@ -475,24 +475,41 @@ function isRacingTipExcludedClient(tip, sets, scope = 'race') {
 function buildRacingBetReasonsClient(title, legs, ev, eachWay) {
   if (!legs?.length) return [];
   const distinctCourses = new Set(legs.map((l) => l.course)).size;
+  const courseList = [...new Set(legs.map((l) => l.course))].join(', ');
   const topLeg = legs.reduce((a, b) => (Number(b.model_rating || 0) > Number(a.model_rating || 0) ? b : a), legs[0]);
   const struct = String(ev?.structure || 'acca').toLowerCase();
   let structDesc = '';
+  let structWhy = '';
   if (struct === 'single') {
     structDesc = `Single bet covering 1 race — relies solely on ${legs[0].horse_name} finishing ${eachWay ? 'in the places or winning' : 'first'}.`;
+    structWhy = 'concentrated stake on your highest-conviction runner avoids multiple-leg variance.';
   } else if (['double', 'treble', 'acca'].includes(struct)) {
     structDesc = `${ev.structure_label} across ${distinctCourses} track(s) — all ${legs.length} selections roll together${eachWay ? ' (or place on the E/W half)' : ''} to multiply your odds.`;
+    const fullPct = eachWay ? Number(ev.prob_all_place_pct || 0) : Number(ev.prob_all_win_pct || 0);
+    structWhy = `keeping every leg from a separate race eliminates conflicting outcomes and hits at a ${fullPct.toFixed(1)}% full-slip rate.`;
   } else {
     const hasSingles = ['patent', 'lucky15'].includes(struct);
     const minNote = hasSingles ? 'just 1 winner already pays a return' : '2 winners already guarantee a return';
     structDesc = `${ev.structure_label} across ${distinctCourses} track(s) covering ${ev.base_lines} combinations — ${minNote}${eachWay ? ' (doubled with Each-Way cover)' : ''}.`;
+    structWhy = `combining singles/doubles/trebles protects you if 1 or 2 picks finish just short (${Number(ev.prob_any_return_pct || 0).toFixed(1)}% chance of a return).`;
   }
   const placeTxt = eachWay ? ` • All-place return: £${ev.all_place_return.toFixed(2)}` : '';
+  const avgWinPct = legs.reduce((acc, l) => acc + Number(l.model_win_prob || 0) * 100.0, 0) / legs.length;
+  const topRs = topLeg.reason_stats || {};
+  const weakCnt = Number(topRs.rivals_weak_form_count || 0);
+  const dispF = String(topRs.display_form || topLeg.display_form || '').trim();
+  let anchorWhy = `having ${topLeg.horse_name} as a top-rated anchor steadies the overall multiple (${avgWinPct.toFixed(1)}% avg win rate).`;
+  if (topRs.weak_field_edge && weakCnt > 0) {
+    anchorWhy = `${topLeg.horse_name} brings form (${dispF || 'recent wins'}) into a race where ${weakCnt} rivals lack recent form, giving the slip a dependable lead runner.`;
+  } else if (dispF) {
+    anchorWhy = `${topLeg.horse_name} carries recent figures ${dispF} alongside an average ${avgWinPct.toFixed(1)}% win chance across the ${legs.length} leg(s).`;
+  }
+
   return [
-    `Bet Structure: ${structDesc}`,
-    `Stake & Realistic Payout: £${ev.unit_stake.toFixed(2)}/line across ${ev.total_bets} bets (£${ev.total_stake.toFixed(2)} total). Max payout if all win: £${ev.max_return.toFixed(2)}${placeTxt} — why it matters: ${ev.prob_any_return_pct.toFixed(1)}% estimated chance of at least one return.`,
-    `Headline Pick: ${topLeg.horse_name} (${topLeg.off_time} ${topLeg.course}) leads at ${Number(topLeg.model_rating || 0).toFixed(0)}/100 (${(Number(topLeg.model_win_prob || 0) * 100).toFixed(1)}% Win / ${(Number(topLeg.model_place_prob || 0) * 100).toFixed(1)}% Place) — why it matters: having a reliable top-rated anchor steadies the overall multiple.`,
-    'Selection Safeguards: Strictly 1 horse per race, odds kept inside your chosen risk band, and races already in your slip or placed history are screened out.',
+    `Bet Structure: ${structDesc} — why it matters: ${structWhy}`,
+    `Stake & Realistic Payout: £${ev.unit_stake.toFixed(2)}/line across ${ev.total_bets} bets (£${ev.total_stake.toFixed(2)} total). Max payout if all win: £${ev.max_return.toFixed(2)}${placeTxt} — why it matters: ${ev.prob_any_return_pct.toFixed(1)}% estimated chance of at least one return at sensible odds.`,
+    `Headline Pick & Form Logic: ${topLeg.horse_name} (${topLeg.off_time} ${topLeg.course}) leads at ${Number(topLeg.model_rating || 0).toFixed(0)}/100 (${(Number(topLeg.model_win_prob || 0) * 100).toFixed(1)}% Win / ${(Number(topLeg.model_place_prob || 0) * 100).toFixed(1)}% Place) — why it matters: ${anchorWhy}`,
+    `Selection Safeguards: Strictly 1 horse per race across ${courseList}, capping outsider risk inside your tier and skipping runners already in your slip or setbacks in news — why it matters: keeps the multiple realistic instead of chasing extreme longshots.`,
   ];
 }
 
@@ -588,10 +605,10 @@ function tipToLegClient(tip) {
 }
 
 const RACING_RISK_ODDS_BANDS = {
-  low: [1.2, 4.5],
-  medium: [1.9, 8.5],
-  high: [3.5, 15.0],
-  longshot: [6.5, 29.0],
+  low: [1.2, 3.75],
+  medium: [1.75, 6.5],
+  high: [3.25, 11.0],
+  longshot: [5.5, 21.0],
 };
 
 function scoreRacingRiskClient(tip, riskLevel) {
@@ -599,11 +616,14 @@ function scoreRacingRiskClient(tip, riskLevel) {
   const rating = Number(tip.model_rating || 50);
   const winP = Number(tip.model_win_prob_pct || 10);
   const plcP = Number(tip.model_place_prob_pct || 30);
-  const edge = Math.max(-15, Math.min(35, Number(tip.edge_pct || 0)));
-  if (riskLevel === 'low') return plcP * 1.15 + winP * 0.8 + rating * 0.55 - Math.max(0, winO - 3.8) * 5.0;
-  if (riskLevel === 'high') return edge * 0.75 + Math.min(winO, 14) * 2.2 + rating * 0.65 - Math.max(0, 3.5 - winO) * 8.0;
-  if (riskLevel === 'longshot') return edge * 0.7 + Math.min(winO, 24) * 2.2 + plcP * 0.65 - Math.max(0, 6.5 - winO) * 10.0;
-  return rating * 0.85 + edge * 0.55 + plcP * 0.6 + winP * 0.7 - Math.max(0, winO - 6.5) * 3.0;
+  const edge = Math.max(-12, Math.min(25, Number(tip.edge_pct || 0)));
+  const rs = tip.reason_stats || {};
+  const formBonus = rs.weak_field_edge ? 6.0 : 0.0;
+  const newsBonus = rs.news_sentiment === 'positive' ? 3.5 : 0.0;
+  if (riskLevel === 'low') return plcP * 1.25 + winP * 1.05 + rating * 0.5 + formBonus + newsBonus - Math.max(0, winO - 3.3) * 6.0;
+  if (riskLevel === 'high') return edge * 0.7 + Math.min(winO, 10.5) * 1.8 + rating * 0.7 + plcP * 0.45 + formBonus + newsBonus - Math.max(0, 3.25 - winO) * 8.0;
+  if (riskLevel === 'longshot') return edge * 0.65 + Math.min(winO, 18.0) * 1.6 + plcP * 0.75 + formBonus + newsBonus - Math.max(0, 5.5 - winO) * 10.0;
+  return rating * 0.85 + winP * 0.9 + plcP * 0.65 + edge * 0.55 + formBonus + newsBonus - Math.max(0, winO - 5.2) * 3.5;
 }
 
 function filterRacesClient(
@@ -745,7 +765,7 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
 
   const cards = [];
 
-  const napLegs = pickDiversified(winPool.length ? winPool : allTips, 1, 1.2, 9.0, allTips);
+  const napLegs = pickDiversified(winPool.length ? winPool : allTips, 1, 1.25, 7.0, allTips);
   if (napLegs.length) {
     const ev = evaluateRacingMultipleClient(napLegs, 'single', false, 10.0);
     cards.push({
@@ -763,7 +783,7 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
     });
   }
 
-  const ewDoubleLegs = pickDiversified(ewPool.length >= 2 ? ewPool : winPool, 2, 4.5, 17.0, winPool);
+  const ewDoubleLegs = pickDiversified(ewPool.length >= 2 ? ewPool : winPool, 2, 4.0, 14.0, winPool);
   if (ewDoubleLegs.length >= 2) {
     const isEw = ewDoubleLegs.every((l) => Boolean(l.ew_eligible));
     const ev = evaluateRacingMultipleClient(ewDoubleLegs, 'double', isEw, 5.0);
@@ -783,7 +803,7 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
   }
 
   const treblePool = plcPool.length >= 3 ? plcPool : winPool;
-  const trebleLegs = pickDiversified(treblePool, 3, 1.5, 7.5, winPool);
+  const trebleLegs = pickDiversified(treblePool, 3, 1.4, 6.0, winPool);
   if (trebleLegs.length >= 3) {
     const ev = evaluateRacingMultipleClient(trebleLegs, 'treble', false, 5.0);
     cards.push({
@@ -804,7 +824,7 @@ function buildRacingSuggestionsClient(tipsPool = [], { day = 'all', dateFrom = '
   const l15BasePool = [...winPool, ...ewPool].sort(
     (a, b) => Number(b.model_rating || 0) - Number(a.model_rating || 0) || Number(b.model_win_prob_pct || 0) - Number(a.model_win_prob_pct || 0)
   );
-  const l15Legs = pickDiversified(l15BasePool, 4, 2.5, 12.0, allTips);
+  const l15Legs = pickDiversified(l15BasePool, 4, 2.0, 9.5, allTips);
   if (l15Legs.length >= 4) {
     const avgOdds = l15Legs.reduce((acc, l) => acc + Number(l.win_odds || 2), 0) / 4.0;
     const ewL15 = avgOdds >= 3.8 && l15Legs.every((l) => Boolean(l.ew_eligible));
@@ -845,42 +865,188 @@ function escapeRegExpClient(s) {
   return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function matchRacingNewsClient(runner, newsList = []) {
+const RACE_CONTEXT_RE = /\b(trainer|winners?|champion|yard|stable|horse|racing|jumps?|flat)\b/i;
+const TRACK_CONTEXT_RE = /\b(going|ground|heavy|soft|good|firm|abandon\w*|cancel\w*|inspection|waterlog\w*|frost|drought|course|meeting|festival|cup|stakes)\b/i;
+const NEWS_CAUTION_RE = /\b(injur\w*|setback|doubt\w*|lame|colic|withdraw\w*|pulled up|struggl\w*|ban\w*|suspend\w*|miss\w*|sore|wind op)\b/i;
+const NEWS_TRACK_ALERT_RE = /\b(drought|heavy|waterlog\w*|inspection|testing|abandon\w*|cancel\w*|frost)\b/i;
+const NEWS_POSITIVE_RE = /\b(wins?|winner|record|champion|flying|healthy|fit|thriving|impressive|unbeaten|star|targets?|ready|peak|confident|success|prolific)\b/i;
+
+function classifyRacingNewsClient(runner, newsList = []) {
   if (!Array.isArray(newsList) || !newsList.length || !runner) return null;
   const horse = String(runner.horse_name || '').trim();
   const trainer = String(runner.trainer || '').trim();
   const course = String(runner.course || '').trim();
 
+  let matched = null;
+  let matchType = '';
+
   if (horse.length >= 5) {
     const pat = new RegExp(`\\b${escapeRegExpClient(horse)}\\b`, 'i');
     for (const nw of newsList) {
       const hay = `${nw.title || ''} ${nw.summary || ''}`;
-      if (pat.test(hay)) return nw;
+      if (pat.test(hay)) {
+        matched = nw;
+        matchType = 'horse';
+        break;
+      }
     }
   }
-  if (trainer.length >= 5 && course.length >= 4) {
-    const patTr = new RegExp(`\\b${escapeRegExpClient(trainer)}\\b`, 'i');
+  if (!matched && trainer) {
+    const patFull = trainer.length >= 5 ? new RegExp(`\\b${escapeRegExpClient(trainer)}\\b`, 'i') : null;
+    const toks = trainer.split(/[\s-]+/).filter((t) => t.length >= 6);
+    const surname = toks.length ? toks[toks.length - 1] : '';
+    const patSur = surname ? new RegExp(`\\b${escapeRegExpClient(surname)}\\b`, 'i') : null;
+    for (const nw of newsList) {
+      const hay = `${nw.title || ''} ${nw.summary || ''}`;
+      if (patFull && patFull.test(hay)) {
+        matched = nw;
+        matchType = 'trainer';
+        break;
+      }
+      if (patSur && patSur.test(hay) && RACE_CONTEXT_RE.test(hay)) {
+        matched = nw;
+        matchType = 'trainer';
+        break;
+      }
+    }
+  }
+  if (!matched && course.length >= 4) {
     const patCr = new RegExp(`\\b${escapeRegExpClient(course)}\\b`, 'i');
     for (const nw of newsList) {
       const hay = `${nw.title || ''} ${nw.summary || ''}`;
-      if (patTr.test(hay) && patCr.test(hay)) return nw;
+      if (patCr.test(hay) && TRACK_CONTEXT_RE.test(hay)) {
+        matched = nw;
+        matchType = 'course';
+        break;
+      }
     }
   }
-  if (course.length >= 4) {
-    const patCr = new RegExp(`\\b${escapeRegExpClient(course)}\\b`, 'i');
-    for (const nw of newsList) {
-      const hay = `${nw.title || ''} ${nw.summary || ''}`;
-      if (patCr.test(hay)) return nw;
-    }
-  }
-  return null;
+  if (!matched) return null;
+
+  const hay = `${matched.title || ''} ${matched.summary || ''}`;
+  let sentiment = 'neutral';
+  if (NEWS_CAUTION_RE.test(hay)) sentiment = 'caution';
+  else if (matchType === 'course' && NEWS_TRACK_ALERT_RE.test(hay)) sentiment = 'track_alert';
+  else if (NEWS_POSITIVE_RE.test(hay)) sentiment = 'positive';
+
+  return {
+    source: matched.source || 'Racing Feed',
+    title: matched.title || '',
+    match_type: matchType,
+    sentiment,
+  };
 }
 
-function describeRecentFormClient(dispForm, runs, wins, plcs, isDebutant) {
+function scoreFormTokenClient(tok) {
+  const t = String(tok || '').toUpperCase();
+  if (t === '1') return 1.0;
+  if (t === '2') return 0.65;
+  if (t === '3') return 0.42;
+  if (t === '4') return 0.22;
+  if (t === '5') return 0.08;
+  if (['6', '7', '8', '9'].includes(t)) return -0.12;
+  if (t === '0') return -0.3;
+  return -0.35;
+}
+
+function parseFormClient(dispForm, isDebutant) {
   const disp = String(dispForm || '').trim();
-  const figs = disp && disp !== 'Debutant' && disp !== 'Unexposed' ? disp.split('-').map((x) => x.trim().toUpperCase()).filter(Boolean) : [];
+  const figs = disp && disp !== 'Debutant' && disp !== 'Unexposed'
+    ? disp.split('-').map((x) => x.trim().toUpperCase()).filter(Boolean)
+    : [];
+  if (!figs.length) {
+    return { figs: [], disp: '', formScore: isDebutant ? 0.05 : 0.05, recentWins: 0, recentPlaces: 0 };
+  }
+  const win = figs.slice(0, 6);
+  let weighted = 0;
+  let wSum = 0;
+  let wins = 0;
+  let places = 0;
+  win.forEach((f, idx) => {
+    const w = 0.72 ** idx;
+    weighted += w * scoreFormTokenClient(f);
+    wSum += w;
+    if (f === '1') { wins += 1; places += 1; }
+    else if (f === '2' || f === '3') places += 1;
+  });
+  return {
+    figs: win,
+    disp: win.join('-'),
+    formScore: weighted / Math.max(1e-6, wSum),
+    recentWins: wins,
+    recentPlaces: places,
+  };
+}
+
+function buildConnStatsClient(rawRaces = []) {
+  const trAcc = new Map();
+  const jkAcc = new Map();
+  const bump = (map, nm, rn) => {
+    const key = String(nm || '').trim();
+    if (!key) return;
+    const rawRuns = Number(rn.career_runs || 0);
+    const ebRuns = Math.max(1, rawRuns);
+    const wins = Number(rn.career_wins || 0);
+    const plcs = Number(rn.career_places || 0);
+    const cur = map.get(key) || { ebRuns: 0, rawRuns: 0, wins: 0, places: 0 };
+    cur.ebRuns += ebRuns;
+    cur.rawRuns += rawRuns;
+    cur.wins += wins;
+    cur.places += plcs;
+    map.set(key, cur);
+  };
+  for (const rc of rawRaces) {
+    for (const rn of rc.runners || []) {
+      bump(trAcc, rn.trainer, rn);
+      bump(jkAcc, rn.jockey, rn);
+    }
+  }
+  const finalize = (map) => {
+    const meta = {};
+    const scores = {};
+    let tot = 0;
+    let cnt = 0;
+    for (const [nm, st] of map.entries()) {
+      const sc = (st.wins + 1.5 * 0.14 + 0.35 * (st.places + 0.35)) / (st.ebRuns + 12.0);
+      scores[nm] = sc;
+      tot += sc;
+      cnt += 1;
+      meta[nm] = {
+        runs: Math.round(st.rawRuns),
+        wins: Math.round(st.wins),
+        places: Math.round(st.places),
+        win_pct: st.rawRuns > 0 ? roundC((100.0 * st.wins) / st.rawRuns, 1) : 0.0,
+        place_pct: st.rawRuns > 0 ? roundC((100.0 * st.places) / st.rawRuns, 1) : 0.0,
+      };
+    }
+    const avg = cnt > 0 ? tot / cnt : 0;
+    for (const nm of Object.keys(scores)) scores[nm] -= avg;
+    return { scores, meta };
+  };
+  const tr = finalize(trAcc);
+  const jk = finalize(jkAcc);
+  return { trainerScores: tr.scores, jockeyScores: jk.scores, trainerMeta: tr.meta, jockeyMeta: jk.meta };
+}
+
+function describeRecentFormClient(horseName, dispForm, runs, wins, plcs, isDebutant, fieldCtx = {}) {
+  const n = Number(fieldCtx.n || 1);
+  const formRank = Number(fieldCtx.formRank || 1);
+  const rivalsWeak = Number(fieldCtx.rivalsWeakCount || 0);
+  const rivalsLtoWin = Number(fieldCtx.rivalsLtoWinners || 0);
+  const weakFieldEdge = Boolean(fieldCtx.weakFieldEdge);
+  const formLeader = String(fieldCtx.formLeaderName || 'the form leader');
+  const modelRank = Number(fieldCtx.modelRank || 1);
+  const trainer = String(fieldCtx.trainer || 'the yard');
+  const refOddsTxt = String(fieldCtx.refOddsTxt || '');
+  const orVal = fieldCtx.officialRating;
+
+  const parsed = parseFormClient(dispForm, isDebutant);
+  const figs = parsed.figs;
+  const disp = parsed.disp;
   if (isDebutant || (!figs.length && runs === 0)) {
-    return 'Unraced debutant with no public form yet — why it matters: assessed on yard strike rate, weight carried, and market support rather than past runs.';
+    const expRivals = Number(fieldCtx.experiencedRivals ?? Math.max(0, n - 1));
+    const oddsNote = refOddsTxt && refOddsTxt !== '—' ? ` and ${refOddsTxt} market support` : '';
+    return `Unraced debutant with no public form yet against ${expRivals} experienced rival(s) — why it matters: ${horseName}'s chance relies on ${trainer}'s debut readiness${oddsNote} rather than proven racecourse figures.`;
   }
   const last = figs[0] || '';
   let lead = 'Finished outside the frame last time out';
@@ -892,20 +1058,24 @@ function describeRecentFormClient(dispForm, runs, wins, plcs, isDebutant) {
 
   const seqTxt = disp ? ` (recent figures: ${disp})` : '';
   const careerTxt = runs > 0 ? ` • ${wins} win${wins !== 1 ? 's' : ''} & ${plcs} place${plcs !== 1 ? 's' : ''} in ${runs} career starts` : '';
-  const recentWins = figs.filter((f) => f === '1').length;
-  const recentPlaces = figs.filter((f) => f === '1' || f === '2' || f === '3').length;
-  let why = 'competitive recent efforts show steady fitness; race setup and price decide the edge.';
-  if (recentWins >= 2 || last === '1' || last === '2') {
-    why = 'proves sharp recent fitness and ability to compete right at the finish.';
-  } else if (recentPlaces >= 2 || last === '3') {
-    why = 'consistent top-3 runs show a dependable floor in this company.';
-  } else if (figs.length && !recentPlaces && figs.every((f) => !['1', '2', '3', '4'].includes(f))) {
-    why = 'mixed recent finishes mean improvement is needed today, so price and yard profile matter most.';
+  const fieldTxt = n > 1 ? ` • Ranks #${formRank} of ${n} on form (${rivalsWeak} of ${Math.max(1, n - 1)} rivals are out of form)` : '';
+
+  let why = `${horseName} holds #${formRank} recent form rank of ${n} (${disp || 'steady'}) with ${rivalsLtoWin} rival recent winner(s) in opposition.`;
+  if (weakFieldEdge && n > 1) {
+    why = `${horseName} brings proven form (#${formRank} in field) into a race where ${rivalsWeak} of ${n - 1} rivals have struggled for recent finishes, giving it a clear fitness and consistency edge.`;
+  } else if (parsed.formScore >= 0.30) {
+    why = `${horseName} ranks #${formRank} of ${n} on recent form (${parsed.recentPlaces} top-3 finishes in last ${figs.length}) against ${rivalsLtoWin} last-time-out winner(s), showing reliable current wellbeing.`;
+  } else if (modelRank <= 3 && parsed.formScore < 0.20 && n > 1) {
+    const hint = orVal ? `OR ${orVal}` : `${refOddsTxt} market strength`;
+    why = `although ${horseName}'s recent figures (${disp || 'mixed'}) are patchy, ${rivalsWeak} of ${n - 1} rivals also lack solid form and ${horseName}'s #${modelRank} model rating (${hint}) gives scope to bounce back.`;
+  } else if (formLeader !== horseName && n > 1) {
+    why = `${horseName} trails #1-form contender ${formLeader} on recent figures (${disp || 'unexposed'}), so it needs improvement on recent runs to overturn the form principals.`;
   }
-  return `${lead}${seqTxt}${careerTxt} — why it matters: ${why}`;
+  return `${lead}${seqTxt}${careerTxt}${fieldTxt} — why it matters: ${why}`;
 }
 
-function buildRunnerReasonsClient(rn, newsList = []) {
+function buildRunnerReasonsClient(rn, newsList = [], fieldCtx = {}) {
+  const horse = String(rn.horse_name || 'Runner');
   const rating = Number(rn.model_rating || 50);
   const orVal = rn.official_rating;
   const wDisp = rn.weight_display || '';
@@ -913,53 +1083,123 @@ function buildRunnerReasonsClient(rn, newsList = []) {
   const runs = Number(rn.career_runs || 0);
   const wins = Number(rn.career_wins || 0);
   const plcs = Number(rn.career_places || 0);
+  const n = Number(fieldCtx.n || rn.runners_count || 1);
+  const modelRank = Number(fieldCtx.modelRank || 1);
+  const connRank = Number(fieldCtx.connRank || 1);
+  const orDiff = fieldCtx.orDiff ?? null;
+  const wtDiff = fieldCtx.weightDiffLbs ?? null;
+  const rivalName = String(fieldCtx.rivalName || 'the main rival');
+  const rivalWinPct = Number(fieldCtx.rivalWinPct || 0);
+  const tr = rn.trainer || 'Yard';
+  const jk = rn.jockey || 'Jockey TBA';
+  const winO = Number(rn.win_odds || rn.odds || 4.0);
+  const refOddsTxt = fmtOddsLocal(winO);
 
-  const b1 = `Recent Form: ${describeRecentFormClient(dispForm, runs, wins, plcs, Boolean(rn.is_debutant))}`;
+  const b1 = `Recent Form: ${describeRecentFormClient(horse, dispForm, runs, wins, plcs, Boolean(rn.is_debutant), {
+    ...fieldCtx,
+    n,
+    trainer: tr,
+    refOddsTxt,
+    officialRating: orVal,
+  })}`;
 
   const dist = rn.distance_text || 'distance';
   const going = rn.going || rn.surface || 'prevailing ground';
   const setupParts = [`${rn.course || 'Track'} ${dist} (${rn.race_type || 'Flat'}) on ${going}`];
-  if (orVal) setupParts.push(`Official Rating ${orVal}`);
-  if (wDisp) setupParts.push(`carrying ${wDisp}`);
+  if (orVal) {
+    const orDiffTxt = orDiff !== null && orDiff !== 0 ? ` (${orDiff > 0 ? '+' : ''}${orDiff} vs median)` : '';
+    setupParts.push(`Official Rating ${orVal}${orDiffTxt}`);
+  }
+  if (wDisp) {
+    const wtDiffTxt = wtDiff !== null && wtDiff !== 0 ? ` (${wtDiff > 0 ? '+' : ''}${wtDiff}lb vs median)` : '';
+    setupParts.push(`carrying ${wDisp}${wtDiffTxt}`);
+  }
   if (rn.draw) setupParts.push(`Stall ${rn.draw}`);
   if (rn.headgear) setupParts.push(`gear: ${rn.headgear}`);
-  if (rn.days_since_run) setupParts.push(`${rn.days_since_run}d since last run`);
+  if (rn.days_since_run !== undefined && rn.days_since_run !== null) setupParts.push(`${rn.days_since_run}d since last run`);
   const ewClause = rn.ew_eligible
-    ? `Each-Way safety net pays ${rn.places_paid || 3} of ${rn.runners_count || 8} places (${rn.place_terms_label || ''}).`
-    : `Win-only terms apply (${rn.runners_count || 4} runners).`;
-  const b2 = `Today's Race Setup: ${setupParts.join(', ')}. ${ewClause} — why it matters: trip, ground, and weight suitability shape how cleanly the horse can run to its rating.`;
+    ? `Each-Way safety net pays ${rn.places_paid || 3} of ${n} places (${rn.place_terms_label || ''}).`
+    : `Win-only terms apply (${n} runners).`;
 
+  const setupWhys = [];
+  if (orDiff !== null && orDiff >= 3) setupWhys.push(`${horse} sits ${orDiff}lb clear of the median official rating`);
+  else if (orDiff !== null && orDiff <= -4) setupWhys.push(`${horse} sits ${Math.abs(orDiff)}lb below median rating and relies on handicap weight relief`);
+  else if (wtDiff !== null && wtDiff <= -3) setupWhys.push(`${horse} receives ${Math.abs(wtDiff)}lb in weight from the median rival`);
+  else if (wtDiff !== null && wtDiff >= 4) setupWhys.push(`${horse} concedes ${wtDiff}lb to the field average due to class`);
+
+  const dsr = rn.days_since_run;
+  if (dsr !== undefined && dsr !== null) {
+    if (dsr >= 10 && dsr <= 45) setupWhys.push(`arrives race-fit off a tidy ${dsr}-day turnaround`);
+    else if (dsr > 180) setupWhys.push(`faces a fitness test returning from a ${dsr}-day break`);
+    else if (dsr < 10) setupWhys.push(`turns out quickly just ${dsr} days after running`);
+  }
+  if (rn.draw && String(rn.race_type || 'Flat') === 'Flat' && n >= 10) {
+    if (Number(rn.draw) <= Math.max(3, Math.floor(n / 4))) setupWhys.push(`draws well inside from Stall ${rn.draw} of ${n}`);
+    else if (Number(rn.draw) >= n - Math.max(2, Math.floor(n / 4))) setupWhys.push(`has work to do from a wide Stall ${rn.draw} of ${n}`);
+  }
+  if (!setupWhys.length) setupWhys.push(`${horse} is matched fairly to the ${dist} ${going} conditions`);
   const pWin = Number(rn.model_win_prob || 0.1);
   const pPlc = Number(rn.model_place_prob || 0.3);
-  const winO = Number(rn.win_odds || rn.odds || 4.0);
+  const plcCushion = rn.ew_eligible
+    ? `with ${rn.places_paid || 3} places paid (${Math.round(pPlc * 100)}% top-${rn.places_paid || 3} chance for ${horse})`
+    : 'in a win-only race leaving zero cushion for 2nd';
+  const b2 = `Today's Race Setup: ${setupParts.join(', ')}. ${ewClause} — why it matters: ${setupWhys.join(', ')}, ${plcCushion}.`;
+
   const fairWin = Number(rn.fair_win_odds || (1.0 / Math.max(0.005, pWin)));
   const fairPlc = Number(rn.fair_place_odds || (1.0 / Math.max(0.01, pPlc)));
+  const mktImpPct = 100.0 / Math.max(1.02, winO);
   const srcLbl = ['live_fixed', 'pmu_tote', 'user_manual'].includes(rn.odds_source) ? 'live market' : 'model tissue';
   const winEdge = Number(rn.win_edge_pct || 0);
   const ewEdge = Number(rn.ew_edge_pct || 0);
-  let valWhy = 'priced close to market consensus, so best sided with when the race setup suits.';
-  if (winEdge >= 5.0) valWhy = 'the bookmaker odds are higher than our fair price, offering positive mathematical value.';
-  else if (rn.ew_eligible && ewEdge >= 3.0) valWhy = 'strong top-3 consistency makes the each-way place return attractive at these odds.';
-  else if (pWin >= 0.24) valWhy = 'priced closely around fair market odds, making this a reliability play rather than a longshot edge.';
+  let valWhy = `${horse} sits ranked #${modelRank} of ${n} close to fair odds (${fmtOddsLocal(fairWin)}), so the bet leans on race-day conditions rather than a mispriced line.`;
+  if (winEdge >= 5.0) {
+    valWhy = `${horse}'s ${refOddsTxt} price implies only a ${mktImpPct.toFixed(1)}% chance vs our ${(pWin * 100).toFixed(1)}% model estimate, giving +${winEdge.toFixed(1)}% positive win value.`;
+  } else if (rn.ew_eligible && ewEdge >= 3.0) {
+    const plcO = 1.0 + (winO - 1.0) * Number(rn.place_fraction || 0.2);
+    valWhy = `with a ${(pPlc * 100).toFixed(1)}% top-${rn.places_paid || 3} probability at ${fmtOddsLocal(plcO)} place odds, ${horse} gets cushioned each-way return equity (${ewEdge >= 0 ? '+' : ''}${ewEdge.toFixed(1)}% E/W edge).`;
+  } else if (modelRank === 1) {
+    const leadDiff = pWin * 100.0 - rivalWinPct;
+    valWhy = `${horse} heads the ${rn.course || 'race'} field at ${(pWin * 100).toFixed(1)}% (${leadDiff >= 0 ? '+' : ''}${leadDiff.toFixed(1)}% clear of ${rivalName}), making this a reliability pick priced close to fair ${refOddsTxt}.`;
+  } else if (winEdge < -5.0) {
+    valWhy = `${refOddsTxt} implies ${mktImpPct.toFixed(1)}% against our ${(pWin * 100).toFixed(1)}% estimate (fair ${fmtOddsLocal(fairWin)}), so ${horse} trails #1-rated ${rivalName} on pure price value.`;
+  }
+  const b3 = `Price & Value: Ranked #${modelRank} of ${n} (${rating.toFixed(0)}/100) with ${(pWin * 100).toFixed(1)}% Win chance (fair ${fmtOddsLocal(fairWin)}) and ${(pPlc * 100).toFixed(1)}% top-${rn.places_paid || 3} finish (fair ${fmtOddsLocal(fairPlc)}) vs ${refOddsTxt} ${srcLbl} (${winEdge >= 0 ? '+' : ''}${winEdge.toFixed(1)}% edge) — why it matters: ${valWhy}`;
 
-  const ewTag = rn.ew_eligible ? `, EW ${ewEdge >= 0 ? '+' : ''}${ewEdge.toFixed(1)}%` : '';
-  const b3 = `Price & Value: Rated ${rating.toFixed(0)}/100 with ${(pWin * 100).toFixed(1)}% Win chance (fair ${fmtOddsLocal(fairWin)}) and ${(pPlc * 100).toFixed(1)}% top-${rn.places_paid || 3} finish (fair ${fmtOddsLocal(fairPlc)}) vs ${fmtOddsLocal(winO)} ${srcLbl} (${winEdge >= 0 ? '+' : ''}${winEdge.toFixed(1)}% edge${ewTag}) — why it matters: ${valWhy}`;
+  const trMeta = fieldCtx.trainerMeta?.[tr] || {};
+  const jkMeta = fieldCtx.jockeyMeta?.[jk] || {};
+  const connSnips = [];
+  if (Number(trMeta.runs || 0) >= 3) connSnips.push(`yard record ${trMeta.wins}W/${trMeta.places}P from ${trMeta.runs} starts (${Math.round(trMeta.place_pct)}% place rate)`);
+  if (Number(jkMeta.runs || 0) >= 3) connSnips.push(`rider ${Math.round(jkMeta.win_pct)}% win / ${Math.round(jkMeta.place_pct)}% place strike rate`);
+  const connFact = connSnips.length ? ` (${connSnips.join('; ')})` : '';
+  let connWhy = `${jk} takes the ride for ${tr} (#${connRank} of ${n} connections here), offering steady tactical support for ${horse}'s ${Math.round(pPlc * 100)}% frame chance.`;
+  if (connRank <= Math.max(2, Math.floor(n / 4))) {
+    connWhy = `${tr} & ${jk} rank #${connRank} of ${n} on yard/rider strike rate in this ${rn.course || ''} field, reinforcing ${horse}'s ${Math.round(pWin * 100)}% win profile.`;
+  } else if (connRank >= Math.max(4, n - Math.max(1, Math.floor(n / 4)))) {
+    connWhy = `the ${tr}/${jk} partnership sits #${connRank} of ${n} in this race on strike rate, putting greater emphasis on ${horse}'s own form and handicap mark.`;
+  }
+  const b4 = `Stable & Jockey: ${jk} rides for ${tr} in this ${n}-runner ${rn.race_type || 'Flat'}${connFact} — why it matters: ${connWhy}`;
 
-  const tr = rn.trainer || 'Yard';
-  const jk = rn.jockey || 'Jockey TBA';
-  const b4 = `Stable & Jockey: ${jk} is booked for trainer ${tr} in this ${rn.runners_count || 8}-runner ${rn.race_type || 'Flat'} race — why it matters: rider bookings and yard form signal race-day readiness and tactical judgement.`;
-
-  const matchedNews = matchRacingNewsClient(rn, newsList);
-  const b5 = matchedNews
-    ? `Racing News: [${matchedNews.source}] ${matchedNews.title} — why it matters: relevant yard, runner, or track pointer ahead of this race.`
-    : rn.reason_stats?.news_headline
-      ? `Racing News: ${rn.reason_stats.news_headline} — why it matters: relevant yard, runner, or track pointer ahead of this race.`
-      : 'Racing News: No negative going alerts, withdrawals, or stable setbacks flagged in BBC Sport Racing feeds — clean bill of health.';
+  const matchedNews = classifyRacingNewsClient(rn, newsList);
+  let b5 = '';
+  if (matchedNews) {
+    const mType = matchedNews.match_type || 'course';
+    const targetLbl = mType === 'horse' ? horse : mType === 'trainer' ? tr : (rn.course || 'track');
+    let newsWhy = `places ${targetLbl} in active racing focus ahead of the ${rn.off_time || ''} ${rn.course || ''}.`;
+    if (matchedNews.sentiment === 'positive') newsWhy = `upbeat form and yard news around ${targetLbl} supports ${horse}'s readiness in the ${rn.off_time || ''} ${rn.course || ''}.`;
+    else if (matchedNews.sentiment === 'caution') newsWhy = `flagged fitness or setback caution around ${targetLbl} adds risk to ${horse}'s chances and kept it out of headline tips.`;
+    else if (matchedNews.sentiment === 'track_alert') newsWhy = `live ${rn.course || ''} ground/meeting conditions directly impact stamina over ${dist} on ${going}.`;
+    b5 = `Racing News: [${matchedNews.source}] ${matchedNews.title} — why it matters: ${newsWhy}`;
+  } else if (rn.reason_stats?.news_headline) {
+    b5 = `Racing News: ${rn.reason_stats.news_headline} — why it matters: tracked ahead of ${horse}'s run in the ${rn.off_time || ''} ${rn.course || ''}.`;
+  } else {
+    const turnNote = dsr !== undefined && dsr !== null ? `${dsr}d turnaround on ${going}` : `${going} setup`;
+    b5 = `Racing News: No withdrawals, going alerts, or setbacks flagged for ${horse} or ${tr} ahead of the ${rn.off_time || ''} ${rn.course || ''} — why it matters: ${horse} comes in with a clean bill of health for this #${modelRank}-rated ${turnNote}.`;
+  }
 
   return [b1, b2, b3, b4, b5];
 }
 
-function hydrateCompactRunner(rn, rc = null, newsList = []) {
+function hydrateCompactRunner(rn, rc = null, newsList = [], fieldCtx = {}) {
   const parent = rc
     ? {
         race_id: rc.id,
@@ -1030,14 +1270,19 @@ function hydrateCompactRunner(rn, rc = null, newsList = []) {
   if (m.min_bet365_fractional === undefined) m.min_bet365_fractional = fmtOddsLocal(m.min_bet365_odds);
 
   if (!Array.isArray(m.reasons) || !m.reasons.length) {
-    m.reasons = buildRunnerReasonsClient(m, newsList);
+    m.reasons = buildRunnerReasonsClient(m, newsList, fieldCtx);
   }
   if (!m.reason_stats) {
     m.reason_stats = {
       model_rating: m.model_rating,
+      model_rank: fieldCtx.modelRank ?? null,
       official_rating: m.official_rating ?? null,
       weight_display: m.weight_display || '',
       display_form: m.display_form || '',
+      form_rank: fieldCtx.formRank ?? null,
+      rivals_weak_form_count: fieldCtx.rivalsWeakCount ?? 0,
+      weak_field_edge: Boolean(fieldCtx.weakFieldEdge),
+      conn_rank: fieldCtx.connRank ?? null,
       win_prob_pct: m.model_win_prob_pct,
       place_prob_pct: m.model_place_prob_pct,
       fair_win_odds: fairWin,
@@ -1049,6 +1294,71 @@ function hydrateCompactRunner(rn, rc = null, newsList = []) {
   return m;
 }
 
+function hydrateRaceRunnersClient(rc, newsList = [], connStats = {}, customOdds = {}) {
+  const rawRunners = rc.runners || [];
+  const n = rawRunners.length;
+  if (!n) return [];
+
+  const parsedForms = rawRunners.map((rn) => parseFormClient(rn.display_form || rn.form_string || '', Boolean(rn.is_debutant)));
+  const formScores = parsedForms.map((pf) => pf.formScore);
+  const expTotal = rawRunners.filter((rn) => !rn.is_debutant && Number(rn.career_runs || 0) > 0).length;
+
+  const orNums = rawRunners.map((rn) => Number(rn.official_rating)).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  const medOr = orNums.length >= Math.max(2, Math.ceil(n * 0.5)) ? orNums[Math.floor(orNums.length / 2)] : null;
+  const wtNums = rawRunners.map((rn) => Number(rn.weight_lbs)).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  const medWt = wtNums.length ? wtNums[Math.floor(wtNums.length / 2)] : null;
+
+  const modelOrder = rawRunners.map((_, i) => i).sort(
+    (a, b) => Number(rawRunners[b].model_win_prob || 0) - Number(rawRunners[a].model_win_prob || 0) ||
+              Number(rawRunners[b].model_rating || 0) - Number(rawRunners[a].model_rating || 0)
+  );
+  const modelRankMap = {};
+  modelOrder.forEach((idx, pos) => { modelRankMap[idx] = pos + 1; });
+  const formOrder = rawRunners.map((_, i) => i).sort((a, b) => formScores[b] - formScores[a]);
+  const formRankMap = {};
+  formOrder.forEach((idx, pos) => { formRankMap[idx] = pos + 1; });
+
+  const connScores = rawRunners.map((rn) => {
+    const tr = connStats.trainerScores?.[String(rn.trainer || '').trim()] || 0;
+    const jk = connStats.jockeyScores?.[String(rn.jockey || '').trim()] || 0;
+    return 0.55 * tr + 0.45 * jk - (rn.is_debutant ? 0.04 : 0);
+  });
+  const connOrder = rawRunners.map((_, i) => i).sort((a, b) => connScores[b] - connScores[a]);
+  const connRankMap = {};
+  connOrder.forEach((idx, pos) => { connRankMap[idx] = pos + 1; });
+
+  const leaderIdx = modelOrder[0];
+  const runnerUpIdx = n > 1 ? modelOrder[1] : modelOrder[0];
+  const formLeaderName = String(rawRunners[formOrder[0]]?.horse_name || '');
+
+  return rawRunners.map((rn, i) => {
+    const rivalsForms = formScores.filter((_, j) => j !== i);
+    const fieldFormAvg = rivalsForms.length ? rivalsForms.reduce((a, b) => a + b, 0) / rivalsForms.length : 0;
+    const rivalsWeakCount = rivalsForms.filter((v) => v < 0.05).length;
+    const rivalsLtoWinners = parsedForms.filter((pf, j) => j !== i && pf.figs[0] === '1').length;
+    const weakFieldEdge = n >= 4 && formScores[i] >= 0.32 && (fieldFormAvg <= 0.06 || rivalsWeakCount >= Math.ceil(0.6 * (n - 1)));
+    const rivalIdx = modelRankMap[i] === 1 ? runnerUpIdx : leaderIdx;
+    const fieldCtx = {
+      n,
+      modelRank: modelRankMap[i],
+      formRank: formRankMap[i],
+      connRank: connRankMap[i],
+      rivalsWeakCount,
+      rivalsLtoWinners,
+      weakFieldEdge,
+      experiencedRivals: Math.max(0, expTotal - (rn.is_debutant ? 0 : 1)),
+      formLeaderName,
+      rivalName: String(rawRunners[rivalIdx]?.horse_name || 'the main rival'),
+      rivalWinPct: roundC(Number(rawRunners[rivalIdx]?.model_win_prob || 0) * 100.0, 1),
+      orDiff: medOr !== null && rn.official_rating ? Math.round(Number(rn.official_rating) - medOr) : null,
+      weightDiffLbs: medWt !== null && rn.weight_lbs ? Math.round(Number(rn.weight_lbs) - medWt) : null,
+      trainerMeta: connStats.trainerMeta || {},
+      jockeyMeta: connStats.jockeyMeta || {},
+    };
+    return applyCustomOddsToRunner(hydrateCompactRunner(rn, rc, newsList, fieldCtx), customOdds);
+  });
+}
+
 export async function racingStaticApi(path, opts = {}) {
   const [pathname, queryStr = ''] = path.split('?');
   const query = new URLSearchParams(queryStr);
@@ -1057,9 +1367,10 @@ export async function racingStaticApi(path, opts = {}) {
   const snap = await loadRacingSnapshot(false);
   const customOdds = getStorageSafe(RACING_CUSTOM_ODDS_KEY, {});
   const newsList = snap.news || snap.overview?.news || [];
+  const connStats = buildConnStatsClient(snap.races || []);
 
   const allRaces = (snap.races || []).map((rc) => {
-    const runners = (rc.runners || []).map((rn) => applyCustomOddsToRunner(hydrateCompactRunner(rn, rc, newsList), customOdds));
+    const runners = hydrateRaceRunnersClient(rc, newsList, connStats, customOdds);
     const sorted = [...runners].sort((a, b) => b.model_rating - a.model_rating || a.saddle_cloth - b.saddle_cloth);
     const top = sorted[0];
     return {
@@ -1312,7 +1623,7 @@ export async function racingStaticApi(path, opts = {}) {
       return o >= minO && o <= maxO;
     });
     if (new Set(inBand.map((t) => Number(t.race_id))).size < reqLegs) {
-      const [fbMin, fbMax] = riskLevel === 'low' || riskLevel === 'medium' ? [1.15, 12.0] : [2.5, 29.0];
+      const [fbMin, fbMax] = riskLevel === 'low' || riskLevel === 'medium' ? [1.15, 9.0] : [2.5, 21.0];
       inBand = eligible.filter((t) => {
         const o = Number(t.win_odds || t.odds || 0);
         return o >= fbMin && o <= fbMax;

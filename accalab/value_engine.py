@@ -59,6 +59,203 @@ def kelly_stake_amount(
     return round(frac_pct * 100.0, 2), round(bankroll * frac_pct, 2)
 
 
+def _form_pts_last6(form_str: str | None) -> tuple[int, int, int, int, int]:
+    """Return (points, wins, draws, losses, games) from a W/D/L form string."""
+    s = [ch for ch in str(form_str or "").strip().upper() if ch in ("W", "D", "L")]
+    w = sum(1 for ch in s if ch == "W")
+    d = sum(1 for ch in s if ch == "D")
+    l = sum(1 for ch in s if ch == "L")
+    return w * 3 + d, w, d, l, len(s)
+
+
+def build_fixture_context_map(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+    prop_stats: dict[str, Any] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Precompute standings positions, home/away splits, last-6 rates, H2H & prop estimates per fixture."""
+    if not rows:
+        return {}
+    if prop_stats is None:
+        prop_stats = compute_team_prop_averages(conn)
+
+    standings_by_team: dict[str, dict[str, Any]] = {}
+    div_counts: dict[str, int] = {}
+    tr_rows = conn.execute(
+        """
+        SELECT team_name, div, elo, elo_change_last5, matches_played, points, gf, ga, form_last6
+        FROM team_ratings
+        ORDER BY div ASC, points DESC, (gf - ga) DESC, gf DESC, elo DESC
+        """
+    ).fetchall()
+    for tr in tr_rows:
+        dv = str(tr["div"] or "")
+        div_counts[dv] = div_counts.get(dv, 0) + 1
+        standings_by_team[tr["team_name"]] = {
+            "pos": div_counts[dv],
+            "points": int(tr["points"] or 0),
+            "played": int(tr["matches_played"] or 0),
+            "gf": int(tr["gf"] or 0),
+            "ga": int(tr["ga"] or 0),
+            "elo": float(tr["elo"] or 1500.0),
+            "elo_change_last5": float(tr["elo_change_last5"] or 0.0),
+            "form_last6": str(tr["form_last6"] or ""),
+        }
+
+    needed_teams = {str(r.get("home_team") or "") for r in rows} | {str(r.get("away_team") or "") for r in rows}
+    hist_rows = conn.execute(
+        """
+        SELECT match_date, season, div, home_team, away_team, fthg, ftag, hc, ac, hy, ay, hr, ar
+        FROM historical_matches
+        WHERE fthg IS NOT NULL AND ftag IS NOT NULL
+        ORDER BY match_date DESC, id DESC
+        """
+    ).fetchall()
+
+    home_splits: dict[str, list[dict[str, Any]]] = {}
+    away_splits: dict[str, list[dict[str, Any]]] = {}
+    overall_last6: dict[str, list[dict[str, Any]]] = {}
+    h2h_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    for m in hist_rows:
+        h_tm = m["home_team"]
+        a_tm = m["away_team"]
+        h_need = h_tm in needed_teams
+        a_need = a_tm in needed_teams
+        if not (h_need or a_need):
+            continue
+        rec = dict(m)
+        if h_need:
+            if len(home_splits.setdefault(h_tm, [])) < 6:
+                home_splits[h_tm].append(rec)
+            if len(overall_last6.setdefault(h_tm, [])) < 6:
+                overall_last6[h_tm].append(rec)
+        if a_need:
+            if len(away_splits.setdefault(a_tm, [])) < 6:
+                away_splits[a_tm].append(rec)
+            if len(overall_last6.setdefault(a_tm, [])) < 6:
+                overall_last6[a_tm].append(rec)
+        if h_need and a_need:
+            pair = (h_tm, a_tm) if h_tm <= a_tm else (a_tm, h_tm)
+            if len(h2h_by_pair.setdefault(pair, [])) < 6:
+                h2h_by_pair[pair].append(rec)
+
+    def _summarize_split(team: str, matches: list[dict[str, Any]], is_home: bool) -> dict[str, int]:
+        w = d = l = gf = ga = 0
+        for m in matches:
+            tg = int(m["fthg"]) if is_home else int(m["ftag"])
+            og = int(m["ftag"]) if is_home else int(m["fthg"])
+            gf += tg
+            ga += og
+            if tg > og:
+                w += 1
+            elif tg == og:
+                d += 1
+            else:
+                l += 1
+        return {"w": w, "d": d, "l": l, "gf": gf, "ga": ga, "played": len(matches)}
+
+    def _summarize_recent6(team: str, matches: list[dict[str, Any]]) -> dict[str, int]:
+        pts = w = d = l = o25 = btts = gf = ga = 0
+        for m in matches:
+            is_h = m["home_team"] == team
+            tg = int(m["fthg"]) if is_h else int(m["ftag"])
+            og = int(m["ftag"]) if is_h else int(m["fthg"])
+            gf += tg
+            ga += og
+            if tg + og >= 3:
+                o25 += 1
+            if tg >= 1 and og >= 1:
+                btts += 1
+            if tg > og:
+                w += 1
+                pts += 3
+            elif tg == og:
+                d += 1
+                pts += 1
+            else:
+                l += 1
+        return {"pts": pts, "w": w, "d": d, "l": l, "o25": o25, "btts": btts, "gf": gf, "ga": ga, "n": len(matches)}
+
+    ctx_map: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        fid = int(row.get("id") or row.get("fixture_id") or 0)
+        h_tm = str(row.get("home_team") or "")
+        a_tm = str(row.get("away_team") or "")
+        dv = str(row.get("div") or "")
+        props = estimate_fixture_props(row, prop_stats)
+        row.update(props)
+
+        hs = standings_by_team.get(h_tm, {})
+        as_ = standings_by_team.get(a_tm, {})
+        pair = (h_tm, a_tm) if h_tm <= a_tm else (a_tm, h_tm)
+        h2h_list = h2h_by_pair.get(pair, [])
+        h_wins = draws = a_wins = o25_h = btts_h = 0
+        for hm in h2h_list:
+            fthg, ftag = int(hm["fthg"]), int(hm["ftag"])
+            if fthg + ftag >= 3:
+                o25_h += 1
+            if fthg >= 1 and ftag >= 1:
+                btts_h += 1
+            winner = hm["home_team"] if fthg > ftag else (hm["away_team"] if ftag > fthg else "")
+            if winner == h_tm:
+                h_wins += 1
+            elif winner == a_tm:
+                a_wins += 1
+            else:
+                draws += 1
+
+        last_h2h = None
+        if h2h_list:
+            lm = h2h_list[0]
+            corn_tot = (int(lm["hc"]) + int(lm["ac"])) if (lm.get("hc") is not None and lm.get("ac") is not None) else None
+            card_tot = (
+                int(lm["hy"]) + int(lm["ay"]) + int(lm.get("hr") or 0) + int(lm.get("ar") or 0)
+                if (lm.get("hy") is not None and lm.get("ay") is not None)
+                else None
+            )
+            last_h2h = {
+                "date": str(lm["match_date"]),
+                "home": lm["home_team"],
+                "away": lm["away_team"],
+                "fthg": int(lm["fthg"]),
+                "ftag": int(lm["ftag"]),
+                "corners": corn_tot,
+                "cards": card_tot,
+            }
+
+        ctx = {
+            "h_pos": hs.get("pos"),
+            "a_pos": as_.get("pos"),
+            "h_pts": hs.get("points"),
+            "a_pts": as_.get("points"),
+            "h_played": hs.get("played"),
+            "a_played": as_.get("played"),
+            "h_gf": hs.get("gf"),
+            "h_ga": hs.get("ga"),
+            "a_gf": as_.get("gf"),
+            "a_ga": as_.get("ga"),
+            "div_size": div_counts.get(dv, 20),
+            "h_home_last6": _summarize_split(h_tm, home_splits.get(h_tm, []), is_home=True),
+            "a_away_last6": _summarize_split(a_tm, away_splits.get(a_tm, []), is_home=False),
+            "h_recent6": _summarize_recent6(h_tm, overall_last6.get(h_tm, [])),
+            "a_recent6": _summarize_recent6(a_tm, overall_last6.get(a_tm, [])),
+            "h2h": {
+                "count": len(h2h_list),
+                "h_wins": h_wins,
+                "draws": draws,
+                "a_wins": a_wins,
+                "o25_hits": o25_h,
+                "btts_hits": btts_h,
+                "last": last_h2h,
+            },
+        }
+        row["match_context"] = ctx
+        if fid:
+            ctx_map[fid] = ctx
+    return ctx_map
+
+
 def _market_tuples_for_fixture(row: dict[str, Any]) -> list[tuple[str, str, float, float | None, float | None, str]]:
     """Return list of (market_code, selection_label, model_prob, odds, fair_bookie_prob, odds_source)."""
     items: list[tuple[str, str, float, float | None, float | None, str]] = []
@@ -111,6 +308,42 @@ def _market_tuples_for_fixture(row: dict[str, Any]) -> list[tuple[str, str, floa
         items.append(("OU_O35", "Over 3.5 Goals", ext["prob_over35"], o35, fo35, "market_estimate"))
         items.append(("OU_U35", "Under 3.5 Goals", ext["prob_under35"], u35, fu35, "market_estimate"))
 
+    exp_c = row.get("exp_corners")
+    exp_y = row.get("exp_cards")
+    if exp_c is not None and float(exp_c) > 0:
+        ec = float(exp_c)
+        c_cands: list[tuple[str, str, float, float, float, str]] = []
+        for c_code, c_lbl, c_prob, c_base in (
+            ("CORN_O85", "Over 8.5 Corners", _poisson_ge(ec, 9), 0.62),
+            ("CORN_O95", "Over 9.5 Corners", _poisson_ge(ec, 10), 0.50),
+            ("CORN_O105", "Over 10.5 Corners", _poisson_ge(ec, 11), 0.38),
+            ("CORN_U105", "Under 10.5 Corners", _poisson_le(ec, 10), 0.62),
+        ):
+            if 0.46 <= c_prob <= 0.78:
+                oc_y, oc_n = estimate_two_way_odds(c_prob, base_yes=c_base, alpha=0.68, margin=1.055)
+                fpc, _, _ = devig_two_way(oc_y, oc_n)
+                c_cands.append((c_code, c_lbl, c_prob, oc_y, fpc, "market_estimate"))
+        if c_cands:
+            best_c = max(c_cands, key=lambda x: (x[2] * float(x[3] or 1.0) - 1.0) * 100.0 + x[2] * 12.0)
+            items.append(best_c)
+
+    if exp_y is not None and float(exp_y) > 0:
+        ey = float(exp_y)
+        y_cands: list[tuple[str, str, float, float, float, str]] = []
+        for y_code, y_lbl, y_prob, y_base in (
+            ("CARD_O25", "Over 2.5 Cards", _poisson_ge(ey, 3), 0.70),
+            ("CARD_O35", "Over 3.5 Cards", _poisson_ge(ey, 4), 0.53),
+            ("CARD_O45", "Over 4.5 Cards", _poisson_ge(ey, 5), 0.35),
+            ("CARD_U35", "Under 3.5 Cards", _poisson_le(ey, 3), 0.47),
+        ):
+            if 0.46 <= y_prob <= 0.78:
+                oy_y, oy_n = estimate_two_way_odds(y_prob, base_yes=y_base, alpha=0.68, margin=1.055)
+                fpy, _, _ = devig_two_way(oy_y, oy_n)
+                y_cands.append((y_code, y_lbl, y_prob, oy_y, fpy, "market_estimate"))
+        if y_cands:
+            best_y = max(y_cands, key=lambda x: (x[2] * float(x[3] or 1.0) - 1.0) * 100.0 + x[2] * 12.0)
+            items.append(best_y)
+
     return items
 
 
@@ -127,7 +360,9 @@ def _build_selection_reasons(
     trust_badge: str,
     include_empty_news_note: bool = True,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Build market-tailored reasoning bullets and compact stats for a selection."""
+    """Build 5 bespoke, plain-English reasoning bullets addressing form, H2H, stats, value & news."""
+    home = str(row["home_team"])
+    away = str(row["away_team"])
     lam = float(row.get("lambda_home") if row.get("lambda_home") is not None else 1.35)
     mu = float(row.get("mu_away") if row.get("mu_away") is not None else 1.15)
     tot_xg = lam + mu
@@ -137,62 +372,262 @@ def _build_selection_reasons(
     h_form = row.get("home_form") or "N/A"
     a_form = row.get("away_form") or "N/A"
     h_sot_for = float(row.get("h_sot_for") or 0.0)
+    h_sot_ag = float(row.get("h_sot_ag") or 0.0)
     a_sot_for = float(row.get("a_sot_for") or 0.0)
+    a_sot_ag = float(row.get("a_sot_ag") or 0.0)
     fair_odds = 1.0 / max(m_prob, 0.01)
+    implied_pct = (1.0 / max(1.02, float(odds))) * 100.0
     is_est = mkt_src == "market_estimate"
     price_tag = "estimated " if is_est else ""
+    ctx = row.get("match_context") or {}
 
-    if edge_pct >= 0:
-        b1 = (
-            f"Value Edge: Model rates {sel_label} at {m_prob*100:.1f}% "
-            f"(fair {decimal_to_fractional(fair_odds)}) vs {decimal_to_fractional(odds)} "
-            f"{price_tag}odds ({edge_pct:+.1f}% edge)."
+    h_pos, a_pos = ctx.get("h_pos"), ctx.get("a_pos")
+    h_pts, a_pts = ctx.get("h_pts"), ctx.get("a_pts")
+    h_played = int(ctx.get("h_played") or 0)
+    a_played = int(ctx.get("a_played") or 0)
+    h_gf, h_ga = int(ctx.get("h_gf") or 0), int(ctx.get("h_ga") or 0)
+    a_gf, a_ga = int(ctx.get("a_gf") or 0), int(ctx.get("a_ga") or 0)
+    h_split = ctx.get("h_home_last6") or {}
+    a_split = ctx.get("a_away_last6") or {}
+    h_rec6 = ctx.get("h_recent6") or {}
+    a_rec6 = ctx.get("a_recent6") or {}
+    h2h = ctx.get("h2h") or {}
+
+    # 1. Value & Win Chance
+    two_up_note = " (qualifies for Bet365 2-Up Early Payout)" if m_code in ("1X2_H", "1X2_A") else ""
+    if edge_pct >= 2.0:
+        b1_why = (
+            f"the {decimal_to_fractional(odds)} price implies only a {implied_pct:.1f}% chance vs our "
+            f"{m_prob * 100:.1f}% model rating, leaving +{edge_pct:.1f}% value over the market."
+        )
+    elif edge_pct >= -1.0:
+        b1_why = (
+            f"this lands frequently ({m_prob * 100:.1f}%) and is priced tightly around fair {decimal_to_fractional(fair_odds)} odds "
+            f"({edge_pct:+.1f}%), making it a steadier probability leg."
         )
     else:
-        b1 = (
-            f"Model Probability: Rates {sel_label} at {m_prob*100:.1f}% "
-            f"(fair {decimal_to_fractional(fair_odds)}) vs {decimal_to_fractional(odds)} "
-            f"{price_tag}odds ({edge_pct:+.1f}% vs market)."
+        b1_why = (
+            f"priced slightly below fair {decimal_to_fractional(fair_odds)} ({edge_pct:+.1f}%), "
+            f"so it relies on its strong {m_prob * 100:.1f}% statistical hit rate."
         )
-
-    elo_str = f"{row['home_team']} {h_elo:.0f} vs {row['away_team']} {a_elo:.0f}"
-    sot_str = (
-        f" • SoT/game: {h_sot_for:.1f} vs {a_sot_for:.1f}"
-        if (h_sot_for > 0 or a_sot_for > 0)
-        else ""
+    b1 = (
+        f"Value & Win Chance: Model rates {sel_label} at {m_prob * 100:.1f}% (fair {decimal_to_fractional(fair_odds)}) "
+        f"vs {decimal_to_fractional(odds)} {price_tag}odds ({edge_pct:+.1f}% edge, {implied_pct:.1f}% implied){two_up_note} — "
+        f"why it matters: {b1_why}"
     )
-    if m_code == "1X2_H":
-        gap_txt = f"{elo_gap:+.0f} home Elo edge" if elo_gap >= 15 else f"Elo gap {elo_gap:+.0f}"
-        b2 = f"Matchup & xG: Projected xG {lam:.2f}–{mu:.2f} ({gap_txt}; {elo_str}){sot_str}."
-    elif m_code == "1X2_A":
-        gap_txt = f"{-elo_gap:+.0f} away Elo edge" if -elo_gap >= 15 else f"Elo {-elo_gap:+.0f}"
-        b2 = f"Matchup & xG: Projected xG {lam:.2f}–{mu:.2f} ({gap_txt}; {elo_str}){sot_str}."
-    elif m_code == "1X2_D":
-        b2 = f"Tight Balance: Projected xG {lam:.2f}–{mu:.2f} with close Elo ({elo_str}, gap {abs(elo_gap):.0f}){sot_str}."
-    elif m_code == "BTTS_Y":
-        b2 = f"Attacking Output: Projected {lam:.2f}–{mu:.2f} xG ({tot_xg:.2f} total) supports both sides scoring{sot_str}."
-    elif m_code == "BTTS_N":
-        b2 = f"Clean-Sheet Profile: Projected {lam:.2f}–{mu:.2f} xG points to at least one shutout ({elo_str}){sot_str}."
-    elif m_code.startswith("OU_O"):
-        line = "1.5" if "15" in m_code else ("3.5" if "35" in m_code else "2.5")
-        b2 = f"Goal Expectancy: Combined {tot_xg:.2f} xG ({lam:.2f} + {mu:.2f}) favours Over {line} goals{sot_str}."
-    else:
-        line = "1.5" if "15" in m_code else ("3.5" if "35" in m_code else "2.5")
-        b2 = f"Low-Scoring Profile: Combined {tot_xg:.2f} xG ({lam:.2f} + {mu:.2f}) leans Under {line} goals{sot_str}."
 
+    # 2. Tactical & Statistical Case
+    table_txt = f"Table: {home} #{h_pos} ({h_pts}pts) vs {away} #{a_pos} ({a_pts}pts)" if (h_pos and a_pos) else ""
+    sot_txt = f"SoT/g: {h_sot_for:.1f} vs {a_sot_for:.1f}" if (h_sot_for > 0 or a_sot_for > 0) else ""
+    split_txt = ""
+    if h_split.get("played") and a_split.get("played"):
+        split_txt = (
+            f"{home} {h_split['w']}W-{h_split['d']}D-{h_split['l']}L at home; "
+            f"{away} {a_split['w']}W-{a_split['d']}D-{a_split['l']}L away"
+        )
+    extra_bits = [b for b in (table_txt, split_txt, sot_txt) if b]
+    extra_clause = f" ({' • '.join(extra_bits)})" if extra_bits else ""
+
+    if m_code in ("1X2_H", "DC_1X"):
+        b2 = (
+            f"Tactical & Statistical Case: Projected {lam:.2f}–{mu:.2f} xG with {home} {h_elo:.0f} vs {away} {a_elo:.0f} Elo"
+            f"{extra_clause} — why it matters: {home} creates higher goal expectancy and home-pitch edge against {away}."
+        )
+    elif m_code in ("1X2_A", "DC_X2"):
+        b2 = (
+            f"Tactical & Statistical Case: Projected {lam:.2f}–{mu:.2f} xG with {away} ({a_elo:.0f} Elo) travelling to {home} ({h_elo:.0f} Elo)"
+            f"{extra_clause} — why it matters: {away} holds enough attacking threat and rating strength to control key phases."
+        )
+    elif m_code == "1X2_D":
+        b2 = (
+            f"Tactical & Statistical Case: Tight projected {lam:.2f}–{mu:.2f} xG and narrow {abs(elo_gap):.0f}-point Elo gap"
+            f"{extra_clause} — why it matters: evenly matched sides keep low-margin 0-0 / 1-1 scorelines live."
+        )
+    elif m_code == "BTTS_Y":
+        h_b6, a_b6 = int(h_rec6.get("btts") or 0), int(a_rec6.get("btts") or 0)
+        b2 = (
+            f"Tactical & Statistical Case: Projected {lam:.2f}–{mu:.2f} xG ({tot_xg:.2f} total) with BTTS hitting in "
+            f"{h_b6}/6 for {home} and {a_b6}/6 for {away} ({home} {h_ga} GA, {away} {a_ga} GA) — "
+            f"why it matters: neither back line has kept consistent clean sheets against comparable xG."
+        )
+    elif m_code == "BTTS_N":
+        b2 = (
+            f"Tactical & Statistical Case: Projected {lam:.2f}–{mu:.2f} xG where at least one attack faces heavy containment ({home} {h_ga} GA vs {away} {a_ga} GA)"
+            f"{extra_clause} — why it matters: a single clean sheet cashes BTTS No."
+        )
+    elif m_code.startswith("OU_O") or m_code.startswith("TEAM_"):
+        h_o6, a_o6 = int(h_rec6.get("o25") or 0), int(a_rec6.get("o25") or 0)
+        tot_gpg = (h_gf + h_ga) / max(1, h_played) + (a_gf + a_ga) / max(1, a_played)
+        gpg_txt = f" • Season match avg {0.5 * tot_gpg:.2f} goals" if (h_played > 0 and a_played > 0) else ""
+        b2 = (
+            f"Tactical & Statistical Case: Combined {tot_xg:.2f} xG ({lam:.2f} + {mu:.2f}), Over 2.5 landed in {h_o6}/6 for {home} "
+            f"& {a_o6}/6 for {away}{gpg_txt}{(' • ' + sot_txt) if sot_txt else ''} — "
+            f"why it matters: high combined chance creation gives {sel_label} strong multi-goal support."
+        )
+    elif m_code.startswith("OU_U"):
+        b2 = (
+            f"Tactical & Statistical Case: Subdued {tot_xg:.2f} combined xG ({lam:.2f} + {mu:.2f}){extra_clause} — "
+            f"why it matters: tight defensive numbers restrict open goalmouth volume for {sel_label}."
+        )
+    elif m_code.startswith("CORN_"):
+        exp_c = float(row.get("exp_corners") or 9.8)
+        hc_f, ac_f = float(row.get("h_corners_for") or 5.2), float(row.get("a_corners_for") or 4.6)
+        hc_a, ac_a = float(row.get("h_corners_against") or 4.8), float(row.get("a_corners_against") or 5.1)
+        b2 = (
+            f"Tactical & Statistical Case: Expected {exp_c:.1f} corners — {home} averages {hc_f:.1f} won / {hc_a:.1f} conceded per game; "
+            f"{away} averages {ac_f:.1f} won / {ac_a:.1f} conceded ({tot_xg:.2f} xG tempo) — "
+            f"why it matters: sustained wing/shot pressure shapes the total flag-kick count for {sel_label}."
+        )
+    else:
+        exp_y = float(row.get("exp_cards") or 3.7)
+        hy_f, ay_f = float(row.get("h_cards_for") or 1.8), float(row.get("a_cards_for") or 2.0)
+        hy_a, ay_a = float(row.get("h_cards_against") or 1.8), float(row.get("a_cards_against") or 1.9)
+        b2 = (
+            f"Tactical & Statistical Case: Expected {exp_y:.1f} yellow cards — {home} picks up {hy_f:.1f}/g ({hy_a:.1f} drawn) "
+            f"and {away} picks up {ay_f:.1f}/g ({ay_a:.1f} drawn){extra_clause} — "
+            f"why it matters: tackle tempo and close table stakes drive booking volume for {sel_label}."
+        )
+
+    # 3. Recent Form Check (honestly explains counter-reasons when form appears poor)
+    h_pts6, h_w6, h_d6, h_l6, _ = _form_pts_last6(h_form)
+    a_pts6, a_w6, a_d6, a_l6, _ = _form_pts_last6(a_form)
+    form_summary = f"{home} {h_form} ({h_pts6}/18 pts: {h_w6}W-{h_d6}D-{h_l6}L) vs {away} {a_form} ({a_pts6}/18 pts: {a_w6}W-{a_d6}D-{a_l6}L)"
+    if m_code in ("1X2_H", "DC_1X", "TEAM_H_O15"):
+        if h_pts6 <= 6 or h_pts6 < a_pts6:
+            counter_reasons: list[str] = []
+            if elo_gap >= 25:
+                counter_reasons.append(f"stronger {h_elo:.0f} vs {a_elo:.0f} Elo class rating")
+            if h_split.get("w", 0) >= 2:
+                counter_reasons.append(f"{h_split['w']}W from last {h_split['played']} at home")
+            if a_split.get("l", 0) >= 3:
+                counter_reasons.append(f"{away} lost {a_split['l']} of last {a_split['played']} away")
+            if lam > mu + 0.25:
+                counter_reasons.append(f"{lam:.2f} vs {mu:.2f} projected xG")
+            if not counter_reasons:
+                counter_reasons.append(f"bookmaker price ({decimal_to_fractional(odds)}) over-penalised recent results vs fair {decimal_to_fractional(fair_odds)}")
+            b3 = (
+                f"Recent Form Check: {form_summary} — "
+                f"why we still suggest {sel_label}: despite {home}'s modest {h_pts6}-pt run, the pick is backed by {', '.join(counter_reasons)}."
+            )
+        else:
+            b3 = (
+                f"Recent Form Check: {form_summary} — "
+                f"why it matters: {home} enters with stronger recent momentum ({h_pts6} pts vs {a_pts6}) and sharper finishing consistency."
+            )
+    elif m_code in ("1X2_A", "DC_X2", "TEAM_A_O15"):
+        if a_pts6 <= 6 or a_pts6 < h_pts6:
+            counter_reasons = []
+            if -elo_gap >= 25:
+                counter_reasons.append(f"higher {a_elo:.0f} vs {h_elo:.0f} Elo baseline")
+            if a_split.get("w", 0) >= 2:
+                counter_reasons.append(f"{a_split['w']}W in last {a_split['played']} road trips")
+            if h_split.get("l", 0) >= 3:
+                counter_reasons.append(f"{home} lost {h_split['l']} of last {h_split['played']} at home")
+            if mu > lam + 0.15:
+                counter_reasons.append(f"{mu:.2f} vs {lam:.2f} away xG edge")
+            if not counter_reasons:
+                counter_reasons.append(f"{decimal_to_fractional(odds)} offers value above {decimal_to_fractional(fair_odds)} fair odds")
+            b3 = (
+                f"Recent Form Check: {form_summary} — "
+                f"why we still suggest {sel_label}: even with {away} taking {a_pts6} pts recently, {', '.join(counter_reasons)} keeps the away angle live."
+            )
+        else:
+            b3 = (
+                f"Recent Form Check: {form_summary} — "
+                f"why it matters: {away} brings superior recent form ({a_pts6} pts vs {h_pts6}) into this fixture."
+            )
+    elif m_code == "1X2_D":
+        b3 = (
+            f"Recent Form Check: {form_summary} — "
+            f"why it matters: {h_d6 + a_d6} combined draws in their last 6 outings reinforce how tough either side is to separate cleanly."
+        )
+    elif m_code.startswith("OU_O") or m_code == "BTTS_Y":
+        h_gf6, h_ga6 = int(h_rec6.get("gf") or 0), int(h_rec6.get("ga") or 0)
+        a_gf6, a_ga6 = int(a_rec6.get("gf") or 0), int(a_rec6.get("ga") or 0)
+        b3 = (
+            f"Recent Form Check: {form_summary} ({home} scored {h_gf6}/conceded {h_ga6}; {away} scored {a_gf6}/conceded {a_ga6} in last 6) — "
+            f"why it matters: defensive concessions and open recent games point toward goals regardless of W-D-L results."
+        )
+    elif m_code.startswith("OU_U") or m_code == "BTTS_N":
+        h_gf6, h_ga6 = int(h_rec6.get("gf") or 0), int(h_rec6.get("ga") or 0)
+        a_gf6, a_ga6 = int(a_rec6.get("gf") or 0), int(a_rec6.get("ga") or 0)
+        b3 = (
+            f"Recent Form Check: {form_summary} ({home} {h_gf6}F/{h_ga6}A; {away} {a_gf6}F/{a_ga6}A in last 6) — "
+            f"why it matters: disciplined low-scoring patterns keep totals contained."
+        )
+    else:
+        b3 = (
+            f"Recent Form Check: {form_summary} — "
+            f"why it matters: active league tempo and competitive intensity support match {('corner' if m_code.startswith('CORN_') else 'card')} activity."
+        )
+
+    # 4. Head-to-Head & Track Record
     bt_detail = ""
     if bt and bt.get("value_bets_count") is not None:
         bt_detail = f" ({bt['flat_roi_pct']:+.1f}% ROI over {bt['value_bets_count']} bets)"
     elif bt and bt.get("avg_clv_pct"):
         bt_detail = f" (+{bt['avg_clv_pct']:.1f}% avg CLV)"
-    b3 = f"Form & Track Record: {h_form} (H) vs {a_form} (A) • {trust_badge}{bt_detail}."
+    bt_str = f"{trust_badge}{bt_detail}"
 
-    reasons = [b1, b2, b3]
+    last_m = h2h.get("last")
+    if last_m and int(h2h.get("count") or 0) > 0:
+        lm_str = f"Last H2H ({last_m['date']}): {last_m['home']} {last_m['fthg']}–{last_m['ftag']} {last_m['away']}"
+        rec_str = f"H2H ({h2h['count']} mtgs): {home} {h2h['h_wins']}W-{h2h['draws']}D-{h2h['a_wins']}L"
+        lm_tot = int(last_m["fthg"]) + int(last_m["ftag"])
+        lm_btts = int(last_m["fthg"]) >= 1 and int(last_m["ftag"]) >= 1
+        lm_winner = last_m["home"] if last_m["fthg"] > last_m["ftag"] else (last_m["away"] if last_m["ftag"] > last_m["fthg"] else "Draw")
+        contradict_why = ""
+        if m_code == "1X2_H" and lm_winner != home:
+            contradict_why = (
+                f"why we still suggest {sel_label}: {home} didn't win the last meeting ({lm_winner}), "
+                f"but today holds home venue ({lam:.2f} xG) and current-season {h_elo:.0f} vs {a_elo:.0f} Elo strength."
+            )
+        elif m_code == "1X2_A" and lm_winner != away:
+            contradict_why = (
+                f"why we still suggest {sel_label}: {away} didn't take all 3 points last time, "
+                f"but current attack/defence numbers ({mu:.2f} away xG) and odds shift value onto {away}."
+            )
+        elif m_code.startswith("OU_O") and lm_tot < 3:
+            contradict_why = (
+                f"why we still suggest {sel_label}: the last H2H finished with {lm_tot} goal(s), "
+                f"yet current season tempo ({tot_xg:.2f} xG) indicates a more open rematch."
+            )
+        elif m_code == "BTTS_Y" and not lm_btts:
+            contradict_why = (
+                f"why we still suggest {sel_label}: one side kept a clean sheet last meeting, "
+                f"but both clubs are now conceding regularly ({h_ga} & {a_ga} GA this season)."
+            )
+        if contradict_why:
+            b4 = f"Head-to-Head & Track Record: {lm_str} • {rec_str} • {bt_str} — {contradict_why}"
+        else:
+            b4 = (
+                f"Head-to-Head & Track Record: {lm_str} • {rec_str} • {bt_str} — "
+                f"why it matters: direct matchup history and league validation back {sel_label}."
+            )
+    else:
+        b4 = (
+            f"Head-to-Head & Track Record: No recent 2024–27 league H2H (new/promoted matchup) • {bt_str} — "
+            f"why it matters: with no direct meeting in this window, current-season Elo and {tot_xg:.2f} xG form drive the call."
+        )
+
+    # 5. Team News & Availability
     if matched_news:
-        reasons.append(f"Team News: [{matched_news[0]['source']}] {matched_news[0]['title']}")
+        b5 = (
+            f"Team News & Availability: [{matched_news[0]['source']}] {matched_news[0]['title']} — "
+            f"why it matters: relevant {home}/{away} squad context factored alongside model probabilities."
+        )
     elif include_empty_news_note:
-        reasons.append("News Check: No disruptive late club headlines in BBC/Sky/Guardian feeds.")
+        b5 = (
+            f"Team News & Availability: No late injury crises or disruptive headlines flagged for {home} or {away} "
+            f"in BBC/Sky/Guardian feeds — why it matters: both sides project close to expected XI strength."
+        )
+    else:
+        b5 = (
+            f"Team News & Availability: Clean current feed check for {home} vs {away} — "
+            f"why it matters: no late off-field shocks altering our {m_prob * 100:.0f}% projection."
+        )
 
+    reasons = [b1, b2, b3, b4, b5]
     reason_stats: dict[str, Any] = {
         "xg_home": round(lam, 2),
         "xg_away": round(mu, 2),
@@ -204,6 +639,15 @@ def _build_selection_reasons(
         "fair_odds": round(fair_odds, 2),
         "trust_badge": trust_badge,
     }
+    if h_pos and a_pos:
+        reason_stats["h_pos"] = h_pos
+        reason_stats["a_pos"] = a_pos
+    if last_m:
+        reason_stats["last_h2h"] = f"{last_m['home']} {last_m['fthg']}-{last_m['ftag']} {last_m['away']}"
+    if row.get("exp_corners"):
+        reason_stats["exp_corners"] = round(float(row["exp_corners"]), 1)
+    if row.get("exp_cards"):
+        reason_stats["exp_cards"] = round(float(row["exp_cards"]), 1)
     if h_sot_for > 0 or a_sot_for > 0:
         reason_stats["sot_home"] = round(h_sot_for, 1)
         reason_stats["sot_away"] = round(a_sot_for, 1)
@@ -223,7 +667,7 @@ def _build_bet_level_reasons(
     criteria: dict[str, Any] | None = None,
     exclude_already_bet: bool = False,
 ) -> list[str]:
-    """Generate whole-bet rationale bullets summarizing criteria fit, math, strongest leg & promos."""
+    """Generate whole-bet rationale cards explaining structure, combined hit rate, anchor & safeguards."""
     if not legs:
         return []
     risk_labels = {
@@ -238,22 +682,28 @@ def _build_bet_level_reasons(
     comb_prob = float(ev.get("combined_model_prob_pct") or 0.0)
     ev_pct = float(ev.get("expected_value_pct") or 0.0)
     best_leg = max(legs, key=lambda l: float(l.get("edge_pct") or 0.0))
+    safest_leg = max(legs, key=lambda l: float(l.get("model_prob") or 0.0))
 
     bet_reasons: list[str] = []
     if criteria and criteria.get("bet_type_summary"):
         bet_reasons.append(
-            f"Criteria Match: {r_label} {len(legs)}-leg build focused on {criteria['bet_type_summary']} across {distinct_fixtures} distinct fixtures."
+            f"Criteria Match: {r_label} {len(legs)}-leg build focused on {criteria['bet_type_summary']} across {distinct_fixtures} distinct fixtures — "
+            f"why it matters: keeps legs uncorrelated so one upset doesn't sink unrelated bets."
         )
     else:
         bet_reasons.append(
-            f"Selection Strategy: {title} ({r_label}) combining {len(legs)} top-scoring {'leg' if len(legs) == 1 else 'legs'} across {distinct_fixtures} matches."
+            f"Selection Strategy: {title} ({r_label}) combining {len(legs)} top-scoring {'leg' if len(legs) == 1 else 'legs'} across {distinct_fixtures} matches — "
+            f"why it matters: pairs model probability with positive market pricing inside your {r_label.lower()} target."
         )
 
     bet_reasons.append(
-        f"Combined Math: {comb_frac} combined odds • {comb_prob:.1f}% model win chance ({ev_pct:+.1f}% expected value)."
+        f"Combined Math: {comb_frac} combined odds • {comb_prob:.1f}% model win chance ({ev_pct:+.1f}% expected value) — "
+        f"why it matters: a £{float(ev.get('stake') or 10):.2f} stake projects £{float(ev.get('potential_return') or 0):.2f} back with genuine positive EV."
     )
     bet_reasons.append(
-        f"Strongest Driver: {best_leg['selection_label']} ({best_leg['home_team']} vs {best_leg['away_team']}) leads at {float(best_leg.get('edge_pct') or 0):+.1f}% edge."
+        f"Strongest Driver: {best_leg['selection_label']} ({best_leg['home_team']} vs {best_leg['away_team']}) leads at {float(best_leg.get('edge_pct') or 0):+.1f}% edge, "
+        f"anchored by {safest_leg['selection_label']} ({float(safest_leg.get('model_prob') or 0) * 100:.0f}% hit chance) — "
+        f"why it matters: combining a high-probability anchor with your sharpest edge balances return and reliability."
     )
 
     two_up_count = sum(1 for l in legs if l.get("market") in ("1X2_H", "1X2_A"))
@@ -261,9 +711,14 @@ def _build_bet_level_reasons(
     if exclude_already_bet:
         notes.append("screened out your active placed/saved/slip legs")
     if two_up_count > 0:
-        notes.append(f"{two_up_count}x 2-Up Early Payout eligible")
-    if notes:
-        bet_reasons.append(f"Bet Safeguards & Perks: {notes[0][0].upper()}{notes[0][1:]}{(' • ' + ' • '.join(notes[1:])) if len(notes) > 1 else ''}.")
+        notes.append(f"{two_up_count}x Bet365 2-Up Early Payout eligible")
+    if not notes:
+        notes.append("1 market per fixture inside strict probability & odds bands")
+    first = notes[0][0].upper() + notes[0][1:]
+    extra_notes = (" • " + " • ".join(notes[1:])) if len(notes) > 1 else ""
+    bet_reasons.append(
+        f"Bet Safeguards & Perks: {first}{extra_notes} — why it matters: avoids doubling down on the same match and caps variance."
+    )
 
     return bet_reasons
 
@@ -303,6 +758,7 @@ def find_value_opportunities(
     upcoming = [r for r in rows if is_fixture_upcoming(r)]
     if upcoming:
         rows = upcoming
+    build_fixture_context_map(conn, rows)
 
     # Load backtest trust metrics per (div, market_group)
     bt_map: dict[tuple[str, str], dict[str, Any]] = {}
@@ -318,6 +774,27 @@ def find_value_opportunities(
     allowed_markets = expand_bet_type_filters(market_filter) if market_filter else None
     official_sources = {"bet365_official", "api_football_b365", "live_sportsbook", "user_manual"}
 
+    def _passes_conviction_gate(r_row: dict[str, Any], code: str, prob: float, odd: float) -> bool:
+        h_pts6 = _form_pts_last6(r_row.get("home_form"))[0]
+        a_pts6 = _form_pts_last6(r_row.get("away_form"))[0]
+        h_el = float(r_row.get("home_elo") or 1500.0)
+        a_el = float(r_row.get("away_elo") or 1500.0)
+        if code == "1X2_H":
+            if prob < 0.35 or odd > 4.00:
+                return False
+            if h_pts6 <= 4 and a_pts6 >= 11 and ((h_el - a_el) < 55.0 or prob < 0.43):
+                return False
+            return True
+        if code == "1X2_A":
+            if prob < 0.35 or odd > 4.00:
+                return False
+            if a_pts6 <= 4 and h_pts6 >= 11 and ((a_el - h_el) < 55.0 or prob < 0.43):
+                return False
+            return True
+        if code == "1X2_D":
+            return prob >= 0.28 and odd <= 3.90 and abs(h_el - a_el) <= 75.0
+        return prob >= 0.48 and 1.28 <= odd <= 2.60
+
     opportunities: list[dict[str, Any]] = []
     for row in rows:
         matched_news = (news_by_team.get(row["home_team"], []) + news_by_team.get(row["away_team"], []))[:1]
@@ -328,12 +805,17 @@ def find_value_opportunities(
                 continue
             if not odds or odds <= 1.01:
                 continue
+            if not _passes_conviction_gate(row, m_code, float(m_prob), float(odds)):
+                continue
             edge_pct = (m_prob * odds - 1.0) * 100.0
             if edge_pct < min_edge_pct:
                 continue
 
             kelly_pct, stake_gbp = kelly_stake_amount(m_prob, odds, bankroll, kelly_fraction)
-            bt_key = (row["div"], "1X2" if m_code.startswith("1X2") else ("BTTS" if m_code.startswith("BTTS") else "O/U 2.5"))
+            bt_key = (
+                row["div"],
+                "1X2" if m_code.startswith(("1X2", "DC_")) else ("BTTS" if m_code.startswith("BTTS") else "O/U 2.5"),
+            )
             bt = bt_map.get(bt_key)
             backtest_roi = bt["flat_roi_pct"] if bt else None
             trust_badge = (
@@ -353,7 +835,12 @@ def find_value_opportunities(
                 matched_news,
                 mkt_odds_source,
                 trust_badge,
-                include_empty_news_note=False,
+                include_empty_news_note=True,
+            )
+            quality_score = (
+                min(edge_pct, 18.0) * 1.35
+                + (float(m_prob) * 100.0) * 0.55
+                + (6.0 if mkt_odds_source in official_sources else 0.0)
             )
 
             opportunities.append(
@@ -382,10 +869,29 @@ def find_value_opportunities(
                     "backtest_roi_pct": backtest_roi,
                     "reasons": reasons,
                     "reason_stats": reason_stats,
+                    "_quality_score": round(quality_score, 3),
                 }
             )
 
-    opportunities.sort(key=lambda x: x["edge_pct"], reverse=True)
+    opportunities.sort(key=lambda x: (x["_quality_score"], x["edge_pct"]), reverse=True)
+    if min_edge_pct >= 0.0 and not market_filter:
+        per_fix_cnt: dict[int, int] = {}
+        per_fix_fams: dict[int, set[str]] = {}
+        filtered_opps: list[dict[str, Any]] = []
+        for o in opportunities:
+            fid = int(o["fixture_id"])
+            fam = _market_family(o["market"])
+            if per_fix_cnt.get(fid, 0) >= 2:
+                continue
+            if fam in per_fix_fams.get(fid, set()):
+                continue
+            per_fix_cnt[fid] = per_fix_cnt.get(fid, 0) + 1
+            per_fix_fams.setdefault(fid, set()).add(fam)
+            o.pop("_quality_score", None)
+            filtered_opps.append(o)
+        return filtered_opps
+    for o in opportunities:
+        o.pop("_quality_score", None)
     return opportunities
 
 
@@ -473,6 +979,7 @@ def build_acca_presets(conn: sqlite3.Connection, bankroll: float = 250.0) -> lis
     upcoming_all = [r for r in all_rows if is_fixture_upcoming(r)]
     if upcoming_all:
         all_rows = upcoming_all
+    build_fixture_context_map(conn, all_rows)
 
     candidates: list[dict[str, Any]] = []
     for r in all_rows:
@@ -571,13 +1078,31 @@ def build_acca_presets(conn: sqlite3.Connection, bankroll: float = 250.0) -> lis
     return presets
 
 
-def _leg_won(market: str, fthg: int, ftag: int) -> bool:
+def _leg_won(
+    market: str,
+    fthg: int,
+    ftag: int,
+    hc: int | None = None,
+    ac: int | None = None,
+    hy: int | None = None,
+    ay: int | None = None,
+    hr: int | None = None,
+    ar: int | None = None,
+) -> bool | None:
     if market == "1X2_H":
         return fthg > ftag
     if market == "1X2_D":
         return fthg == ftag
     if market == "1X2_A":
         return ftag > fthg
+    if market == "DC_1X":
+        return fthg >= ftag
+    if market == "DC_X2":
+        return ftag >= fthg
+    if market == "TEAM_H_O15":
+        return fthg >= 2
+    if market == "TEAM_A_O15":
+        return ftag >= 2
     if market == "OU_O15":
         return (fthg + ftag) >= 2
     if market == "OU_U15":
@@ -594,6 +1119,32 @@ def _leg_won(market: str, fthg: int, ftag: int) -> bool:
         return fthg >= 1 and ftag >= 1
     if market == "BTTS_N":
         return fthg == 0 or ftag == 0
+    if market.startswith("CORN_"):
+        if hc is None or ac is None:
+            return None
+        tot_c = int(hc) + int(ac)
+        if market == "CORN_O75":
+            return tot_c >= 8
+        if market == "CORN_O85":
+            return tot_c >= 9
+        if market == "CORN_O95":
+            return tot_c >= 10
+        if market == "CORN_O105":
+            return tot_c >= 11
+        if market == "CORN_U105":
+            return tot_c <= 10
+    if market.startswith("CARD_"):
+        if hy is None or ay is None:
+            return None
+        tot_y = int(hy) + int(ay) + int(hr or 0) + int(ar or 0)
+        if market == "CARD_O25":
+            return tot_y >= 3
+        if market == "CARD_O35":
+            return tot_y >= 4
+        if market == "CARD_O45":
+            return tot_y >= 5
+        if market == "CARD_U35":
+            return tot_y <= 3
     return False
 
 
@@ -643,7 +1194,20 @@ def settle_bets(conn: sqlite3.Connection) -> int:
                 continue
 
             h_dict = dict(hist)
-            won = _leg_won(leg["market"], int(h_dict["fthg"]), int(h_dict["ftag"]))
+            won = _leg_won(
+                leg["market"],
+                int(h_dict["fthg"]),
+                int(h_dict["ftag"]),
+                hc=h_dict.get("hc"),
+                ac=h_dict.get("ac"),
+                hy=h_dict.get("hy"),
+                ay=h_dict.get("ay"),
+                hr=h_dict.get("hr"),
+                ar=h_dict.get("ar"),
+            )
+            if won is None:
+                all_resolved = False
+                continue
             c_odds = _closing_odds_for_market(leg["market"], h_dict) or leg["closing_odds"]
             new_leg_status = "won" if won else "lost"
             if not won:
@@ -1346,6 +1910,7 @@ def _build_scored_candidates(conn: sqlite3.Connection, user: dict[str, Any]) -> 
     rows = [r for r in rows if is_fixture_upcoming(r)] or rows
     if not rows:
         return []
+    build_fixture_context_map(conn, rows)
 
     bt_map: dict[tuple[str, str], dict[str, Any]] = {
         (b["div"], b["market"]): dict(b)
@@ -1370,13 +1935,22 @@ def _build_scored_candidates(conn: sqlite3.Connection, user: dict[str, Any]) -> 
         a_form = r.get("away_form") or "N/A"
         matched_news = (news_by_team.get(r["home_team"], []) + news_by_team.get(r["away_team"], []))[:1]
 
+        h_pts6 = _form_pts_last6(h_form)[0]
+        a_pts6 = _form_pts_last6(a_form)[0]
         for m_code, sel_label, m_prob, odds, _, mkt_src in _market_tuples_for_fixture(r):
-            if not odds or odds < 1.05 or odds > 10.0:
+            if not odds or odds < 1.05 or odds > 6.5:
+                continue
+            if m_code == "1X2_H" and h_pts6 <= 4 and a_pts6 >= 11 and ((h_elo - a_elo) < 55.0 or m_prob < 0.43):
+                continue
+            if m_code == "1X2_A" and a_pts6 <= 4 and h_pts6 >= 11 and ((a_elo - h_elo) < 55.0 or m_prob < 0.43):
                 continue
 
             is_official = mkt_src in official_sources
             edge_pct = (m_prob * odds - 1.0) * 100.0
-            bt_key = (r["div"], "1X2" if m_code.startswith("1X2") else ("BTTS" if m_code.startswith("BTTS") else "O/U 2.5"))
+            bt_key = (
+                r["div"],
+                "1X2" if m_code.startswith(("1X2", "DC_")) else ("BTTS" if m_code.startswith("BTTS") else "O/U 2.5"),
+            )
             bt = bt_map.get(bt_key)
             trust_badge = (
                 "Backtest Proven"
@@ -1569,11 +2143,11 @@ def build_bet_suggestions(
     med_stake = round(default_stake, 2)
     med_pool = sorted(
         _pool_or_fallback(
-            [c for c in candidates if c["odds"] <= 3.60 and c["edge_pct"] >= 2.0],
+            [c for c in candidates if 1.38 <= c["odds"] <= 2.75 and c["model_prob"] >= 0.42 and c["edge_pct"] >= 1.5],
             3,
-            sorted(candidates, key=lambda c: c["edge_pct"], reverse=True),
+            sorted(candidates, key=lambda c: c["edge_pct"] * 1.2 + c["model_prob"] * 45.0, reverse=True),
         ),
-        key=lambda c: (c["edge_pct"], c["confidence_score"]),
+        key=lambda c: (c["edge_pct"] * 1.2 + c["model_prob"] * 45.0 + c["confidence_score"] * 0.25),
         reverse=True,
     )
     pkg_med_treble = _build_pkg(
@@ -1820,23 +2394,32 @@ _CUSTOM_BET_TYPE_LABELS: dict[str, str] = {
     "OU_U25": "Under 2.5",
     "OU_O35": "Over 3.5",
     "OU_U35": "Under 3.5",
+    "CORNERS": "Corners",
+    "CARDS": "Cards",
+}
+
+FOOTBALL_RISK_BANDS: dict[str, tuple[float, float, float]] = {
+    "low": (1.22, 2.15, 0.52),
+    "medium": (1.35, 2.85, 0.40),
+    "high": (1.65, 3.80, 0.30),
+    "longshot": (2.00, 5.50, 0.22),
 }
 
 
 def _score_candidate_for_risk(c: dict[str, Any], risk_level: str) -> float:
     odds = float(c["odds"])
     prob = float(c["model_prob"])
-    edge = float(c["edge_pct"])
+    edge = max(-10.0, min(22.0, float(c["edge_pct"])))
     conf = float(c["confidence_score"])
     off = 4.0 if c.get("is_official") else 0.0
     if risk_level == "low":
-        return prob * 100.0 + edge * 1.3 + off - max(0.0, odds - 2.35) * 14.0
+        return prob * 110.0 + edge * 1.1 + off - max(0.0, odds - 2.10) * 14.0
     if risk_level == "high":
-        return edge * 1.8 + min(odds, 4.5) * 6.5 + conf * 0.2 - max(0.0, 1.50 - odds) * 12.0
+        return edge * 1.6 + min(odds, 3.8) * 6.0 + prob * 25.0 + conf * 0.2 - max(0.0, 1.60 - odds) * 12.0
     if risk_level == "longshot":
-        return edge * 1.6 + min(odds, 7.0) * 8.0 + prob * 15.0 - max(0.0, 1.80 - odds) * 14.0
-    # medium (default)
-    return edge * 1.6 + prob * 45.0 + conf * 0.25 + off * 0.5 - max(0.0, odds - 3.80) * 6.0
+        return edge * 1.5 + min(odds, 5.5) * 6.5 + prob * 20.0 - max(0.0, 1.90 - odds) * 14.0
+    # medium (default balanced)
+    return edge * 1.45 + prob * 52.0 + conf * 0.25 + off * 0.5 - max(0.0, odds - 2.85) * 8.0
 
 
 def build_custom_bets(
@@ -1924,6 +2507,17 @@ def build_custom_bets(
         scored = dict(c)
         scored["_score"] = _score_candidate_for_risk(c, risk_level)
         pool.append(scored)
+
+    min_o, max_o, min_p = FOOTBALL_RISK_BANDS[risk_level]
+    in_band = [
+        c for c in pool if min_o <= float(c["odds"]) <= max_o and float(c["model_prob"]) >= min_p
+    ]
+    if len({int(c["fixture_id"]) for c in in_band}) >= legs_count:
+        pool = in_band
+    else:
+        fb_pool = [c for c in pool if 1.15 <= float(c["odds"]) <= 5.50 and float(c["model_prob"]) >= 0.20]
+        if len({int(c["fixture_id"]) for c in fb_pool}) >= legs_count:
+            pool = fb_pool
 
     pool.sort(key=lambda x: (x["_score"], x["edge_pct"], x["model_prob"]), reverse=True)
     dedup_excl_count = len(
@@ -2298,8 +2892,12 @@ def estimate_fixture_props(row: dict[str, Any], prop_stats: dict[str, Any]) -> d
         "exp_cards": exp_cards,
         "h_corners_for": round(hr["corners_for_pg"], 1),
         "a_corners_for": round(ar["corners_for_pg"], 1),
+        "h_corners_against": round(hr["corners_against_pg"], 1),
+        "a_corners_against": round(ar["corners_against_pg"], 1),
         "h_cards_for": round(hr["cards_for_pg"], 1),
         "a_cards_for": round(ar["cards_for_pg"], 1),
+        "h_cards_against": round(hr["cards_against_pg"], 1),
+        "a_cards_against": round(ar["cards_against_pg"], 1),
     }
 
 
@@ -2487,12 +3085,18 @@ def _materialize_bb_leg(
         )
         if code.startswith(("DC_", "TEAM_")):
             rsn = [
-                f"Joint Scoreline Model: {label} hits in {mp*100:.1f}% of simulated scorelines (fair {decimal_to_fractional(fair_o)}).",
-                f"Matchup & xG: Projected xG {lam:.2f}–{mu:.2f} ({home} {h_elo:.0f} vs {away} {a_elo:.0f} Elo).",
-                f"Form (Last 6): {h_form} (H) vs {a_form} (A) • {trust}.",
+                f"Joint Scoreline Model: {label} hits in {mp*100:.1f}% of simulated scorelines (fair {decimal_to_fractional(fair_o)}) — "
+                f"why it matters: scoreline simulations capture exact team-goal paths better than generic averages.",
+                f"Tactical & Statistical Case: Projected xG {lam:.2f}–{mu:.2f} ({home} {h_elo:.0f} vs {away} {a_elo:.0f} Elo) — "
+                f"why it matters: controls how often {home if code in ('DC_1X', 'TEAM_H_O15') else away} avoids defeat or clears 2 goals.",
+                f"Recent Form Check: {h_form} (H) vs {a_form} (A) • {trust} — "
+                f"why it matters: shows current competitive consistency heading into this matchup.",
             ]
             if matched_news:
-                rsn.append(f"Team News: [{matched_news[0]['source']}] {matched_news[0]['title']}")
+                rsn.append(
+                    f"Team News & Availability: [{matched_news[0]['source']}] {matched_news[0]['title']} — "
+                    f"why it matters: current club availability factored into the leg."
+                )
             r_stats: dict[str, Any] = {
                 "xg_home": round(lam, 2),
                 "xg_away": round(mu, 2),
@@ -2523,15 +3127,23 @@ def _materialize_bb_leg(
         exp_y = props["exp_cards"]
         if sl["category"] == "corners":
             rsn = [
-                f"Corner Model: {label} projected at {mp*100:.1f}% (fair {decimal_to_fractional(fair_o)}) with {exp_c:.1f} expected match corners.",
-                f"Team Corner Rates: {home} win {props['h_corners_for']:.1f}/g vs {away} {props['a_corners_for']:.1f}/g across recent 2025/26–26/27 matches.",
-                f"Tempo Context: Projected {lam:.2f}–{mu:.2f} xG supports sustained final-third pressure.",
+                f"Value & Win Chance: {label} projected at {mp*100:.1f}% (fair {decimal_to_fractional(fair_o)}) with {exp_c:.1f} expected match corners — "
+                f"why it matters: anchors the builder on repeatable wing and final-third pressure.",
+                f"Tactical & Statistical Case: {home} wins {props['h_corners_for']:.1f} corners/g (concedes {props.get('h_corners_against', 4.8):.1f}); "
+                f"{away} wins {props['a_corners_for']:.1f}/g (concedes {props.get('a_corners_against', 5.0):.1f}) — "
+                f"why it matters: combined corner volume supports {label} independently of final goals.",
+                f"Recent Form Check: {h_form} (H) vs {a_form} (A) at {lam:.2f}–{mu:.2f} xG — "
+                f"why it matters: active attacking tempo keeps flag kicks ticking over.",
             ]
         else:
             rsn = [
-                f"Discipline Model: {label} projected at {mp*100:.1f}% (fair {decimal_to_fractional(fair_o)}) with {exp_y:.1f} expected cards.",
-                f"Team Booking Rates: {home} average {props['h_cards_for']:.1f} cards/g vs {away} {props['a_cards_for']:.1f} cards/g across recent league games.",
-                f"Match Tension: Elo {h_elo:.0f} vs {a_elo:.0f} ({h_form} vs {a_form}).",
+                f"Value & Win Chance: {label} projected at {mp*100:.1f}% (fair {decimal_to_fractional(fair_o)}) with {exp_y:.1f} expected cards — "
+                f"why it matters: adds a non-goal booking angle with steady Poisson probability.",
+                f"Tactical & Statistical Case: {home} averages {props['h_cards_for']:.1f} cards/g (opponents {props.get('h_cards_against', 1.8):.1f}); "
+                f"{away} averages {props['a_cards_for']:.1f} cards/g (opponents {props.get('a_cards_against', 1.9):.1f}) — "
+                f"why it matters: team discipline histories point clearly toward {label}.",
+                f"Recent Form Check: Elo {h_elo:.0f} vs {a_elo:.0f} ({h_form} vs {a_form}) — "
+                f"why it matters: close league pressure keeps challenge frequency high.",
             ]
         r_stats = {
             "xg_home": round(lam, 2),
@@ -2606,14 +3218,23 @@ def _materialize_bet_builder(
             corr_note = f" (overlap-adjusted {corr_diff:.0f}% vs naive multiply)"
 
     bet_reasons = [
-        f"Joint Scoreline & Prop Math: {round(joint_prob * 100.0, 1)}% true win chance (fair {decimal_to_fractional(fair_odds)}){corr_note} vs {decimal_to_fractional(est_odds)} est. Bet Builder price.",
-        f"Match Script: Projected xG {lam:.2f}–{mu:.2f} • {row['home_team']} ({h_elo:.0f} Elo, {h_form}) vs {row['away_team']} ({a_elo:.0f} Elo, {a_form}).",
-        f"Props Tempo: Expected {props['exp_corners']:.1f} corners ({props['h_corners_for']:.1f} + {props['a_corners_for']:.1f} for/g) & {props['exp_cards']:.1f} yellow cards ({props['h_cards_for']:.1f} + {props['a_cards_for']:.1f}/g).",
+        f"Joint Scoreline & Prop Math: {round(joint_prob * 100.0, 1)}% true win chance (fair {decimal_to_fractional(fair_odds)}){corr_note} vs {decimal_to_fractional(est_odds)} est. Bet Builder price — "
+        f"why it matters: same-game combinations are priced jointly so correlated legs aren't double-counted.",
+        f"Match Script: Projected xG {lam:.2f}–{mu:.2f} • {row['home_team']} ({h_elo:.0f} Elo, {h_form}) vs {row['away_team']} ({a_elo:.0f} Elo, {a_form}) — "
+        f"why it matters: all sub-legs fit the same tactical game flow rather than pulling in opposite directions.",
+        f"Props Tempo: Expected {props['exp_corners']:.1f} corners ({props['h_corners_for']:.1f} + {props['a_corners_for']:.1f} for/g) & {props['exp_cards']:.1f} yellow cards ({props['h_cards_for']:.1f} + {props['a_cards_for']:.1f}/g) — "
+        f"why it matters: grounded season averages justify the corner/card lines included.",
     ]
     if matched_news:
-        bet_reasons.append(f"Team News: [{matched_news[0]['source']}] {matched_news[0]['title']}")
+        bet_reasons.append(
+            f"Team News & Availability: [{matched_news[0]['source']}] {matched_news[0]['title']} — "
+            f"why it matters: club updates verified ahead of kickoff."
+        )
     if exclude_already_bet:
-        bet_reasons.append("Duplicate Guard: Screened against your active placed, saved & slip selections on this fixture.")
+        bet_reasons.append(
+            "Duplicate Guard: Screened against your active placed, saved & slip selections on this fixture — "
+            "why it matters: avoids overexposing one match."
+        )
 
     clean_sub_legs = [_materialize_bb_leg(row, props, l, bt_map, matched_news) for l in sorted_legs]
     reason_stats = {
@@ -3043,6 +3664,7 @@ def _load_fixture_rows_with_context(
         for team in json.loads(nd.get("matched_teams_json") or "[]"):
             news_by_team.setdefault(team, []).append(nd)
     prop_stats = compute_team_prop_averages(conn)
+    build_fixture_context_map(conn, rows, prop_stats)
     return rows, bt_map, news_by_team, prop_stats
 
 

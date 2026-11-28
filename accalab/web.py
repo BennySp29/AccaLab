@@ -50,8 +50,10 @@ from accalab.db import (
     utc_now_iso,
 )
 from accalab.modeling import (
+    calibrate_lambdas_to_market,
     estimate_two_way_odds,
     extract_extended_goals_probs,
+    extract_market_probs,
     generate_grounded_summary,
     score_matrix,
 )
@@ -62,6 +64,7 @@ from accalab.value_engine import (
     build_bet_suggestions,
     build_custom_bet_builders,
     build_custom_bets,
+    build_fixture_context_map,
     compute_team_prop_averages,
     devig_three_way,
     devig_two_way,
@@ -585,6 +588,7 @@ def create_app() -> Flask:
                     raw_rows = upcoming_raw
 
             prop_stats = compute_team_prop_averages(conn)
+            ctx_map = build_fixture_context_map(conn, raw_rows, prop_stats)
             fixtures = []
             for d in raw_rows:
                 is_fav = d["home_team"] in fav_set or d["away_team"] in fav_set
@@ -600,6 +604,7 @@ def create_app() -> Flask:
                 d["tipster_consensus"] = json.loads(d.pop("tipster_consensus_json") or "{}")
                 d["best_edge"] = _fixture_best_edge(d)
                 d.update(estimate_fixture_props(d, prop_stats))
+                d["match_context"] = ctx_map.get(d["id"], d.get("match_context") or {})
                 d["is_watched"] = is_watched
                 d["is_favourite_match"] = is_fav
                 fixtures.append(d)
@@ -796,6 +801,42 @@ def create_app() -> Flask:
                     fixture_id,
                 ),
             )
+            upd_fix = dict(conn.execute("SELECT * FROM upcoming_fixtures WHERE id = ?", (fixture_id,)).fetchone() or {})
+            pred_row = conn.execute("SELECT * FROM predictions WHERE fixture_id = ?", (fixture_id,)).fetchone()
+            if upd_fix and pred_row:
+                lam_cal, mu_cal = calibrate_lambdas_to_market(
+                    float(pred_row["lambda_home"]),
+                    float(pred_row["mu_away"]),
+                    float(pred_row["rho"]),
+                    upd_fix,
+                )
+                mat_cal = score_matrix(lam_cal, mu_cal, float(pred_row["rho"]))
+                probs_cal = extract_market_probs(mat_cal)
+                conn.execute(
+                    """
+                    UPDATE predictions SET
+                        lambda_home = ?, mu_away = ?,
+                        prob_home = ?, prob_draw = ?, prob_away = ?,
+                        prob_over25 = ?, prob_under25 = ?,
+                        prob_btts_yes = ?, prob_btts_no = ?,
+                        top_scorelines_json = ?, updated_at = ?
+                    WHERE fixture_id = ?
+                    """,
+                    (
+                        round(lam_cal, 4),
+                        round(mu_cal, 4),
+                        probs_cal["prob_home"],
+                        probs_cal["prob_draw"],
+                        probs_cal["prob_away"],
+                        probs_cal["prob_over25"],
+                        probs_cal["prob_under25"],
+                        probs_cal["prob_btts_yes"],
+                        probs_cal["prob_btts_no"],
+                        json.dumps(probs_cal["top_scorelines"]),
+                        now,
+                        fixture_id,
+                    ),
+                )
         return jsonify({"ok": True, "fixture_id": fixture_id, "odds_source": "user_manual"})
 
     @app.route("/api/fixture/<int:fixture_id>/ai-summary", methods=["POST"])

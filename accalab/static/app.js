@@ -514,12 +514,16 @@ const BET_TYPE_OPTIONS = [
   { code: 'OU_U25', label: 'Under 2.5 Goals', shortLabel: 'Under 2.5', icon: '📉' },
   { code: 'OU_O35', label: 'Over 3.5 Goals', shortLabel: 'Over 3.5', icon: '🚀' },
   { code: 'OU_U35', label: 'Under 3.5 Goals', shortLabel: 'Under 3.5', icon: '📉' },
+  { code: 'CORNERS', label: 'Corners', shortLabel: 'Corners', icon: '🚩' },
+  { code: 'CARDS', label: 'Cards', shortLabel: 'Cards', icon: '🟨' },
 ];
 
 const ALL_MARKET_CODES = [
   '1X2_H', '1X2_D', '1X2_A',
   'OU_O15', 'OU_U15', 'OU_O25', 'OU_U25', 'OU_O35', 'OU_U35',
   'BTTS_Y', 'BTTS_N',
+  'CORN_O85', 'CORN_O95', 'CORN_O105', 'CORN_U105',
+  'CARD_O25', 'CARD_O35', 'CARD_O45', 'CARD_U35',
 ];
 
 const BET_TYPE_GROUP_MAP = {
@@ -531,6 +535,8 @@ const BET_TYPE_GROUP_MAP = {
   BTTS_Y: ['BTTS_Y'],
   BTTS_N: ['BTTS_N'],
   GOALS: ['OU_O15', 'OU_U15', 'OU_O25', 'OU_U25', 'OU_O35', 'OU_U35'],
+  CORNERS: ['CORN_O85', 'CORN_O95', 'CORN_O105', 'CORN_U105'],
+  CARDS: ['CARD_O25', 'CARD_O35', 'CARD_O45', 'CARD_U35'],
 };
 
 const CUSTOM_BET_TYPE_LABELS = {
@@ -548,6 +554,8 @@ const CUSTOM_BET_TYPE_LABELS = {
   OU_U25: 'Under 2.5',
   OU_O35: 'Over 3.5',
   OU_U35: 'Under 3.5',
+  CORNERS: 'Corners',
+  CARDS: 'Cards',
 };
 
 function expandBetTypesClient(filters = ['ALL']) {
@@ -1829,6 +1837,14 @@ function getFallbackLegReasons(item) {
   return out;
 }
 
+function formPtsLast6Client(formStr) {
+  const s = String(formStr || '').trim().toUpperCase().split('').filter((ch) => ['W', 'D', 'L'].includes(ch));
+  const w = s.filter((ch) => ch === 'W').length;
+  const d = s.filter((ch) => ch === 'D').length;
+  const l = s.filter((ch) => ch === 'L').length;
+  return { pts: w * 3 + d, w, d, l, n: s.length };
+}
+
 function buildSelectionReasonsClient(
   row,
   mCode,
@@ -1842,6 +1858,8 @@ function buildSelectionReasonsClient(
   trustBadge,
   { includeEmptyNewsNote = true } = {}
 ) {
+  const home = String(row.home_team || 'Home');
+  const away = String(row.away_team || 'Away');
   const lam = Number(row.lambda_home ?? 1.35);
   const mu = Number(row.mu_away ?? 1.15);
   const totXg = lam + mu;
@@ -1853,36 +1871,117 @@ function buildSelectionReasonsClient(
   const hSotFor = Number(row.h_sot_for || 0);
   const aSotFor = Number(row.a_sot_for || 0);
   const fairOdds = 1.0 / Math.max(mProb, 0.01);
+  const impliedPct = (1.0 / Math.max(1.02, Number(odds || 2.0))) * 100.0;
   const priceTag = mktSrc === 'market_estimate' ? 'estimated ' : '';
   const signEdge = `${edgePct >= 0 ? '+' : ''}${edgePct.toFixed(1)}%`;
+  const ctx = row.match_context || {};
 
-  const b1 =
-    edgePct >= 0
-      ? `Value Edge: Model rates ${selLabel} at ${(mProb * 100).toFixed(1)}% (fair ${fmtOdds(fairOdds)}) vs ${fmtOdds(odds)} ${priceTag}odds (${signEdge} edge).`
-      : `Model Probability: Rates ${selLabel} at ${(mProb * 100).toFixed(1)}% (fair ${fmtOdds(fairOdds)}) vs ${fmtOdds(odds)} ${priceTag}odds (${signEdge} vs market).`;
+  const hPos = ctx.h_pos;
+  const aPos = ctx.a_pos;
+  const hPts = ctx.h_pts;
+  const aPts = ctx.a_pts;
+  const hPlayed = Number(ctx.h_played || 0);
+  const aPlayed = Number(ctx.a_played || 0);
+  const hGf = Number(ctx.h_gf || 0);
+  const hGa = Number(ctx.h_ga || 0);
+  const aGf = Number(ctx.a_gf || 0);
+  const aGa = Number(ctx.a_ga || 0);
+  const hSplit = ctx.h_home_last6 || {};
+  const aSplit = ctx.a_away_last6 || {};
+  const hRec6 = ctx.h_recent6 || {};
+  const aRec6 = ctx.a_recent6 || {};
+  const h2h = ctx.h2h || {};
 
-  const eloStr = `${row.home_team} ${Math.round(hElo)} vs ${row.away_team} ${Math.round(aElo)}`;
-  const sotStr = hSotFor > 0 || aSotFor > 0 ? ` • SoT/game: ${hSotFor.toFixed(1)} vs ${aSotFor.toFixed(1)}` : '';
+  const twoUpNote = mCode === '1X2_H' || mCode === '1X2_A' ? ' (qualifies for Bet365 2-Up Early Payout)' : '';
+  let b1Why = `priced slightly below fair ${fmtOdds(fairOdds)} (${signEdge}), so it relies on its strong ${(mProb * 100).toFixed(1)}% statistical hit rate.`;
+  if (edgePct >= 2.0) {
+    b1Why = `the ${fmtOdds(odds)} price implies only a ${impliedPct.toFixed(1)}% chance vs our ${(mProb * 100).toFixed(1)}% model rating, leaving +${edgePct.toFixed(1)}% value over the market.`;
+  } else if (edgePct >= -1.0) {
+    b1Why = `this lands frequently (${(mProb * 100).toFixed(1)}%) and is priced tightly around fair ${fmtOdds(fairOdds)} odds (${signEdge}), making it a steadier probability leg.`;
+  }
+  const b1 = `Value & Win Chance: Model rates ${selLabel} at ${(mProb * 100).toFixed(1)}% (fair ${fmtOdds(fairOdds)}) vs ${fmtOdds(odds)} ${priceTag}odds (${signEdge} edge, ${impliedPct.toFixed(1)}% implied)${twoUpNote} — why it matters: ${b1Why}`;
+
+  const tableTxt = hPos && aPos ? `Table: ${home} #${hPos} (${hPts}pts) vs ${away} #${aPos} (${aPts}pts)` : '';
+  const sotTxt = hSotFor > 0 || aSotFor > 0 ? `SoT/g: ${hSotFor.toFixed(1)} vs ${aSotFor.toFixed(1)}` : '';
+  const splitTxt = hSplit.played && aSplit.played
+    ? `${home} ${hSplit.w}W-${hSplit.d}D-${hSplit.l}L at home; ${away} ${aSplit.w}W-${aSplit.d}D-${aSplit.l}L away`
+    : '';
+  const extraBits = [tableTxt, splitTxt, sotTxt].filter(Boolean);
+  const extraClause = extraBits.length ? ` (${extraBits.join(' • ')})` : '';
+
   let b2 = '';
-  if (mCode === '1X2_H') {
-    const gapTxt = eloGap >= 15 ? `+${Math.round(eloGap)} home Elo edge` : `Elo gap ${eloGap >= 0 ? '+' : ''}${Math.round(eloGap)}`;
-    b2 = `Matchup & xG: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} (${gapTxt}; ${eloStr})${sotStr}.`;
-  } else if (mCode === '1X2_A') {
-    const awayAdv = -eloGap;
-    const gapTxt = awayAdv >= 15 ? `+${Math.round(awayAdv)} away Elo edge` : `Elo ${awayAdv >= 0 ? '+' : ''}${Math.round(awayAdv)}`;
-    b2 = `Matchup & xG: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} (${gapTxt}; ${eloStr})${sotStr}.`;
+  if (mCode === '1X2_H' || mCode === 'DC_1X') {
+    b2 = `Tactical & Statistical Case: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG with ${home} ${Math.round(hElo)} vs ${away} ${Math.round(aElo)} Elo${extraClause} — why it matters: ${home} creates higher goal expectancy and home-pitch edge against ${away}.`;
+  } else if (mCode === '1X2_A' || mCode === 'DC_X2') {
+    b2 = `Tactical & Statistical Case: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG with ${away} (${Math.round(aElo)} Elo) travelling to ${home} (${Math.round(hElo)} Elo)${extraClause} — why it matters: ${away} holds enough attacking threat and rating strength to control key phases.`;
   } else if (mCode === '1X2_D') {
-    b2 = `Tight Balance: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} with close Elo (${eloStr}, gap ${Math.round(Math.abs(eloGap))})${sotStr}.`;
+    b2 = `Tactical & Statistical Case: Tight projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG and narrow ${Math.round(Math.abs(eloGap))}-point Elo gap${extraClause} — why it matters: evenly matched sides keep low-margin 0-0 / 1-1 scorelines live.`;
   } else if (mCode === 'BTTS_Y') {
-    b2 = `Attacking Output: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG (${totXg.toFixed(2)} total) supports both sides scoring${sotStr}.`;
+    const hb6 = Number(hRec6.btts || 0);
+    const ab6 = Number(aRec6.btts || 0);
+    b2 = `Tactical & Statistical Case: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG (${totXg.toFixed(2)} total) with BTTS hitting in ${hb6}/6 for ${home} and ${ab6}/6 for ${away} (${home} ${hGa} GA, ${away} ${aGa} GA) — why it matters: neither back line has kept consistent clean sheets against comparable xG.`;
   } else if (mCode === 'BTTS_N') {
-    b2 = `Clean-Sheet Profile: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG points to at least one shutout (${eloStr})${sotStr}.`;
-  } else if (mCode.startsWith('OU_O')) {
-    const line = mCode.includes('15') ? '1.5' : mCode.includes('35') ? '3.5' : '2.5';
-    b2 = `Goal Expectancy: Combined ${totXg.toFixed(2)} xG (${lam.toFixed(2)} + ${mu.toFixed(2)}) favours Over ${line} goals${sotStr}.`;
+    b2 = `Tactical & Statistical Case: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG where at least one attack faces heavy containment (${home} ${hGa} GA vs ${away} ${aGa} GA)${extraClause} — why it matters: a single clean sheet cashes BTTS No.`;
+  } else if (mCode.startsWith('OU_O') || mCode.startsWith('TEAM_')) {
+    const ho6 = Number(hRec6.o25 || 0);
+    const ao6 = Number(aRec6.o25 || 0);
+    const totGpg = hPlayed > 0 && aPlayed > 0 ? 0.5 * ((hGf + hGa) / hPlayed + (aGf + aGa) / aPlayed) : 0;
+    const gpgTxt = totGpg > 0 ? ` • Season match avg ${totGpg.toFixed(2)} goals` : '';
+    b2 = `Tactical & Statistical Case: Combined ${totXg.toFixed(2)} xG (${lam.toFixed(2)} + ${mu.toFixed(2)}), Over 2.5 landed in ${ho6}/6 for ${home} & ${ao6}/6 for ${away}${gpgTxt}${sotTxt ? ` • ${sotTxt}` : ''} — why it matters: high combined chance creation gives ${selLabel} strong multi-goal support.`;
+  } else if (mCode.startsWith('OU_U')) {
+    b2 = `Tactical & Statistical Case: Subdued ${totXg.toFixed(2)} combined xG (${lam.toFixed(2)} + ${mu.toFixed(2)})${extraClause} — why it matters: tight defensive numbers restrict open goalmouth volume for ${selLabel}.`;
+  } else if (mCode.startsWith('CORN_')) {
+    const expC = Number(row.exp_corners || 9.8);
+    const hcF = Number(row.h_corners_for || 5.2);
+    const acF = Number(row.a_corners_for || 4.6);
+    const hcA = Number(row.h_corners_against || 4.8);
+    const acA = Number(row.a_corners_against || 5.1);
+    b2 = `Tactical & Statistical Case: Expected ${expC.toFixed(1)} corners — ${home} averages ${hcF.toFixed(1)} won / ${hcA.toFixed(1)} conceded per game; ${away} averages ${acF.toFixed(1)} won / ${acA.toFixed(1)} conceded (${totXg.toFixed(2)} xG tempo) — why it matters: sustained wing/shot pressure shapes the total flag-kick count for ${selLabel}.`;
   } else {
-    const line = mCode.includes('15') ? '1.5' : mCode.includes('35') ? '3.5' : '2.5';
-    b2 = `Low-Scoring Profile: Combined ${totXg.toFixed(2)} xG (${lam.toFixed(2)} + ${mu.toFixed(2)}) leans Under ${line} goals${sotStr}.`;
+    const expY = Number(row.exp_cards || 3.7);
+    const hyF = Number(row.h_cards_for || 1.8);
+    const ayF = Number(row.a_cards_for || 2.0);
+    const hyA = Number(row.h_cards_against || 1.8);
+    const ayA = Number(row.a_cards_against || 1.9);
+    b2 = `Tactical & Statistical Case: Expected ${expY.toFixed(1)} yellow cards — ${home} picks up ${hyF.toFixed(1)}/g (${hyA.toFixed(1)} drawn) and ${away} picks up ${ayF.toFixed(1)}/g (${ayA.toFixed(1)} drawn)${extraClause} — why it matters: tackle tempo and close table stakes drive booking volume for ${selLabel}.`;
+  }
+
+  const hf = formPtsLast6Client(hForm);
+  const af = formPtsLast6Client(aForm);
+  const formSummary = `${home} ${hForm} (${hf.pts}/18 pts: ${hf.w}W-${hf.d}D-${hf.l}L) vs ${away} ${aForm} (${af.pts}/18 pts: ${af.w}W-${af.d}D-${af.l}L)`;
+  let b3 = '';
+  if (['1X2_H', 'DC_1X', 'TEAM_H_O15'].includes(mCode)) {
+    if (hf.pts <= 6 || hf.pts < af.pts) {
+      const ctrs = [];
+      if (eloGap >= 25) ctrs.push(`stronger ${Math.round(hElo)} vs ${Math.round(aElo)} Elo class rating`);
+      if ((hSplit.w || 0) >= 2) ctrs.push(`${hSplit.w}W from last ${hSplit.played} at home`);
+      if ((aSplit.l || 0) >= 3) ctrs.push(`${away} lost ${aSplit.l} of last ${aSplit.played} away`);
+      if (lam > mu + 0.25) ctrs.push(`${lam.toFixed(2)} vs ${mu.toFixed(2)} projected xG`);
+      if (!ctrs.length) ctrs.push(`bookmaker price (${fmtOdds(odds)}) over-penalised recent results vs fair ${fmtOdds(fairOdds)}`);
+      b3 = `Recent Form Check: ${formSummary} — why we still suggest ${selLabel}: despite ${home}'s modest ${hf.pts}-pt run, the pick is backed by ${ctrs.join(', ')}.`;
+    } else {
+      b3 = `Recent Form Check: ${formSummary} — why it matters: ${home} enters with stronger recent momentum (${hf.pts} pts vs ${af.pts}) and sharper finishing consistency.`;
+    }
+  } else if (['1X2_A', 'DC_X2', 'TEAM_A_O15'].includes(mCode)) {
+    if (af.pts <= 6 || af.pts < hf.pts) {
+      const ctrs = [];
+      if (-eloGap >= 25) ctrs.push(`higher ${Math.round(aElo)} vs ${Math.round(hElo)} Elo baseline`);
+      if ((aSplit.w || 0) >= 2) ctrs.push(`${aSplit.w}W in last ${aSplit.played} road trips`);
+      if ((hSplit.l || 0) >= 3) ctrs.push(`${home} lost ${hSplit.l} of last ${hSplit.played} at home`);
+      if (mu > lam + 0.15) ctrs.push(`${mu.toFixed(2)} vs ${lam.toFixed(2)} away xG edge`);
+      if (!ctrs.length) ctrs.push(`${fmtOdds(odds)} offers value above ${fmtOdds(fairOdds)} fair odds`);
+      b3 = `Recent Form Check: ${formSummary} — why we still suggest ${selLabel}: even with ${away} taking ${af.pts} pts recently, ${ctrs.join(', ')} keeps the away angle live.`;
+    } else {
+      b3 = `Recent Form Check: ${formSummary} — why it matters: ${away} brings superior recent form (${af.pts} pts vs ${hf.pts}) into this fixture.`;
+    }
+  } else if (mCode === '1X2_D') {
+    b3 = `Recent Form Check: ${formSummary} — why it matters: ${hf.d + af.d} combined draws in their last 6 outings reinforce how tough either side is to separate cleanly.`;
+  } else if (mCode.startsWith('OU_O') || mCode === 'BTTS_Y') {
+    b3 = `Recent Form Check: ${formSummary} (${home} scored ${Number(hRec6.gf || 0)}/conceded ${Number(hRec6.ga || 0)}; ${away} scored ${Number(aRec6.gf || 0)}/conceded ${Number(aRec6.ga || 0)} in last 6) — why it matters: defensive concessions and open recent games point toward goals regardless of W-D-L results.`;
+  } else if (mCode.startsWith('OU_U') || mCode === 'BTTS_N') {
+    b3 = `Recent Form Check: ${formSummary} (${home} ${Number(hRec6.gf || 0)}F/${Number(hRec6.ga || 0)}A; ${away} ${Number(aRec6.gf || 0)}F/${Number(aRec6.ga || 0)}A in last 6) — why it matters: disciplined low-scoring patterns keep totals contained.`;
+  } else {
+    b3 = `Recent Form Check: ${formSummary} — why it matters: active league tempo and competitive intensity support match ${mCode.startsWith('CORN_') ? 'corner' : 'card'} activity.`;
   }
 
   let btDetail = '';
@@ -1891,13 +1990,39 @@ function buildSelectionReasonsClient(
   } else if (bt && bt.avg_clv_pct) {
     btDetail = ` (+${Number(bt.avg_clv_pct).toFixed(1)}% avg CLV)`;
   }
-  const b3 = `Form & Track Record: ${hForm} (H) vs ${aForm} (A) • ${trustBadge}${btDetail}.`;
+  const btStr = `${trustBadge}${btDetail}`;
+  const lastM = h2h.last;
+  let b4 = '';
+  if (lastM && Number(h2h.count || 0) > 0) {
+    const lmStr = `Last H2H (${lastM.date}): ${lastM.home} ${lastM.fthg}–${lastM.ftag} ${lastM.away}`;
+    const recStr = `H2H (${h2h.count} mtgs): ${home} ${h2h.h_wins}W-${h2h.draws}D-${h2h.a_wins}L`;
+    const lmTot = Number(lastM.fthg) + Number(lastM.ftag);
+    const lmBtts = Number(lastM.fthg) >= 1 && Number(lastM.ftag) >= 1;
+    const lmWinner = lastM.fthg > lastM.ftag ? lastM.home : lastM.ftag > lastM.fthg ? lastM.away : 'Draw';
+    let contradictWhy = '';
+    if (mCode === '1X2_H' && lmWinner !== home) {
+      contradictWhy = `why we still suggest ${selLabel}: ${home} didn't win the last meeting (${lmWinner}), but today holds home venue (${lam.toFixed(2)} xG) and current-season ${Math.round(hElo)} vs ${Math.round(aElo)} Elo strength.`;
+    } else if (mCode === '1X2_A' && lmWinner !== away) {
+      contradictWhy = `why we still suggest ${selLabel}: ${away} didn't take all 3 points last time, but current attack/defence numbers (${mu.toFixed(2)} away xG) and odds shift value onto ${away}.`;
+    } else if (mCode.startsWith('OU_O') && lmTot < 3) {
+      contradictWhy = `why we still suggest ${selLabel}: the last H2H finished with ${lmTot} goal(s), yet current season tempo (${totXg.toFixed(2)} xG) indicates a more open rematch.`;
+    } else if (mCode === 'BTTS_Y' && !lmBtts) {
+      contradictWhy = `why we still suggest ${selLabel}: one side kept a clean sheet last meeting, but both clubs are now conceding regularly (${hGa} & ${aGa} GA this season).`;
+    }
+    b4 = contradictWhy
+      ? `Head-to-Head & Track Record: ${lmStr} • ${recStr} • ${btStr} — ${contradictWhy}`
+      : `Head-to-Head & Track Record: ${lmStr} • ${recStr} • ${btStr} — why it matters: direct matchup history and league validation back ${selLabel}.`;
+  } else {
+    b4 = `Head-to-Head & Track Record: No recent 2024–27 league H2H (new/promoted matchup) • ${btStr} — why it matters: with no direct meeting in this window, current-season Elo and ${totXg.toFixed(2)} xG form drive the call.`;
+  }
 
-  const reasons = [b1, b2, b3];
+  let b5 = '';
   if (matchedNews) {
-    reasons.push(`Team News: [${matchedNews.source}] ${matchedNews.title}`);
+    b5 = `Team News & Availability: [${matchedNews.source}] ${matchedNews.title} — why it matters: relevant ${home}/${away} squad context factored alongside model probabilities.`;
   } else if (includeEmptyNewsNote) {
-    reasons.push('News Check: No disruptive late club headlines in BBC/Sky/Guardian feeds.');
+    b5 = `Team News & Availability: No late injury crises or disruptive headlines flagged for ${home} or ${away} in BBC/Sky/Guardian feeds — why it matters: both sides project close to expected XI strength.`;
+  } else {
+    b5 = `Team News & Availability: Clean current feed check for ${home} vs ${away} — why it matters: no late off-field shocks altering our ${Math.round(mProb * 100)}% projection.`;
   }
 
   const reasonStats = {
@@ -1911,6 +2036,13 @@ function buildSelectionReasonsClient(
     fair_odds: roundNum(fairOdds, 2),
     trust_badge: trustBadge,
   };
+  if (hPos && aPos) {
+    reasonStats.h_pos = hPos;
+    reasonStats.a_pos = aPos;
+  }
+  if (lastM) reasonStats.last_h2h = `${lastM.home} ${lastM.fthg}-${lastM.ftag} ${lastM.away}`;
+  if (row.exp_corners) reasonStats.exp_corners = roundNum(Number(row.exp_corners), 1);
+  if (row.exp_cards) reasonStats.exp_cards = roundNum(Number(row.exp_cards), 1);
   if (hSotFor > 0 || aSotFor > 0) {
     reasonStats.sot_home = roundNum(hSotFor, 1);
     reasonStats.sot_away = roundNum(aSotFor, 1);
@@ -1918,7 +2050,7 @@ function buildSelectionReasonsClient(
   if (bt && bt.flat_roi_pct != null) reasonStats.backtest_roi_pct = roundNum(Number(bt.flat_roi_pct), 1);
   if (matchedNews) reasonStats.news_headline = `[${matchedNews.source}] ${matchedNews.title}`;
 
-  return { reasons, reason_stats: reasonStats };
+  return { reasons: [b1, b2, b3, b4, b5], reason_stats: reasonStats };
 }
 
 function buildBetLevelReasonsClient(title, legs, ev, riskLevel, criteria = null, excludeAlreadyBet = false) {
@@ -1930,33 +2062,35 @@ function buildBetLevelReasonsClient(title, legs, ev, riskLevel, criteria = null,
   const combProb = Number(ev?.combined_model_prob_pct || 0);
   const evPct = Number(ev?.expected_value_pct || 0);
   const bestLeg = legs.reduce((best, cur) => (Number(cur.edge_pct || 0) > Number(best.edge_pct || 0) ? cur : best), legs[0]);
+  const safestLeg = legs.reduce((best, cur) => (Number(cur.model_prob || 0) > Number(best.model_prob || 0) ? cur : best), legs[0]);
 
   const out = [];
   if (criteria && criteria.bet_type_summary) {
     out.push(
-      `Criteria Match: ${rLabel} ${legs.length}-leg build focused on ${criteria.bet_type_summary} across ${distinctFixtures} distinct fixtures.`
+      `Criteria Match: ${rLabel} ${legs.length}-leg build focused on ${criteria.bet_type_summary} across ${distinctFixtures} distinct fixtures — why it matters: keeps legs uncorrelated so one upset doesn't sink unrelated bets.`
     );
   } else {
     out.push(
-      `Selection Strategy: ${title} (${rLabel}) combining ${legs.length} top-scoring ${legs.length === 1 ? 'leg' : 'legs'} across ${distinctFixtures} matches.`
+      `Selection Strategy: ${title} (${rLabel}) combining ${legs.length} top-scoring ${legs.length === 1 ? 'leg' : 'legs'} across ${distinctFixtures} matches — why it matters: pairs model probability with positive market pricing inside your ${rLabel.toLowerCase()} target.`
     );
   }
   out.push(
-    `Combined Math: ${combFrac} combined odds • ${combProb.toFixed(1)}% model win chance (${evPct >= 0 ? '+' : ''}${evPct.toFixed(1)}% expected value).`
+    `Combined Math: ${combFrac} combined odds • ${combProb.toFixed(1)}% model win chance (${evPct >= 0 ? '+' : ''}${evPct.toFixed(1)}% expected value) — why it matters: a £${Number(ev?.stake || 10).toFixed(2)} stake projects £${Number(ev?.potential_return || 0).toFixed(2)} back with genuine positive EV.`
   );
   const bestEdge = Number(bestLeg.edge_pct || 0);
   out.push(
-    `Strongest Driver: ${bestLeg.selection_label} (${bestLeg.home_team} vs ${bestLeg.away_team}) leads at ${bestEdge >= 0 ? '+' : ''}${bestEdge.toFixed(1)}% edge.`
+    `Strongest Driver: ${bestLeg.selection_label} (${bestLeg.home_team} vs ${bestLeg.away_team}) leads at ${bestEdge >= 0 ? '+' : ''}${bestEdge.toFixed(1)}% edge, anchored by ${safestLeg.selection_label} (${Math.round(Number(safestLeg.model_prob || 0) * 100)}% hit chance) — why it matters: combining a high-probability anchor with your sharpest edge balances return and reliability.`
   );
 
   const twoUpCnt = legs.filter((l) => l.market === '1X2_H' || l.market === '1X2_A').length;
   const notes = [];
   if (excludeAlreadyBet) notes.push('screened out your active placed/saved/slip legs');
-  if (twoUpCnt > 0) notes.push(`${twoUpCnt}x 2-Up Early Payout eligible`);
-  if (notes.length) {
-    const first = notes[0].charAt(0).toUpperCase() + notes[0].slice(1);
-    out.push(`Bet Safeguards & Perks: ${first}${notes.length > 1 ? ` • ${notes.slice(1).join(' • ')}` : ''}.`);
-  }
+  if (twoUpCnt > 0) notes.push(`${twoUpCnt}x Bet365 2-Up Early Payout eligible`);
+  if (!notes.length) notes.push('1 market per fixture inside strict probability & odds bands');
+  const first = notes[0].charAt(0).toUpperCase() + notes[0].slice(1);
+  out.push(
+    `Bet Safeguards & Perks: ${first}${notes.length > 1 ? ` • ${notes.slice(1).join(' • ')}` : ''} — why it matters: avoids doubling down on the same match and caps variance.`
+  );
   return out;
 }
 
@@ -1971,6 +2105,12 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
   }
   if (stats && stats.elo_home != null && stats.elo_away != null) {
     chips.push(`Elo ${Math.round(stats.elo_home)} vs ${Math.round(stats.elo_away)}`);
+  }
+  if (stats && stats.h_pos != null && stats.a_pos != null) {
+    chips.push(`Table #${stats.h_pos} vs #${stats.a_pos}`);
+  }
+  if (stats && stats.last_h2h) {
+    chips.push(`Last H2H: ${stats.last_h2h}`);
   }
   if (stats && (Number(stats.sot_home) > 0 || Number(stats.sot_away) > 0)) {
     chips.push(`SoT ${Number(stats.sot_home || 0).toFixed(1)} vs ${Number(stats.sot_away || 0).toFixed(1)}/g`);
@@ -2010,25 +2150,30 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
   const getReasonIcon = (label) => {
     const k = String(label || '').toLowerCase();
     if (k.includes('form')) return '📈';
-    if (k.includes('setup') || k.includes('condition') || k.includes('matchup') || k.includes('goal') || k.includes('attacking') || k.includes('clean-sheet') || k.includes('balance')) return '🏟️';
-    if (k.includes('price') || k.includes('value') || k.includes('odds') || k.includes('stake') || k.includes('payout') || k.includes('math') || k.includes('prob')) return '💷';
+    if (k.includes('head-to-head') || k.includes('h2h') || k.includes('track')) return '⚔️';
+    if (k.includes('corner')) return '🚩';
+    if (k.includes('card') || k.includes('booking')) return '🟨';
+    if (k.includes('setup') || k.includes('tactical') || k.includes('statistical') || k.includes('condition') || k.includes('matchup') || k.includes('goal') || k.includes('attacking') || k.includes('clean-sheet') || k.includes('balance') || k.includes('script')) return '🏟️';
+    if (k.includes('price') || k.includes('value') || k.includes('odds') || k.includes('stake') || k.includes('payout') || k.includes('math') || k.includes('prob') || k.includes('chance')) return '💷';
     if (k.includes('stable') || k.includes('jockey') || k.includes('connection')) return '🏇';
     if (k.includes('news')) return '📰';
     if (k.includes('structure') || k.includes('strategy') || k.includes('criteria')) return '🎯';
     if (k.includes('headline') || k.includes('anchor') || k.includes('driver')) return '⭐';
-    if (k.includes('safeguard') || k.includes('discipline') || k.includes('perk')) return '🛡️';
+    if (k.includes('safeguard') || k.includes('discipline') || k.includes('perk') || k.includes('duplicate')) return '🛡️';
     return '💡';
   };
 
   const formatBullet = (txt) => {
     const raw = String(txt || '').trim();
     const idx = raw.indexOf(': ');
-    const heading = idx > 0 && idx <= 32 ? raw.slice(0, idx) : '';
+    const heading = idx > 0 && idx <= 36 ? raw.slice(0, idx) : '';
     const detail = heading ? raw.slice(idx + 2) : raw;
-    const whySplit = detail.match(/^(.*?)\s+—\s+(?:why it matters:\s*)?(.+)$/i);
+    const whySplit = detail.match(/^(.*?)\s+—\s+(?:(why (?:it matters|we still (?:suggest|back)[^:]*)):\s*)?(.+)$/i);
+    const rawWhy = whySplit?.[2] ? `${whySplit[2].charAt(0).toUpperCase()}${whySplit[2].slice(1)}` : '';
+    const whyLabel = rawWhy ? `${rawWhy}:` : 'Why it matters:';
     const bodyHtml = whySplit
       ? `<div class="text-slate-200 leading-snug break-words">${esc(whySplit[1])}</div>
-         <div class="text-[11px] text-emerald-300 leading-snug break-words"><b class="uppercase tracking-wider text-[10px]">Why it matters:</b> ${esc(whySplit[2])}</div>`
+         <div class="text-[11px] text-emerald-300 leading-snug break-words"><b class="uppercase tracking-wider text-[10px]">${esc(whyLabel)}</b> ${esc(whySplit[3])}</div>`
       : `<div class="text-slate-200 leading-snug break-words">${esc(detail)}</div>`;
     return `
       <div class="p-2.5 rounded-xl bg-panel border border-slate-800/80 space-y-1">
@@ -2051,6 +2196,27 @@ function renderReasoningDropdownHtml(reasons, stats = null, opts = {}) {
       ${opts.extraFooterHtml || ''}
     </div>
   `;
+}
+
+function passesFootballConvictionGateClient(row, mCode, mProb, odds) {
+  const hf = formPtsLast6Client(row.home_form || row.reason_stats?.form_home);
+  const af = formPtsLast6Client(row.away_form || row.reason_stats?.form_away);
+  const hEl = Number(row.home_elo ?? row.reason_stats?.elo_home ?? 1500);
+  const aEl = Number(row.away_elo ?? row.reason_stats?.elo_away ?? 1500);
+  if (mCode === '1X2_H') {
+    if (mProb < 0.35 || odds > 4.0) return false;
+    if (hf.pts <= 4 && af.pts >= 11 && (hEl - aEl < 55 || mProb < 0.43)) return false;
+    return true;
+  }
+  if (mCode === '1X2_A') {
+    if (mProb < 0.35 || odds > 4.0) return false;
+    if (af.pts <= 4 && hf.pts >= 11 && (aEl - hEl < 55 || mProb < 0.43)) return false;
+    return true;
+  }
+  if (mCode === '1X2_D') {
+    return mProb >= 0.28 && odds <= 3.9 && Math.abs(hEl - aEl) <= 75;
+  }
+  return mProb >= 0.48 && odds >= 1.28 && odds <= 2.6;
 }
 
 function buildAllFixtureCandidatesClient(gh, snap, user) {
@@ -2084,6 +2250,8 @@ function buildAllFixtureCandidatesClient(gh, snap, user) {
     const aSotAg = Number(r.a_sot_ag || 0);
     const hForm = r.home_form || 'N/A';
     const aForm = r.away_form || 'N/A';
+    const hfPts = formPtsLast6Client(hForm).pts;
+    const afPts = formPtsLast6Client(aForm).pts;
     const matchedNews = newsByTeam.get(r.home_team) || newsByTeam.get(r.away_team) || null;
     const lam = Number(r.lambda_home || 1.35);
     const mu = Number(r.mu_away || 1.15);
@@ -2125,12 +2293,52 @@ function buildAllFixtureCandidatesClient(gh, snap, user) {
       ['BTTS_N', 'BTTS No', r.prob_btts_no, bn, srcBtts],
     ];
 
+    if (Number(r.exp_corners) > 0) {
+      const ec = Number(r.exp_corners);
+      const cCands = [
+        ['CORN_O85', 'Over 8.5 Corners', poissonGeClient(ec, 9), 0.62],
+        ['CORN_O95', 'Over 9.5 Corners', poissonGeClient(ec, 10), 0.50],
+        ['CORN_O105', 'Over 10.5 Corners', poissonGeClient(ec, 11), 0.38],
+        ['CORN_U105', 'Under 10.5 Corners', poissonLeClient(ec, 10), 0.62],
+      ]
+        .filter((it) => it[2] >= 0.46 && it[2] <= 0.78)
+        .map(([code, lbl, p, base]) => {
+          const [oy] = estimateTwoWayOddsClient(p, base, 0.68, 1.055);
+          return [code, lbl, p, oy, 'market_estimate'];
+        });
+      if (cCands.length) {
+        cCands.sort((a, b) => ((b[2] * b[3] - 1) * 100 + b[2] * 12) - ((a[2] * a[3] - 1) * 100 + a[2] * 12));
+        tuples.push(cCands[0]);
+      }
+    }
+
+    if (Number(r.exp_cards) > 0) {
+      const ey = Number(r.exp_cards);
+      const yCands = [
+        ['CARD_O25', 'Over 2.5 Cards', poissonGeClient(ey, 3), 0.70],
+        ['CARD_O35', 'Over 3.5 Cards', poissonGeClient(ey, 4), 0.53],
+        ['CARD_O45', 'Over 4.5 Cards', poissonGeClient(ey, 5), 0.35],
+        ['CARD_U35', 'Under 3.5 Cards', poissonLeClient(ey, 3), 0.47],
+      ]
+        .filter((it) => it[2] >= 0.46 && it[2] <= 0.78)
+        .map(([code, lbl, p, base]) => {
+          const [oy] = estimateTwoWayOddsClient(p, base, 0.68, 1.055);
+          return [code, lbl, p, oy, 'market_estimate'];
+        });
+      if (yCands.length) {
+        yCands.sort((a, b) => ((b[2] * b[3] - 1) * 100 + b[2] * 12) - ((a[2] * a[3] - 1) * 100 + a[2] * 12));
+        tuples.push(yCands[0]);
+      }
+    }
+
     for (const [mCode, selLabel, rawProb, rawOdd, mktSrc] of tuples) {
       const odds = Number(rawOdd);
       const mProb = Number(rawProb);
-      if (!Number.isFinite(odds) || odds < 1.05 || odds > 10.0) continue;
+      if (!Number.isFinite(odds) || odds < 1.05 || odds > 6.5) continue;
+      if (mCode === '1X2_H' && hfPts <= 4 && afPts >= 11 && (hElo - aElo < 55 || mProb < 0.43)) continue;
+      if (mCode === '1X2_A' && afPts <= 4 && hfPts >= 11 && (aElo - hElo < 55 || mProb < 0.43)) continue;
       const edgePct = (mProb * odds - 1.0) * 100.0;
-      const btGroup = mCode.startsWith('1X2') ? '1X2' : mCode.startsWith('BTTS') ? 'BTTS' : 'O/U 2.5';
+      const btGroup = mCode.startsWith('1X2') || mCode.startsWith('DC_') ? '1X2' : mCode.startsWith('BTTS') ? 'BTTS' : 'O/U 2.5';
       const bt = btMap.get(`${r.div}:${btGroup}`);
       const trustBadge =
         bt && bt.flat_roi_pct > 0 && bt.value_bets_count >= 10
@@ -2199,22 +2407,29 @@ function buildAllFixtureCandidatesClient(gh, snap, user) {
   return candidates;
 }
 
+const FOOTBALL_RISK_BANDS = {
+  low: [1.22, 2.15, 0.52],
+  medium: [1.35, 2.85, 0.40],
+  high: [1.65, 3.80, 0.30],
+  longshot: [2.00, 5.50, 0.22],
+};
+
 function scoreCandidateForRiskClient(c, riskLevel) {
   const odds = Number(c.odds || 2.0);
   const prob = Number(c.model_prob || 0.5);
-  const edge = Number(c.edge_pct || 0);
+  const edge = Math.max(-10.0, Math.min(22.0, Number(c.edge_pct || 0)));
   const conf = Number(c.confidence_score || 60);
   const off = c.is_official ? 4.0 : 0.0;
   if (riskLevel === 'low') {
-    return prob * 100.0 + edge * 1.3 + off - Math.max(0.0, odds - 2.35) * 14.0;
+    return prob * 110.0 + edge * 1.1 + off - Math.max(0.0, odds - 2.1) * 14.0;
   }
   if (riskLevel === 'high') {
-    return edge * 1.8 + Math.min(odds, 4.5) * 6.5 + conf * 0.2 - Math.max(0.0, 1.5 - odds) * 12.0;
+    return edge * 1.6 + Math.min(odds, 3.8) * 6.0 + prob * 25.0 + conf * 0.2 - Math.max(0.0, 1.6 - odds) * 12.0;
   }
   if (riskLevel === 'longshot') {
-    return edge * 1.6 + Math.min(odds, 7.0) * 8.0 + prob * 15.0 - Math.max(0.0, 1.8 - odds) * 14.0;
+    return edge * 1.5 + Math.min(odds, 5.5) * 6.5 + prob * 20.0 - Math.max(0.0, 1.9 - odds) * 14.0;
   }
-  return edge * 1.6 + prob * 45.0 + conf * 0.25 + off * 0.5 - Math.max(0.0, odds - 3.8) * 6.0;
+  return edge * 1.45 + prob * 52.0 + conf * 0.25 + off * 0.5 - Math.max(0.0, odds - 2.85) * 8.0;
 }
 
 function getGhAlreadyBetLegsClient(gh, user, { includeSaved = true, includeSlip = true } = {}) {
@@ -2298,10 +2513,10 @@ function buildCustomBetsClient(gh, snap, user, criteria = {}) {
   const avoidSets = buildExclusionSetsClient(avoidLegs);
 
   const prefLeagues = new Set(user?.preferred_leagues || ['E0', 'E1', 'E2', 'E3']);
-  const pool = allCands
+  let pool = allCands
     .filter((c) => {
       if (!allowedMarkets.has(c.market)) return false;
-      if (c.odds < 1.08 || c.odds > 10.0) return false;
+      if (c.odds < 1.08 || c.odds > 6.5) return false;
       if (divFilter === 'PREFERRED') {
         if (prefLeagues.size && !prefLeagues.has(c.div)) return false;
       } else if (['E0', 'E1', 'E2', 'E3'].includes(divFilter) && c.div !== divFilter) {
@@ -2313,8 +2528,19 @@ function buildCustomBetsClient(gh, snap, user, criteria = {}) {
       if (avoidLegs.length && isLegExcludedClient(c, avoidSets, 'market_family')) return false;
       return true;
     })
-    .map((c) => ({ ...c, _score: scoreCandidateForRiskClient(c, riskLevel) }))
-    .sort((a, b) => b._score - a._score || b.edge_pct - a.edge_pct || b.model_prob - a.model_prob);
+    .map((c) => ({ ...c, _score: scoreCandidateForRiskClient(c, riskLevel) }));
+
+  const [minO, maxO, minP] = FOOTBALL_RISK_BANDS[riskLevel] || FOOTBALL_RISK_BANDS.medium;
+  const inBand = pool.filter((c) => Number(c.odds) >= minO && Number(c.odds) <= maxO && Number(c.model_prob) >= minP);
+  if (new Set(inBand.map((c) => Number(c.fixture_id))).size >= legsCount) {
+    pool = inBand;
+  } else {
+    const fbPool = pool.filter((c) => Number(c.odds) >= 1.15 && Number(c.odds) <= 5.5 && Number(c.model_prob) >= 0.2);
+    if (new Set(fbPool.map((c) => Number(c.fixture_id))).size >= legsCount) {
+      pool = fbPool;
+    }
+  }
+  pool.sort((a, b) => b._score - a._score || b.edge_pct - a.edge_pct || b.model_prob - a.model_prob);
 
   const dedupExclCount = new Set(
     exclLegs.filter((l) => l.market).map((l) => `${canonicalMatchKeyClient(l) || l.fixture_id}:${l.market}`)
@@ -2887,11 +3113,11 @@ function materializeBbLegClient(row, props, sl, btMap, matchedNews, leaguesMeta 
           : 'Model Edge';
     if (code.startsWith('DC_') || code.startsWith('TEAM_')) {
       rsn = [
-        `Joint Scoreline Model: ${label} hits in ${(mp * 100).toFixed(1)}% of simulated scorelines (fair ${fmtOdds(fairO)}).`,
-        `Matchup & xG: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} (${row.home_team} ${Math.round(hElo)} vs ${row.away_team} ${Math.round(aElo)} Elo).`,
-        `Form (Last 6): ${hForm} (H) vs ${aForm} (A) • ${trust}.`,
+        `Joint Scoreline Model: ${label} hits in ${(mp * 100).toFixed(1)}% of simulated scorelines (fair ${fmtOdds(fairO)}) — why it matters: scoreline simulations capture exact team-goal paths better than generic averages.`,
+        `Tactical & Statistical Case: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} (${row.home_team} ${Math.round(hElo)} vs ${row.away_team} ${Math.round(aElo)} Elo) — why it matters: controls how often ${code === 'DC_1X' || code === 'TEAM_H_O15' ? row.home_team : row.away_team} avoids defeat or clears 2 goals.`,
+        `Recent Form Check: ${hForm} (H) vs ${aForm} (A) • ${trust} — why it matters: shows current competitive consistency heading into this matchup.`,
       ];
-      if (matchedNews) rsn.push(`Team News: [${matchedNews.source}] ${matchedNews.title}`);
+      if (matchedNews) rsn.push(`Team News & Availability: [${matchedNews.source}] ${matchedNews.title} — why it matters: current club availability factored into the leg.`);
       rStats = {
         xg_home: roundNum(lam, 2),
         xg_away: roundNum(mu, 2),
@@ -2924,14 +3150,14 @@ function materializeBbLegClient(row, props, sl, btMap, matchedNews, leaguesMeta 
     rsn =
       sl.category === 'corners'
         ? [
-            `Corner Model: ${label} projected at ${(mp * 100).toFixed(1)}% (fair ${fmtOdds(fairO)}) with ${expC.toFixed(1)} expected match corners.`,
-            `Team Corner Rates: ${row.home_team} win ${hc.toFixed(1)}/g vs ${row.away_team} ${ac.toFixed(1)}/g across recent league games.`,
-            `Tempo Context: Projected ${lam.toFixed(2)}–${mu.toFixed(2)} xG supports sustained final-third pressure.`,
+            `Value & Win Chance: ${label} projected at ${(mp * 100).toFixed(1)}% (fair ${fmtOdds(fairO)}) with ${expC.toFixed(1)} expected match corners — why it matters: anchors the builder on repeatable wing and final-third pressure.`,
+            `Tactical & Statistical Case: ${row.home_team} wins ${hc.toFixed(1)}/g vs ${row.away_team} ${ac.toFixed(1)}/g across recent league games — why it matters: combined corner volume supports ${label} independently of final goals.`,
+            `Recent Form Check: ${hForm} (H) vs ${aForm} (A) at ${lam.toFixed(2)}–${mu.toFixed(2)} xG — why it matters: active attacking tempo keeps flag kicks ticking over.`,
           ]
         : [
-            `Discipline Model: ${label} projected at ${(mp * 100).toFixed(1)}% (fair ${fmtOdds(fairO)}) with ${expY.toFixed(1)} expected cards.`,
-            `Team Booking Rates: ${row.home_team} average ${hy.toFixed(1)} cards/g vs ${row.away_team} ${ay.toFixed(1)} cards/g across recent games.`,
-            `Match Tension: Elo ${Math.round(hElo)} vs ${Math.round(aElo)} (${hForm} vs ${aForm}).`,
+            `Value & Win Chance: ${label} projected at ${(mp * 100).toFixed(1)}% (fair ${fmtOdds(fairO)}) with ${expY.toFixed(1)} expected cards — why it matters: adds a non-goal booking angle with steady Poisson probability.`,
+            `Tactical & Statistical Case: ${row.home_team} average ${hy.toFixed(1)} cards/g vs ${row.away_team} ${ay.toFixed(1)} cards/g across recent games — why it matters: team discipline histories point clearly toward ${label}.`,
+            `Recent Form Check: Elo ${Math.round(hElo)} vs ${Math.round(aElo)} (${hForm} vs ${aForm}) — why it matters: close league pressure keeps challenge frequency high.`,
           ];
     rStats = {
       xg_home: roundNum(lam, 2),
@@ -2988,13 +3214,13 @@ function materializeBetBuilderClient(row, props, btMap, matchedNews, leaguesMeta
   }
 
   const betReasons = [
-    `Joint Scoreline & Prop Math: ${(jointProb * 100).toFixed(1)}% true win chance (fair ${fmtOdds(fairOdds)})${corrNote} vs ${fmtOdds(estOdds)} est. Bet Builder price.`,
-    `Match Script: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} • ${row.home_team} (${Math.round(hElo)} Elo, ${hForm}) vs ${row.away_team} (${Math.round(aElo)} Elo, ${aForm}).`,
-    `Props Tempo: Expected ${expC.toFixed(1)} corners (${hc.toFixed(1)} + ${ac.toFixed(1)} for/g) & ${expY.toFixed(1)} yellow cards (${hy.toFixed(1)} + ${ay.toFixed(1)}/g).`,
+    `Joint Scoreline & Prop Math: ${(jointProb * 100).toFixed(1)}% true win chance (fair ${fmtOdds(fairOdds)})${corrNote} vs ${fmtOdds(estOdds)} est. Bet Builder price — why it matters: same-game combinations are priced jointly so correlated legs aren't double-counted.`,
+    `Match Script: Projected xG ${lam.toFixed(2)}–${mu.toFixed(2)} • ${row.home_team} (${Math.round(hElo)} Elo, ${hForm}) vs ${row.away_team} (${Math.round(aElo)} Elo, ${aForm}) — why it matters: all sub-legs fit the same tactical game flow rather than pulling in opposite directions.`,
+    `Props Tempo: Expected ${expC.toFixed(1)} corners (${hc.toFixed(1)} + ${ac.toFixed(1)} for/g) & ${expY.toFixed(1)} yellow cards (${hy.toFixed(1)} + ${ay.toFixed(1)}/g) — why it matters: grounded season averages justify the corner/card lines included.`,
   ];
-  if (matchedNews) betReasons.push(`Team News: [${matchedNews.source}] ${matchedNews.title}`);
+  if (matchedNews) betReasons.push(`Team News & Availability: [${matchedNews.source}] ${matchedNews.title} — why it matters: club updates verified ahead of kickoff.`);
   if (excludeAlreadyBet) {
-    betReasons.push('Duplicate Guard: Screened against your active placed, saved & slip selections on this fixture.');
+    betReasons.push('Duplicate Guard: Screened against your active placed, saved & slip selections on this fixture — why it matters: avoids overexposing one match.');
   }
 
   const cleanSubLegs = sortedLegs.map((sl) => materializeBbLegClient(row, props, sl, btMap, matchedNews, leaguesMeta));
@@ -3901,21 +4127,25 @@ async function staticApi(path, opts = {}) {
     const officialOnly = query.get('official_only') === '1';
     const fixById = new Map((snap.fixtures || []).map((f) => [f.id, f]));
     const hasUpcoming = (snap.fixtures || []).some((f) => isFixtureUpcomingClient(f));
-    const opps = (snap.value_bets || [])
+    const officialSrcs = new Set(['bet365_official', 'api_football_b365', 'live_sportsbook', 'user_manual']);
+    let opps = (snap.value_bets || [])
       .filter((o) => {
-        if (hasUpcoming) {
-          const fx = fixById.get(o.fixture_id);
-          if (!(fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(o))) return false;
-        }
+        const fx = fixById.get(o.fixture_id);
+        if (hasUpcoming && !(fx ? isFixtureUpcomingClient(fx) : isFixtureUpcomingClient(o))) return false;
         if (div && o.div !== div) return false;
         if (market && !matchesBetTypeFilter(o.market, market)) return false;
-        if (officialOnly && !['bet365_official', 'api_football_b365', 'live_sportsbook', 'user_manual'].includes(o.odds_source)) return false;
+        if (officialOnly && !officialSrcs.has(o.odds_source)) return false;
+        const mProb = Number(o.model_prob_pct || 0) / 100.0;
+        const fxCtx = fx || o;
+        if (!passesFootballConvictionGateClient(fxCtx, o.market, mProb, Number(o.odds))) return false;
         return Number(o.edge_pct) >= minEdge;
       })
       .map((o) => {
         const ks = kellyStakeClient(Number(o.model_prob_pct) / 100.0, o.odds, activeUser.bankroll, activeUser.kelly_fraction);
         const btMeta = getBetTypeInfo(o.market);
         const reasons = Array.isArray(o.reasons) && o.reasons.length ? o.reasons : getFallbackLegReasons(o);
+        const mProb = Number(o.model_prob_pct || 0) / 100.0;
+        const qScore = Math.min(Number(o.edge_pct || 0), 18.0) * 1.35 + mProb * 55.0 + (officialSrcs.has(o.odds_source) ? 6.0 : 0.0);
         return {
           ...o,
           bet_type: o.bet_type || btMeta.key,
@@ -3924,8 +4154,32 @@ async function staticApi(path, opts = {}) {
           suggested_stake: ks.suggested_stake,
           reasons,
           reason_stats: o.reason_stats || null,
+          _qScore: qScore,
         };
-      });
+      })
+      .sort((a, b) => b._qScore - a._qScore || b.edge_pct - a.edge_pct);
+
+    if (minEdge >= 0 && !market) {
+      const perFix = new Map();
+      const perFams = new Map();
+      const deduped = [];
+      for (const o of opps) {
+        const fid = Number(o.fixture_id);
+        const fam = marketFamily(o.market);
+        const cnt = perFix.get(fid) || 0;
+        if (cnt >= 2) continue;
+        const fams = perFams.get(fid) || new Set();
+        if (fams.has(fam)) continue;
+        perFix.set(fid, cnt + 1);
+        fams.add(fam);
+        perFams.set(fid, fams);
+        const { _qScore, ...clean } = o;
+        deduped.push(clean);
+      }
+      opps = deduped;
+    } else {
+      opps = opps.map(({ _qScore, ...clean }) => clean);
+    }
     return {
       opportunities: opps,
       total: opps.length,
